@@ -695,4 +695,64 @@ push_url = ""
         assert!(!cfg.rtmp_push.enabled);
         assert_eq!(cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live", "rtmp_push.push_url");
     }
+
+    #[test]
+    fn test_all_protocols_config_loads() {
+        let toml_str = r#"
+[onvif]
+enabled = true
+
+[gb28181]
+enabled = true
+
+[rtmp_push]
+enabled = false
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).expect("valid TOML with protocols enabled");
+        assert!(cfg.onvif.enabled, "ONVIF must be enabled");
+        assert!(cfg.gb28181.enabled, "GB28181 must be enabled");
+        assert!(!cfg.rtmp_push.enabled, "RTMP push must be disabled");
+
+        // Verify other fields load with defaults
+        assert_eq!(cfg.onvif.device_name, "notebook-cam");
+        assert_eq!(cfg.gb28181.platform_sip_address, "192.168.1.100");
+        assert_eq!(cfg.gb28181.platform_sip_port, 5060);
+        assert_eq!(cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live");
+
+        // Verify no port conflicts between protocols
+        // ONVIF WS-Discovery uses UDP 3702 (hardcoded in protocols/src/onvif.rs)
+        // RTSP server uses config.server_port (default 8554)
+        // Web UI uses config.port (default 8443)
+        // GB28181 SIP uses config.platform_sip_port (default 5060)
+        assert_ne!(3702u16, cfg.rtsp.server_port, "ONVIF port 3702 conflicts with RTSP");
+        assert_ne!(3702u16, cfg.web.port, "ONVIF port 3702 conflicts with Web");
+        assert_ne!(cfg.rtsp.server_port, cfg.web.port, "RTSP port conflicts with Web");
+    }
+
+    #[test]
+    fn test_main_builds_with_all_protocols() {
+        // Verify all protocol config types are constructable with enabled state
+        // This ensures main.rs can build with protocol imports
+        let onvif = OnvifConfig { enabled: true, ..OnvifConfig::default() };
+        assert!(onvif.enabled);
+        assert_eq!(onvif.device_name, "notebook-cam");
+
+        let gb28181 = Gb28181Config { enabled: true, ..Gb28181Config::default() };
+        assert!(gb28181.enabled);
+        assert_eq!(gb28181.platform_sip_address, "192.168.1.100");
+
+        let rtmp_push = RtmpPushConfig { enabled: false, ..RtmpPushConfig::default() };
+        assert!(!rtmp_push.enabled);
+
+        // Verify AppConfig can hold all protocol configs (compile check)
+        let cfg = AppConfig {
+            onvif: OnvifConfig { enabled: true, ..OnvifConfig::default() },
+            gb28181: Gb28181Config { enabled: true, ..Gb28181Config::default() },
+            rtmp_push: RtmpPushConfig { enabled: false, ..RtmpPushConfig::default() },
+            ..AppConfig::default()
+        };
+        assert!(cfg.onvif.enabled);
+        assert!(cfg.gb28181.enabled);
+        assert!(!cfg.rtmp_push.enabled);
+    }
 }
