@@ -234,7 +234,7 @@ mod tests {
         let active = crate::server::ActiveStreams::default();
         let stream_manager = Arc::new(StreamManager::new());
         let rtsp_server = Arc::new(RtspServer::new(RtspServerConfig::default()));
-        let state = crate::server::AppRouterState { db, active, stream_manager, rtsp_server };
+        let state = crate::server::AppRouterState { db, active, stream_manager, rtsp_server, protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())) };
         (state, token, id)
     }
 
@@ -365,6 +365,7 @@ mod tests {
             active: crate::server::ActiveStreams::default(),
             stream_manager: Arc::new(StreamManager::new()),
             rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
         let app = crate::server::build_app_with_state(state);
 
