@@ -65,7 +65,6 @@ async fn static_handler() -> impl IntoResponse {
 /// - `GET /api/cameras/{id}/snapshot` — snapshot (auth required)
 /// - `GET /api/settings`              — list settings (auth required)
 /// - `PUT /api/settings`              — update settings (auth required)
-/// - `GET /api/onvif/discover`        — ONVIF discovery (auth required)
 /// - `GET /`                          — static SPA (public, allowed before setup)
 pub fn build_app_with_state(state: AppRouterState) -> Router {
     let db = state.db.clone();
@@ -104,7 +103,6 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
         // ONVIF
-        .route("/api/onvif/discover", get(routes::onvif::discover))
         // Device enumeration
         .route("/api/devices/video", get(routes::devices::list_video_devices))
         .route("/api/devices/audio", get(routes::devices::list_audio_devices))
@@ -319,21 +317,6 @@ mod tests {
             res.status(),
             StatusCode::UNAUTHORIZED,
             "settings routes should require auth"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_onvif_routes_require_auth() {
-        let app = build_app(test_db_with_user());
-        let req = Request::builder()
-            .uri("/api/onvif/discover")
-            .body(Body::empty())
-            .unwrap();
-        let res = app.oneshot(req).await.unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::UNAUTHORIZED,
-            "onvif routes should require auth"
         );
     }
 }

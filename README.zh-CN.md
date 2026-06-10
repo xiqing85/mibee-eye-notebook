@@ -2,14 +2,14 @@
 
 [English](README.md) · [文档](docs/zh/)
 
-基于 Rust 构建的专业笔记本监控代理。
+基于 Rust 构建的专业本地采集代理。
 
-捕获摄像头和麦克风，连接 IP 摄像头和 NVR，通过 RTSP / RTMP / ONVIF / GB/T 28181 进行流媒体传输。属于 [MiBee](https://https://github.com/xiqing85) 生态系统的一部分。
+采集本机摄像头和麦克风，编码为 H.264/AAC，通过 RTSP 服务端 / RTMP 推流 / ONVIF 设备端 / GB/T 28181 设备端 向外部 NVR 提供流媒体服务。属于 [MiBee](https://https://github.com/xiqing85) 生态系统的一部分。
 
 ## 功能特性
 
-- **本地捕获** — 摄像头通过 V4L2（Linux）/ MSMF（Windows），麦克风通过 ALSA / WASAPI
-- **协议支持** — RTSP 客户端和服务端、RTMP 接收、ONVIF 发现与 PTZ、GB/T 28181（SIP + RTP）
+- **本地采集** — 摄像头通过 V4L2（Linux）/ MSMF（Windows），麦克风通过 ALSA / WASAPI
+- **对外协议** — RTSP 服务端（客户端拉流）、RTMP 推流、ONVIF 设备端点、GB/T 28181 设备注册
 - **H.264 / H.265** — 手写 NAL 单元解析器、关键帧检测、SPS/PPS 提取
 - **MiBee NVR 集成** — REST API 客户端、摄像头同步、SSE 事件流
 - **Web 界面** — Axum REST API + 嵌入式 SPA、TLS 通过 rustls、基于会话的身份认证
@@ -71,14 +71,15 @@ mibee-rec/
 
 | 协议 | 组件 | 实现方式 | 状态 |
 |------|------|---------|------|
-| RTSP | 客户端和服务端 | 手写（`RtspClient`、`RtspServer`） | ✅ |
-| RTMP | 接收服务器 | 手写（`RtmpServer`） | ✅ |
-| ONVIF | 发现和 PTZ | 封装 [oxvif](https://crates.io/crates/oxvif)（`OnvifClient`） | ✅ |
+| RTSP | 服务端 | 手写（`RtspServer`）— 外部客户端连接拉流 | ✅ |
+| RTMP | 推流客户端 | 推送本地流到外部 NVR 接入点 | ✅ |
+| ONVIF | 设备端点 | 提供设备信息，让外部 NVR 发现本机 | ✅ |
+| GB/T 28181 | 设备端 | 向外部平台注册，收到 INVITE 后推送 RTP | ✅ |
 | GB/T 28181 | SIP + RTP | 封装 [gmv](https://crates.io/crates/gmv)（`Gb28181Client`） | ✅ |
 | H.264 | NAL 单元解析器 | 手写（`H264Parser`） | ✅ |
 | H.265 | 解码 | 浏览器回退到 H.264 | ⚠️ |
-| CaptureSource | 流适配器 | `crates/streaming/src/source.rs` | ❌ 缺失 |
-| 流 → 根绑定 | 线路连接 | root `main.rs` → streaming crate | ❌ 未连接 |
+| CaptureSource | 采集适配器 | `crates/streaming/src/capture_source.rs` | ✅ |
+| 流 → 根绑定 | 线路连接 | root `main.rs` → streaming crate | ✅ |
 | 登录/注销 | 会话管理 | 返回 501 | 🚧 桩代码 |
 
 **图例**: ✅ 已实现 · ⚠️ 部分/回退 · ❌ 缺失 · 🚧 桩代码
