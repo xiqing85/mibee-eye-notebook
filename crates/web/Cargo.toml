@@ -20,4 +20,6 @@ security = { path = "../security" }
 observability = { path = "../observability" }
 protocols = { path = "../protocols" }
 uuid.workspace = true
+capture = { path = "../capture" }
+streaming = { path = "../streaming" }
 axum-server.workspace = true

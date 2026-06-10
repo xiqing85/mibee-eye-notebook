@@ -6,13 +6,14 @@ use axum::Json;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use protocols::rtsp_server::RtspServer;
 use rusqlite::Connection;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db;
 use crate::routes::error_response;
-use crate::server::ActiveStreams;
+use crate::stream_manager::StreamManager;
 use security::middleware::AuthenticatedUser;
 
 // ---------------------------------------------------------------------------
@@ -22,7 +23,8 @@ use security::middleware::AuthenticatedUser;
 /// POST /api/cameras/{id}/start — begin capturing frames from a camera.
 pub async fn start_stream(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
-    Extension(active): Extension<ActiveStreams>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
+    Extension(rtsp_srv): Extension<Arc<RtspServer>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
@@ -36,40 +38,55 @@ pub async fn start_stream(
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to start stream");
         }
     };
+    let camera_type = camera.camera_type.clone();
+    let config = camera.config.clone();
     drop(conn);
 
-    // Check if already running.
+    match stream_manager
+        .create_stream(id.clone(), &camera_type, &config, Some(&rtsp_srv))
+        .await
     {
-        let mut streams = active.0.lock().await;
-        if streams.get(&id).copied().unwrap_or(false) {
-            return error_response(StatusCode::CONFLICT, "stream already running");
+        Ok(info) => {
+            // Update camera status to "running".
+            let conn = db.lock().await;
+            let now = crate::routes::chrono_now();
+            let updated = db::CameraRow {
+                status: "running".to_string(),
+                updated_at: now,
+                ..camera
+            };
+            let _ = db::update_camera(&conn, &updated);
+            drop(conn);
+
+            tracing::info!(camera_id = %id, rtsp_url = ?info.rtsp_url, "stream started");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "running",
+                    "rtsp_url": info.rtsp_url,
+                    "camera_id": id,
+                })),
+            )
+                .into_response()
         }
-        streams.insert(id.clone(), true);
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("already exists") {
+                return error_response(StatusCode::CONFLICT, "stream already running");
+            }
+            if msg.contains("exhausted") {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "resource limit reached");
+            }
+            tracing::error!(error = %e, camera_id = %id, "failed to start stream");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to start stream")
+        }
     }
-
-    // Update camera status to "running".
-    let conn = db.lock().await;
-    let now = crate::routes::chrono_now();
-    let updated = db::CameraRow {
-        status: "running".to_string(),
-        updated_at: now,
-        ..camera
-    };
-    let _ = db::update_camera(&conn, &updated);
-    drop(conn);
-
-    tracing::info!(camera_id = %id, "stream started");
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status": "ok", "camera_id": id})),
-    )
-        .into_response()
 }
 
 /// POST /api/cameras/{id}/stop — stop capturing from a camera.
 pub async fn stop_stream(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
-    Extension(active): Extension<ActiveStreams>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
@@ -85,29 +102,49 @@ pub async fn stop_stream(
     };
     drop(conn);
 
-    // Mark as stopped.
-    {
-        let mut streams = active.0.lock().await;
-        streams.insert(id.clone(), false);
+    match stream_manager.stop_stream(&id).await {
+        Ok(_info) => {
+            // Update DB status.
+            let conn = db.lock().await;
+            let now = crate::routes::chrono_now();
+            let updated = db::CameraRow {
+                status: "stopped".to_string(),
+                updated_at: now,
+                ..camera
+            };
+            let _ = db::update_camera(&conn, &updated);
+            drop(conn);
+
+            tracing::info!(camera_id = %id, "stream stopped");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ok", "camera_id": id})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            // Idempotent stop: if no active stream, still mark DB as stopped.
+            if msg.contains("no active stream") {
+                let conn = db.lock().await;
+                let now = crate::routes::chrono_now();
+                let updated = db::CameraRow {
+                    status: "stopped".to_string(),
+                    updated_at: now,
+                    ..camera
+                };
+                let _ = db::update_camera(&conn, &updated);
+                drop(conn);
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({"status": "stopped", "camera_id": id})),
+                )
+                    .into_response();
+            }
+            tracing::error!(error = %e, camera_id = %id, "failed to stop stream");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to stop stream")
+        }
     }
-
-    // Update camera status.
-    let conn = db.lock().await;
-    let now = crate::routes::chrono_now();
-    let updated = db::CameraRow {
-        status: "stopped".to_string(),
-        updated_at: now,
-        ..camera
-    };
-    let _ = db::update_camera(&conn, &updated);
-    drop(conn);
-
-    tracing::info!(camera_id = %id, "stream stopped");
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status": "ok", "camera_id": id})),
-    )
-        .into_response()
 }
 
 /// GET /api/cameras/{id}/snapshot — capture a single JPEG frame.
@@ -116,7 +153,7 @@ pub async fn stop_stream(
 /// This endpoint returns 501 Not Implemented for now.
 pub async fn snapshot(
     Extension(_db): Extension<Arc<Mutex<Connection>>>,
-    Extension(_active): Extension<ActiveStreams>,
+    Extension(_stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(_id): Path<String>,
 ) -> impl IntoResponse {
@@ -142,6 +179,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+    use protocols::rtsp_server::RtspServerConfig;
 
     fn test_db() -> Arc<Mutex<Connection>> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -194,7 +232,9 @@ mod tests {
 
         let db = Arc::new(Mutex::new(conn));
         let active = crate::server::ActiveStreams::default();
-        let state = crate::server::AppRouterState { db, active };
+        let stream_manager = Arc::new(StreamManager::new());
+        let rtsp_server = Arc::new(RtspServer::new(RtspServerConfig::default()));
+        let state = crate::server::AppRouterState { db, active, stream_manager, rtsp_server };
         (state, token, id)
     }
 
@@ -211,6 +251,15 @@ mod tests {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 1024 * 16)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["status"], "running");
+        assert!(body["rtsp_url"].as_str().unwrap().contains("rtsp://"));
+        assert_eq!(body["camera_id"], cam_id);
     }
 
     #[tokio::test]
@@ -314,6 +363,8 @@ mod tests {
         let state = crate::server::AppRouterState {
             db: conn,
             active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(StreamManager::new()),
+            rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         };
         let app = crate::server::build_app_with_state(state);
 
