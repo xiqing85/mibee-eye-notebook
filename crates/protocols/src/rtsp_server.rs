@@ -14,7 +14,8 @@
 
 use anyhow::{Result, bail};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
@@ -773,6 +774,24 @@ fn find_stream_by_uri<'a>(
         .map(|v| v as _)
 }
 
+/// Find a live stream entry that matches the given URI.
+fn find_live_stream<'a>(
+    uri: &'a str,
+    live_streams: &'a HashMap<String, LiveStreamEntry>,
+) -> Option<(String, &'a LiveStreamEntry)> {
+    for (path, entry) in live_streams.iter() {
+        let url_path = if path.starts_with('/') {
+            path.clone()
+        } else {
+            format!("/{}", path)
+        };
+        if uri == url_path || uri.ends_with(&url_path) || uri.contains(&url_path) {
+            return Some((path.clone(), entry));
+        }
+    }
+    None
+}
+
 /// Check if authorization is needed and valid.
 fn check_auth(req: &ParsedRequest, config: &RtspServerConfig) -> Result<bool> {
     if !config.auth_required {
@@ -849,12 +868,25 @@ async fn handle_connection(
                 let stream = match find_stream_by_uri(&request.uri, streams) {
                     Some(s) => s.clone(),
                     None => {
-                        let resp = build_not_found_response(request.cseq);
-                        if let Err(e) = writer.write_all(&resp).await {
-                            debug!("Error sending DESCRIBE 404: {e}");
-                            break;
+                        // Fallback: check live streams (scope lock to avoid holding across await)
+                        let live_found = {
+                            let live_map = server.live_streams.lock().unwrap();
+                            find_live_stream(&request.uri, &live_map)
+                                .map(|(path, entry)| {
+                                    StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
+                                })
+                        };
+                        match live_found {
+                            Some(stream) => stream,
+                            None => {
+                                let resp = build_not_found_response(request.cseq);
+                                if let Err(e) = writer.write_all(&resp).await {
+                                    debug!("Error sending DESCRIBE 404: {e}");
+                                    break;
+                                }
+                                continue;
+                            }
                         }
-                        continue;
                     }
                 };
                 let resp =
@@ -879,11 +911,37 @@ async fn handle_connection(
                     }
                 };
 
+                // Resolve stream from static configs or live stream entries
+                let stream_config = find_stream_by_uri(&request.uri, streams)
+                    .cloned()
+                    .or_else(|| {
+                        let live_map = server.live_streams.lock().unwrap();
+                        find_live_stream(&request.uri, &live_map)
+                            .map(|(path, entry)| {
+                                StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
+                            })
+                    });
+
+                let mut temp_map = HashMap::new();
+                match stream_config {
+                    Some(ref s) => {
+                        temp_map.insert(s.path.clone(), s.clone());
+                    }
+                    None => {
+                        let resp = build_not_found_response(request.cseq);
+                        if let Err(e) = writer.write_all(&resp).await {
+                            debug!("Error sending SETUP 404: {e}");
+                            break;
+                        }
+                        continue;
+                    }
+                }
+
                 let (resp, transport) = handle_setup(
                     request.cseq,
                     &request.uri,
                     &transport_header,
-                    streams,
+                    &temp_map,
                     &mut session,
                     config,
                 );
@@ -892,7 +950,6 @@ async fn handle_connection(
                     break;
                 }
 
-                // If setup succeeded and transport has interleaved channels, we're good
                 if transport.is_some() {
                     info!("RTSP session created: {} for stream", request.cseq);
                 }
@@ -910,13 +967,78 @@ async fn handle_connection(
                     break;
                 }
 
-                // In a full implementation, we'd now start sending RTP data.
-                // For the server module, we handle interleaved RTP sending
-                // in the play loop below if the session is Playing.
-                //
-                // Note: actual RTP data injection would be wired up by the
-                // application layer using the server's public API.
-                // The protocol response signals readiness.
+                // If Playing a live stream, enter streaming delivery loop
+                if let SessionState::Playing {
+                    stream_path,
+                    transport,
+                    ..
+                } = &session.state
+                {
+                    let live_path = stream_path.clone();
+                    let interleave_channel = transport.interleaved.map(|(c, _)| c).unwrap_or(0);
+
+                    // Scope the lock to avoid holding MutexGuard (not Send) across await
+                    let live_entry = {
+                        let mut live_map = server.live_streams.lock().unwrap();
+                        live_map.remove(&live_path)
+                    };
+
+                    if let Some(entry) = live_entry {
+                        let mut frame_rx = entry.frame_rx;
+                        info!("Starting live stream delivery for /{live_path}");
+
+                        loop {
+                            tokio::select! {
+                                frame = frame_rx.recv() => {
+                                    match frame {
+                                        Some(data) => {
+                                            match build_interleaved_frame(interleave_channel, &data) {
+                                                Ok(interleaved) => {
+                                                    if let Err(e) = writer.write_all(&interleaved).await {
+                                                        debug!("Error sending interleaved frame: {e}");
+                                                        break;
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!("Failed to build interleaved frame: {e}");
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            debug!("Live stream /{live_path} ended");
+                                            break;
+                                        }
+                                    }
+                                }
+                                cmd = read_rtsp_request(&mut buf_reader) => {
+                                    match cmd {
+                                        Ok(Some(req)) => {
+                                            match req.method {
+                                                RtspMethod::Teardown => {
+                                                    let resp = handle_teardown(req.cseq, &session_id, &mut session);
+                                                    let _ = writer.write_all(&resp).await;
+                                                    break;
+                                                }
+                                                RtspMethod::Pause => {
+                                                    let resp = handle_pause(req.cseq, &session_id, &session);
+                                                    let _ = writer.write_all(&resp).await;
+                                                    break;
+                                                }
+                                                _ => {
+                                                    let resp = handle_options(req.cseq);
+                                                    let _ = writer.write_all(&resp).await;
+                                                }
+                                            }
+                                        }
+                                        Ok(None) | Err(_) => break,
+                                    }
+                                }
+                            }
+                        }
+                        break; // Exit connection handler after streaming
+                    }
+                }
             }
 
             RtspMethod::Teardown => {
@@ -967,10 +1089,22 @@ async fn handle_connection(
 // Server
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Entry for a dynamically registered live stream.
+struct LiveStreamEntry {
+    /// Receiver for incoming H.264 NAL unit data from RtspOutput.
+    frame_rx: mpsc::Receiver<Vec<u8>>,
+    /// SDP body describing the stream (codec, payload type, etc.).
+    sdp_body: String,
+    /// SSRC for RTP packets.
+    ssrc: u32,
+}
+
 /// Internal server state shared across connections.
 struct RtspServerInner {
     config: RtspServerConfig,
     streams: HashMap<String, StreamConfig>,
+    /// Dynamically registered live stream entries, keyed by path.
+    live_streams: Mutex<HashMap<String, LiveStreamEntry>>,
 }
 
 /// The RTSP server instance.
@@ -1009,6 +1143,7 @@ impl RtspServer {
             inner: Arc::new(RtspServerInner {
                 config,
                 streams: HashMap::new(),
+                live_streams: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1030,11 +1165,31 @@ impl RtspServer {
             .insert(stream.path.clone(), stream);
     }
 
+    /// Register a live stream that receives H.264 NAL data via an mpsc channel.
+    ///
+    /// Returns a `Sender` that [`RtspOutput`] can use to push video frames.
+    /// The server will deliver frames to any RTSP client that PLAYS this stream.
+    pub fn register_live_stream(
+        &self,
+        path: String,
+        sdp_body: String,
+        ssrc: u32,
+    ) -> mpsc::Sender<Vec<u8>> {
+        let (tx, rx) = mpsc::channel(64);
+        let entry = LiveStreamEntry {
+            frame_rx: rx,
+            sdp_body,
+            ssrc,
+        };
+        self.inner.live_streams.lock().unwrap().insert(path, entry);
+        tx
+    }
+
     /// Start the server and listen for connections.
     ///
     /// Binds to the configured port and accepts incoming RTSP connections.
     /// Each connection is handled in a separate tokio task.
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         let addr = format!("0.0.0.0:{}", self.inner.config.port);
         let listener = TcpListener::bind(&addr).await?;
         info!("RTSP server listening on {addr}");
@@ -1957,4 +2112,143 @@ mod tests {
         assert!(resp_str.contains("200 OK"));
         assert!(resp_str.contains("CSeq: 0"));
     }
+
+    // ─── Live Stream Tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_register_live_stream() {
+        let server = RtspServer::new(RtspServerConfig::default());
+        let tx = server.register_live_stream(
+            "livecam".to_string(),
+            "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Live\r\nt=0 0\r\n".to_string(),
+            0x12345678,
+        );
+        // Verify sender works by sending data
+        let result = tx.try_send(vec![0x00, 0x00, 0x00, 0x01, 0x67]);
+        assert!(result.is_ok(), "Should be able to send to live stream channel");
+        // Verify entry is stored in server
+        let live_map = server.inner.live_streams.lock().unwrap();
+        assert!(live_map.contains_key("livecam"));
+        let entry = live_map.get("livecam").unwrap();
+        assert_eq!(entry.ssrc, 0x12345678);
+        assert!(entry.sdp_body.contains("s=Live"));
+    }
+
+    #[test]
+    fn test_find_live_stream() {
+        let mut live_map = HashMap::new();
+        live_map.insert(
+            "livecam".to_string(),
+            LiveStreamEntry {
+                frame_rx: mpsc::channel(64).1,
+                sdp_body: "s=Live".to_string(),
+                ssrc: 1,
+            },
+        );
+        assert!(find_live_stream("/livecam", &live_map).is_some());
+        assert!(find_live_stream("rtsp://localhost:8554/livecam", &live_map).is_some());
+        assert!(find_live_stream("/other", &live_map).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_live_stream_describe_and_play() {
+        let server = RtspServer::new(RtspServerConfig::default());
+
+        // Register a live stream
+        let sdp = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=LiveCam\r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n";
+        let tx = server.register_live_stream(
+            "livecam".to_string(),
+            sdp.to_string(),
+            0xdeadbeef,
+        );
+
+        let (client, server_stream) = tokio::io::duplex(65536);
+        let inner = server.inner.clone();
+        tokio::spawn(async move {
+            handle_connection(server_stream, inner).await;
+        });
+
+        let (mut client_reader, mut client_writer) = tokio::io::split(client);
+
+        // 1. OPTIONS
+        let request = b"OPTIONS rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 1\r\n\r\n";
+        let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+
+        // 2. DESCRIBE — should find the live stream
+        let request = b"DESCRIBE rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\n\r\n";
+        let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
+        let resp_str = String::from_utf8_lossy(&resp);
+        assert!(resp_str.contains("200 OK"), "DESCRIBE should return 200 for live stream, got: {resp_str}");
+        assert!(resp_str.contains("H264"), "SDP should contain H264");
+
+        // 3. SETUP
+        let request = b"SETUP rtsp://localhost:8554/livecam/track1 RTSP/1.0\r\nCSeq: 3\r\nTransport: RTP/AVP/TCP;interleaved=0-1\r\n\r\n";
+        let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
+        let resp_str = String::from_utf8_lossy(&resp);
+        assert!(resp_str.contains("200 OK"), "SETUP should return 200, got: {resp_str}");
+
+        // Extract session ID
+        let session_id = resp_str
+            .lines()
+            .find_map(|line| {
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("Session") {
+                        return Some(value.trim().to_string());
+                    }
+                }
+                None
+            })
+            .expect("SETUP response should have Session header");
+
+        // 4. PLAY
+        let play_request = format!(
+            "PLAY rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 4\r\nSession: {session_id}\r\nRange: npt=0.000-\r\n\r\n"
+        );
+        let resp = send_rtsp_and_recv(
+            &mut client_writer,
+            &mut client_reader,
+            play_request.as_bytes(),
+        )
+        .await;
+        let resp_str = String::from_utf8_lossy(&resp);
+        assert!(
+            resp_str.contains("200 OK"),
+            "PLAY should return 200 for live stream, got: {resp_str}"
+        );
+
+        // 5. Send a video frame through the live stream, read interleaved RTP
+        let nal_data = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80];
+        tx.send(nal_data.clone()).await.unwrap();
+
+        // Read the interleaved RTP frame from the client side
+        // Format: $<channel:1><len:2><data>
+        let mut magic = [0u8; 1];
+        client_reader.read_exact(&mut magic).await.unwrap();
+        assert_eq!(magic[0], 0x24, "Should receive interleaved RTP magic byte");
+
+        let mut channel = [0u8; 1];
+        client_reader.read_exact(&mut channel).await.unwrap();
+        assert_eq!(channel[0], 0, "Should be on channel 0");
+
+        let mut len_buf = [0u8; 2];
+        client_reader.read_exact(&mut len_buf).await.unwrap();
+        let frame_len = u16::from_be_bytes(len_buf) as usize;
+        assert_eq!(frame_len, nal_data.len(), "Frame length should match NAL data");
+
+        let mut received_data = vec![0u8; frame_len];
+        client_reader.read_exact(&mut received_data).await.unwrap();
+        assert_eq!(received_data, nal_data, "Received data should match sent NAL data");
+
+        // 6. TEARDOWN
+        let teardown_request = format!(
+            "TEARDOWN rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 5\r\nSession: {session_id}\r\n\r\n"
+        );
+        // After TEARDOWN, the connection should close
+        // We send TEARDOWN through the writer
+        client_writer.write_all(teardown_request.as_bytes()).await.unwrap();
+        // Give time for the handler to process
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
 }
