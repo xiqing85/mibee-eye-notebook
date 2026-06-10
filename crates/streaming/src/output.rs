@@ -13,9 +13,8 @@ use std::pin::Pin;
 use tokio::sync::mpsc;
 
 use anyhow::Result;
-use tokio::io::AsyncWriteExt;
-use tokio::process::{Child, ChildStdin};
-
+use protocols::h264;
+use protocols::rtmp::{RtmpPushClient, build_video_nalus, build_video_sequence_header};
 use crate::source::MediaFrame;
 
 // ── Output trait ───────────────────────────────────────────────────────────────
@@ -169,8 +168,10 @@ impl Output for RtspOutput {
 /// Connects to an RTMP ingest point (such as MiBee NVR) and pushes
 /// H.264/AAC frames as RTMP video/audio messages.
 ///
-/// Pushes H.264 video through an ffmpeg subprocess that muxes into FLV
-/// and streams via RTMP. Audio (AAC) frames are silently dropped for now.
+/// Uses the native [RtmpPushClient] for protocol-level push without
+/// external dependencies on ffmpeg.
+///
+/// Audio frames are silently dropped for now.
 #[allow(dead_code)]
 pub struct RtmpOutput {
     /// RTMP URL (e.g. `rtmp://localhost:1935/live/stream`).
@@ -179,12 +180,16 @@ pub struct RtmpOutput {
     app_name: String,
     /// Stream key extracted from URL.
     stream_key: String,
-    /// Child process handle for the ffmpeg subprocess.
-    ffmpeg_child: Option<Child>,
-    /// Stdin pipe to ffmpeg for feeding H.264 NAL data.
-    ffmpeg_stdin: Option<ChildStdin>,
+    /// RTMP host extracted from URL.
+    host: String,
+    /// RTMP port extracted from URL.
+    port: u16,
+    /// Push client (connected on start).
+    client: Option<RtmpPushClient>,
     /// Whether the output has been started.
     started: bool,
+    /// Whether the AVC sequence header has been sent.
+    seq_header_sent: bool,
 }
 
 impl RtmpOutput {
@@ -192,28 +197,32 @@ impl RtmpOutput {
     ///
     /// The URL format is: `rtmp://host:port/app/streamKey`
     pub fn new(url: &str) -> Self {
-        // Crude URL parsing for RTMP — enough for the structural adapter.
         let (app_name, stream_key) = Self::parse_rtmp_url(url);
+        let (host, port) = Self::parse_rtmp_host_port(url);
         Self {
             url: url.to_string(),
             app_name,
             stream_key,
-            ffmpeg_child: None,
-            ffmpeg_stdin: None,
+            host,
+            port,
+            client: None,
             started: false,
+            seq_header_sent: false,
         }
     }
 
-    /// Create an RTMP output with explicit app and stream key.
+    /// Create an RTMP output with explicit host, port, app, and stream key.
     pub fn new_with_parts(host: &str, port: u16, app: &str, stream: &str) -> Self {
         let url = format!("rtmp://{host}:{port}/{app}/{stream}");
         Self {
             url,
             app_name: app.to_string(),
             stream_key: stream.to_string(),
-            ffmpeg_child: None,
-            ffmpeg_stdin: None,
+            host: host.to_string(),
+            port,
+            client: None,
             started: false,
+            seq_header_sent: false,
         }
     }
 
@@ -234,6 +243,23 @@ impl RtmpOutput {
             ("live".to_string(), "stream".to_string())
         }
     }
+
+    fn parse_rtmp_host_port(url: &str) -> (String, u16) {
+        let rest = url.trim_start_matches("rtmp://");
+        let host_part = if let Some(slash_pos) = rest.find('/') {
+            &rest[..slash_pos]
+        } else {
+            rest
+        };
+        if let Some(colon_pos) = host_part.find(':') {
+            (
+                host_part[..colon_pos].to_string(),
+                host_part[colon_pos + 1..].parse::<u16>().unwrap_or(1935),
+            )
+        } else {
+            (host_part.to_string(), 1935)
+        }
+    }
 }
 
 impl Output for RtmpOutput {
@@ -243,30 +269,17 @@ impl Output for RtmpOutput {
                 anyhow::bail!("RtmpOutput URL must not be empty");
             }
 
-            // Spawn ffmpeg to push H.264 via RTMP.
-            // ffmpeg reads raw H.264 from pipe:0 and muxes into FLV for RTMP.
-            let mut child = tokio::process::Command::new("ffmpeg")
-                .args([
-                    "-f", "h264",
-                    "-i", "pipe:0",
-                    "-c:v", "copy",
-                    "-f", "flv",
-                    &self.url,
-                ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg for RTMP push: {e}"))?;
+            let mut client = RtmpPushClient::new(
+                &self.host,
+                self.port,
+                &self.app_name,
+                &self.stream_key,
+            );
+            client.connect().await?;
 
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("Failed to capture ffmpeg stdin"))?;
-
-            self.ffmpeg_child = Some(child);
-            self.ffmpeg_stdin = Some(stdin);
+            self.client = Some(client);
             self.started = true;
+            self.seq_header_sent = false;
             tracing::info!("RtmpOutput started: {}", self.url);
             Ok(())
         })
@@ -277,20 +290,60 @@ impl Output for RtmpOutput {
         frame: &MediaFrame,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         match frame {
-            MediaFrame::Video { data, .. } => {
+            MediaFrame::Video {
+                data,
+                keyframe,
+                timestamp,
+            } => {
                 let data = data.clone();
+                let kf = *keyframe;
+                let ts = *timestamp as u32;
                 Box::pin(async move {
                     if !self.started {
                         anyhow::bail!("RtmpOutput not started");
                     }
-                    if let Some(stdin) = self.ffmpeg_stdin.as_mut() {
-                        stdin.write_all(&data).await?;
+                    let client = self.client.as_mut().ok_or_else(|| {
+                        anyhow::anyhow!("RtmpOutput client not connected")
+                    })?;
+
+                    // Parse NAL units from the frame data (handle Annex B or AVCC)
+                    let nal_units = parse_h264_nal_units(&data);
+                    if nal_units.is_empty() {
+                        return Ok(());
                     }
+
+                    // Send AVC sequence header on first keyframe
+                    let need_seq_header = kf && !self.seq_header_sent;
+                    if need_seq_header {
+                        let sps = nal_units
+                            .iter()
+                            .find(|n| n.first().map(|b| b & 0x1F) == Some(7));
+                        let pps = nal_units
+                            .iter()
+                            .find(|n| n.first().map(|b| b & 0x1F) == Some(8));
+                        if let (Some(sps), Some(pps)) = (sps, pps) {
+                            let seq_header = build_video_sequence_header(sps, pps);
+                            client.send_video(&seq_header, ts).await?;
+                        }
+                        self.seq_header_sent = true;
+                    }
+
+                    // Re-encode as AVCC (4-byte length prefix per NAL unit)
+                    let mut avcc_data = Vec::new();
+                    for nal in &nal_units {
+                        avcc_data.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+                        avcc_data.extend_from_slice(nal);
+                    }
+
+                    // Build RTMP video payload and send
+                    let rtmp_payload = build_video_nalus(&avcc_data, kf, 0);
+                    client.send_video(&rtmp_payload, ts).await?;
+
                     Ok(())
                 })
             }
             MediaFrame::Audio { .. } => Box::pin(async move {
-                // Audio frames not yet supported via ffmpeg pipe;
+                // Audio frames not yet supported via RTMP push;
                 // silently drop for now.
                 Ok(())
             }),
@@ -299,21 +352,38 @@ impl Output for RtmpOutput {
 
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // Drop stdin first to send EOF to ffmpeg.
-            if let Some(stdin) = self.ffmpeg_stdin.take() {
-                drop(stdin);
+            if let Some(mut client) = self.client.take() {
+                let _ = client.close().await;
             }
-
-            // Kill the ffmpeg process.
-            if let Some(mut child) = self.ffmpeg_child.take() {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-            }
-
             self.started = false;
             tracing::info!("RtmpOutput stopped");
             Ok(())
         })
+    }
+}
+
+/// Parse H.264 data into individual NAL units, handling both Annex B and
+/// AVCC formats.
+fn parse_h264_nal_units(data: &[u8]) -> Vec<Vec<u8>> {
+    if data.len() < 4 {
+        return vec![data.to_vec()];
+    }
+
+    // Detect format: check for Annex B start code (0x00 0x00 0x01 or
+    // 0x00 0x00 0x00 0x01) anywhere in the data.
+    let is_annex_b = data.windows(3).any(|w| w == [0x00, 0x00, 0x01]);
+
+    if is_annex_b {
+        h264::split_nal_units(data)
+            .iter()
+            .map(|n| n.to_vec())
+            .collect()
+    } else {
+        // Assume AVCC format (4-byte length prefix)
+        h264::split_nal_units_avcc(data)
+            .iter()
+            .map(|n| n.to_vec())
+            .collect()
     }
 }
 
@@ -517,7 +587,7 @@ pub(crate) mod tests {
     async fn test_rtmp_output_start_stop() {
         let mut out = RtmpOutput::new("rtmp://localhost:1935/live/stream");
         let result = out.start().await;
-        // ffmpeg may or may not be available; if start succeeded, verify stop.
+        // RTMP server may or may not be running; if start succeeded, verify stop.
         if result.is_ok() {
             assert!(out.started);
             out.stop().await.unwrap();
@@ -535,12 +605,19 @@ pub(crate) mod tests {
     async fn test_rtmp_output_send_frame() {
         let mut out = RtmpOutput::new("rtmp://localhost:1935/live/stream");
         if out.start().await.is_err() {
-            return; // ffmpeg not available
+            return; // RTMP server not available
         }
-        // Send a video frame (audio frames are silently dropped by RtmpOutput)
+        // Send a video frame with Annex B H.264 data
         let frame = MediaFrame::Video {
             keyframe: true,
-            data: vec![0x67, 0x42, 0x80],
+            data: vec![
+                // Annex B start code + SPS NAL
+                0x00, 0x00, 0x00, 0x01,
+                0x67, 0x42, 0x80, 0x1E,
+                // Annex B start code + PPS NAL
+                0x00, 0x00, 0x00, 0x01,
+                0x68, 0xCE, 0x3C, 0x80,
+            ],
             timestamp: 100,
         };
         out.send_frame(&frame).await.unwrap();
@@ -562,10 +639,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_rtmp_host_port_parsing() {
+        let (host, port) = RtmpOutput::parse_rtmp_host_port("rtmp://example.com:1935/live/stream");
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 1935);
+    }
+
+    #[test]
+    fn test_rtmp_host_port_parsing_default_port() {
+        let (host, port) = RtmpOutput::parse_rtmp_host_port("rtmp://example.com/live/stream");
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 1935);
+    }
+    #[test]
     fn test_rtmp_output_new_with_parts() {
         let out = RtmpOutput::new_with_parts("localhost", 1935, "live", "test");
         assert_eq!(out.url, "rtmp://localhost:1935/live/test");
         assert_eq!(out.app_name, "live");
         assert_eq!(out.stream_key, "test");
+        assert_eq!(out.host, "localhost");
+        assert_eq!(out.port, 1935);
     }
 }
