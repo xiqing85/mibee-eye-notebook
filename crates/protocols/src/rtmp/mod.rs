@@ -359,7 +359,7 @@ impl RtmpPushClient {
                         // Check for SetChunkSize message
                         if msg.len() == 4 {
                             let maybe_size = u32::from_be_bytes([msg[0], msg[1], msg[2], msg[3]]);
-                            if maybe_size <= 0xFFFFFF && maybe_size >= 1 {
+                            if (1..=0xFFFFFF).contains(&maybe_size) {
                                 parser.chunk_size = maybe_size;
                                 continue;
                             }
@@ -464,7 +464,7 @@ pub fn build_video_nalus(nal_data: &[u8], is_keyframe: bool, composition_offset:
     data.extend_from_slice(&[0x00, 0x00, 0x00]); // first CTS placeholder
     data.push(0x01); // AVC NALU packet type
     // Composition time offset (3 bytes, big-endian signed)
-    let offset = composition_offset.max(-8388608).min(8388607) as i32;
+    let offset = composition_offset.clamp(-8388608_i32, 8388607_i32);
     data.extend_from_slice(&offset.to_be_bytes()[1..4]);
     data.extend_from_slice(nal_data);
     data

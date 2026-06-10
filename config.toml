@@ -5,8 +5,6 @@ host = "0.0.0.0"
 [rtsp]
 server_port = 8554
 
-[rtmp]
-ingest_port = 1935
 
 [capture]
 video_device = "/dev/video0"

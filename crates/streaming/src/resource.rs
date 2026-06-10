@@ -318,9 +318,11 @@ impl StreamHandle {
 /// lifecycle.stop(id)?;
 /// assert_eq!(handle.state(), StreamState::Stopped);
 /// ```
+type StreamEntries = HashMap<Uuid, (StreamState, watch::Sender<StreamState>)>;
+
 #[derive(Clone, Debug)]
 pub struct StreamLifecycle {
-    inner: Arc<Mutex<HashMap<Uuid, (StreamState, watch::Sender<StreamState>)>>>,
+    inner: Arc<Mutex<StreamEntries>>,
 }
 
 impl StreamLifecycle {

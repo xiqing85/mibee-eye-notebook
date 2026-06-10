@@ -2058,7 +2058,7 @@ mod tests {
         // Build authenticated request
         let uri = "rtsp://localhost:8554/webcam";
         let method = "DESCRIBE";
-        let ha1 = md5_hex(format!("admin:test-realm:secret").as_bytes());
+        let ha1 = md5_hex(b"admin:test-realm:secret");
         let ha2 = md5_hex(format!("{method}:{uri}").as_bytes());
         let response = md5_hex(format!("{ha1}:{nonce}:{ha2}").as_bytes());
 
