@@ -10,8 +10,11 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use tokio::sync::mpsc;
 
 use anyhow::Result;
+use tokio::io::AsyncWriteExt;
+use tokio::process::{Child, ChildStdin};
 
 use crate::source::MediaFrame;
 
@@ -55,7 +58,6 @@ pub trait Output: Send + 'static {
 /// all connected RTSP clients via interleaved RTP/TCP.
 ///
 /// **Current status**: structural adapter — wires frame data to the RTSP
-/// server's [`build_interleaved_frame`] helper.
 #[allow(dead_code)]
 pub struct RtspOutput {
     /// Stream path (used as the RTSP mount point, e.g. "webcam").
@@ -64,17 +66,40 @@ pub struct RtspOutput {
     sdp_body: String,
     /// SSRC for RTP packets.
     ssrc: u32,
+    /// Channel sender for pushing H.264 NAL data to the RTSP server.
+    frame_tx: Option<mpsc::Sender<Vec<u8>>>,
     /// Whether the output has been started.
     started: bool,
 }
 
 impl RtspOutput {
-    /// Create a new RTSP output.
+    /// Create a new RTSP output without a channel (you must call
+    /// [`with_channel`](RtspOutput::with_channel) to enable frame delivery).
     pub fn new(stream_path: &str, sdp_body: &str, ssrc: u32) -> Self {
         Self {
             stream_path: stream_path.to_string(),
             sdp_body: sdp_body.to_string(),
             ssrc,
+            frame_tx: None,
+            started: false,
+        }
+    }
+
+    /// Create an RTSP output with a pre-registered channel sender.
+    ///
+    /// The sender is typically obtained from
+    /// [`RtspServer::register_live_stream`](protocols::rtsp_server::RtspServer::register_live_stream).
+    pub fn with_channel(
+        stream_path: String,
+        sdp_body: String,
+        ssrc: u32,
+        frame_tx: mpsc::Sender<Vec<u8>>,
+    ) -> Self {
+        Self {
+            stream_path,
+            sdp_body,
+            ssrc,
+            frame_tx: Some(frame_tx),
             started: false,
         }
     }
@@ -83,11 +108,11 @@ impl RtspOutput {
 impl Output for RtspOutput {
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // TODO(T17): Register this stream with the global RtspServer via
-            //   server.add_stream(StreamConfig::new(&self.stream_path, &self.sdp_body, self.ssrc));
-            // For now, we validate the configuration and mark as started.
             if self.stream_path.is_empty() {
                 anyhow::bail!("RtspOutput stream path must not be empty");
+            }
+            if self.frame_tx.is_none() {
+                anyhow::bail!("RtspOutput has no channel -- use with_channel() or register a live stream");
             }
             self.started = true;
             tracing::info!("RtspOutput started: /{}", self.stream_path);
@@ -97,22 +122,37 @@ impl Output for RtspOutput {
 
     fn send_frame(
         &mut self,
-        _frame: &MediaFrame,
+        frame: &MediaFrame,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        Box::pin(async move {
-            if !self.started {
-                anyhow::bail!("RtspOutput not started");
+        match frame {
+            MediaFrame::Video { data, .. } => {
+                let data = data.clone();
+                Box::pin(async move {
+                    if !self.started {
+                        anyhow::bail!("RtspOutput not started");
+                    }
+                    match &self.frame_tx {
+                        Some(tx) => {
+                            tx.send(data).await
+                                .map_err(|e| anyhow::anyhow!("RtspOutput send failed: {e}"))?;
+                            Ok(())
+                        }
+                        None => {
+                            anyhow::bail!("RtspOutput has no channel -- call with_channel()");
+                        }
+                    }
+                })
             }
-            // TODO(T17): Convert MediaFrame → RTP packet, then use
-            //   protocols::rtsp_server::build_interleaved_frame(channel, &rtp_packet)
-            // to construct the interleaved frame and write it to each connected
-            // client's TCP stream.
-            Ok(())
-        })
+            MediaFrame::Audio { .. } => {
+                // Audio frames not yet supported via RTSP; silently drop.
+                Box::pin(async move { Ok(()) })
+            }
+        }
     }
 
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
+            self.frame_tx = None;
             self.started = false;
             tracing::info!("RtspOutput stopped: /{}", self.stream_path);
             Ok(())
@@ -129,8 +169,8 @@ impl Output for RtspOutput {
 /// Connects to an RTMP ingest point (such as MiBee NVR) and pushes
 /// H.264/AAC frames as RTMP video/audio messages.
 ///
-/// **Current status**: structural adapter — will send RTMP commands and
-/// frames over a TCP socket.
+/// Pushes H.264 video through an ffmpeg subprocess that muxes into FLV
+/// and streams via RTMP. Audio (AAC) frames are silently dropped for now.
 #[allow(dead_code)]
 pub struct RtmpOutput {
     /// RTMP URL (e.g. `rtmp://localhost:1935/live/stream`).
@@ -139,6 +179,10 @@ pub struct RtmpOutput {
     app_name: String,
     /// Stream key extracted from URL.
     stream_key: String,
+    /// Child process handle for the ffmpeg subprocess.
+    ffmpeg_child: Option<Child>,
+    /// Stdin pipe to ffmpeg for feeding H.264 NAL data.
+    ffmpeg_stdin: Option<ChildStdin>,
     /// Whether the output has been started.
     started: bool,
 }
@@ -154,6 +198,8 @@ impl RtmpOutput {
             url: url.to_string(),
             app_name,
             stream_key,
+            ffmpeg_child: None,
+            ffmpeg_stdin: None,
             started: false,
         }
     }
@@ -165,6 +211,8 @@ impl RtmpOutput {
             url,
             app_name: app.to_string(),
             stream_key: stream.to_string(),
+            ffmpeg_child: None,
+            ffmpeg_stdin: None,
             started: false,
         }
     }
@@ -191,12 +239,33 @@ impl RtmpOutput {
 impl Output for RtmpOutput {
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // TODO(T19): Connect to RTMP server, perform handshake, send
-            // connect/createStream/publish commands. After that, frames can
-            // be pushed via send_frame.
             if self.url.is_empty() {
                 anyhow::bail!("RtmpOutput URL must not be empty");
             }
+
+            // Spawn ffmpeg to push H.264 via RTMP.
+            // ffmpeg reads raw H.264 from pipe:0 and muxes into FLV for RTMP.
+            let mut child = tokio::process::Command::new("ffmpeg")
+                .args([
+                    "-f", "h264",
+                    "-i", "pipe:0",
+                    "-c:v", "copy",
+                    "-f", "flv",
+                    &self.url,
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg for RTMP push: {e}"))?;
+
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Failed to capture ffmpeg stdin"))?;
+
+            self.ffmpeg_child = Some(child);
+            self.ffmpeg_stdin = Some(stdin);
             self.started = true;
             tracing::info!("RtmpOutput started: {}", self.url);
             Ok(())
@@ -205,22 +274,42 @@ impl Output for RtmpOutput {
 
     fn send_frame(
         &mut self,
-        _frame: &MediaFrame,
+        frame: &MediaFrame,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        Box::pin(async move {
-            if !self.started {
-                anyhow::bail!("RtmpOutput not started");
+        match frame {
+            MediaFrame::Video { data, .. } => {
+                let data = data.clone();
+                Box::pin(async move {
+                    if !self.started {
+                        anyhow::bail!("RtmpOutput not started");
+                    }
+                    if let Some(stdin) = self.ffmpeg_stdin.as_mut() {
+                        stdin.write_all(&data).await?;
+                    }
+                    Ok(())
+                })
             }
-            // TODO(T19): Convert MediaFrame → RTMP chunk and write to the
-            // TCP socket. Video frames go as message type 9 (video), audio
-            // as message type 8 (audio).
-            Ok(())
-        })
+            MediaFrame::Audio { .. } => Box::pin(async move {
+                // Audio frames not yet supported via ffmpeg pipe;
+                // silently drop for now.
+                Ok(())
+            }),
+        }
     }
 
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // TODO(T19): Send FCUnpublish / close connection.
+            // Drop stdin first to send EOF to ffmpeg.
+            if let Some(stdin) = self.ffmpeg_stdin.take() {
+                drop(stdin);
+            }
+
+            // Kill the ffmpeg process.
+            if let Some(mut child) = self.ffmpeg_child.take() {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+
             self.started = false;
             tracing::info!("RtmpOutput stopped");
             Ok(())
@@ -346,10 +435,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_rtsp_output_start_stop() {
-        let mut out = RtspOutput::new(
-            "webcam",
-            "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Test\r\nt=0 0\r\n",
+        let (tx, _rx) = mpsc::channel(16);
+        let mut out = RtspOutput::with_channel(
+            "webcam".to_string(),
+            "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Test\r\nt=0 0\r\n".to_string(),
             0x1234,
+            tx,
         );
         out.start().await.unwrap();
         assert!(out.started);
@@ -364,16 +455,59 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn test_rtsp_output_send_frame() {
+    async fn test_rtsp_output_no_channel_fails() {
         let mut out = RtspOutput::new("test", "s=Test", 1);
+        // Without a channel, start should fail
+        assert!(out.start().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rtsp_output_send_video_frame() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut out = RtspOutput::with_channel(
+            "test".to_string(),
+            "s=Test".to_string(),
+            1,
+            tx,
+        );
         out.start().await.unwrap();
+
         let frame = MediaFrame::Video {
             keyframe: true,
             data: vec![0x67, 0x42, 0x80],
             timestamp: 42,
         };
-        // Should not error (it's a no-op stub for now)
         out.send_frame(&frame).await.unwrap();
+
+        // Verify data arrives on the channel
+        let received = rx.recv().await.expect("Should receive data on channel");
+        assert_eq!(received, vec![0x67, 0x42, 0x80]);
+
+        out.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rtsp_output_ignore_audio() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut out = RtspOutput::with_channel(
+            "test".to_string(),
+            "s=Test".to_string(),
+            1,
+            tx,
+        );
+        out.start().await.unwrap();
+
+        // Audio frames should be silently dropped (no error, no data)
+        let frame = MediaFrame::Audio {
+            data: vec![0xFF; 160],
+            timestamp: 100,
+        };
+        out.send_frame(&frame).await.unwrap();
+
+        // Nothing should arrive on the channel
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(result.is_err(), "No data should arrive for audio frames");
+
         out.stop().await.unwrap();
     }
 
@@ -382,9 +516,13 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_rtmp_output_start_stop() {
         let mut out = RtmpOutput::new("rtmp://localhost:1935/live/stream");
-        out.start().await.unwrap();
-        assert!(out.started);
-        out.stop().await.unwrap();
+        let result = out.start().await;
+        // ffmpeg may or may not be available; if start succeeded, verify stop.
+        if result.is_ok() {
+            assert!(out.started);
+            out.stop().await.unwrap();
+            assert!(!out.started);
+        }
     }
 
     #[tokio::test]
@@ -396,9 +534,13 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_rtmp_output_send_frame() {
         let mut out = RtmpOutput::new("rtmp://localhost:1935/live/stream");
-        out.start().await.unwrap();
-        let frame = MediaFrame::Audio {
-            data: vec![0xFF; 160],
+        if out.start().await.is_err() {
+            return; // ffmpeg not available
+        }
+        // Send a video frame (audio frames are silently dropped by RtmpOutput)
+        let frame = MediaFrame::Video {
+            keyframe: true,
+            data: vec![0x67, 0x42, 0x80],
             timestamp: 100,
         };
         out.send_frame(&frame).await.unwrap();
