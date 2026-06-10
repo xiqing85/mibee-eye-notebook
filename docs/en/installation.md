@@ -1,0 +1,522 @@
+# Installation Guide
+
+This guide covers installation and deployment for notebook-cam (MiBee Rec), a professional laptop surveillance agent built in Rust.
+
+## System Requirements
+
+### Operating Systems
+- **Linux (first-class)** - Full support with V4L2/ALSA, optimized for resource usage
+- **Windows (secondary-class)** - Limited support with MSMF/WASAPI, not feature-complete
+- **macOS** - Not in scope
+
+### Software Requirements
+- **Rust 1.85+** - MSRV for Rust 2024 edition
+- **RAM**: Target <200MB RAM during operation
+- **CPU**: Target <5% CPU idle usage
+- **Disk**: ~50MB for binary + dependencies
+
+### Hardware Requirements
+- **Webcam**: V4L2-compatible (Linux) or Media Foundation (Windows)
+- **Microphone**: ALSA-compatible (Linux) or WASAPI (Windows)
+- **Network**: TCP/UDP for streaming protocols
+
+## Linux Installation
+
+### System Dependencies
+
+Install required system packages:
+
+```bash
+sudo apt install libv4l-dev libasound2-dev libclang-dev
+```
+
+### User Permissions
+
+Add your user to the video group for webcam access:
+
+```bash
+sudo usermod -aG video $USER
+```
+
+**Important**: Log out and back in for the group change to take effect.
+
+### Privileged Ports
+
+By default, notebook-cam uses:
+- Web UI: 8443 (TLS)
+- RTSP: 8554  
+- RTMP: 1935
+
+These ports avoid the privileged range (<1024). If you need to use lower ports, set capability binding:
+
+```bash
+setcap 'cap_net_bind_service=+ep' ./target/release/mibee-rec
+```
+
+## Windows Installation
+
+Windows support is secondary-class and not feature-complete. This installation is for development/testing purposes only.
+
+### System Dependencies
+
+Install required components:
+
+1. **Visual Studio Build Tools** - C++ build tools for nokhwa compilation
+2. **Media Foundation Runtime** - Built into Windows 10/11
+3. **Windows SDK** - Required for WASAPI audio support
+
+### Installation Steps
+
+1. Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+2. Enable "C++ build tools" during installation
+3. Install Rust via [rustup](https://rustup.rs/)
+
+```bash
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Install Windows dependencies (developer setup)
+choco install visualstudio2022buildtools visualstudio2022-workload-vctools
+```
+
+## Building from Source
+
+### Prerequisites
+
+Ensure you have Rust 1.85+ installed:
+
+```bash
+rustc --version  # Should be >= 1.85
+```
+
+### Build Commands
+
+```bash
+# Clone and enter the repository
+git clone https://github.com/xiqing85/mibee-eye-notebook.git
+cd mibee-rec
+
+# Debug build (development)
+cargo build
+
+# Release build (production)
+cargo build --release
+
+# Run tests
+cargo test
+
+# Lint code
+cargo ci-clippy
+
+# Format check
+cargo fmt-check
+```
+
+### Build Artifacts
+
+The binary will be at:
+- Debug: `target/debug/mibee-rec`
+- Release: `target/release/mibee-rec`
+
+## Running
+
+### CLI Arguments
+
+The binary accepts these arguments:
+
+```bash
+# Run with default config
+cargo run -- --config config.toml
+
+# Specify custom config and database path
+cargo run --release -- --config config.local.toml --db-path /path/to/database.db
+
+# Reset password (does not start server)
+cargo run -- --reset-password
+```
+
+### Command Line Options
+
+- `--config, -c`: Path to config file (default: `config.toml`)
+- `--db-path, -d`: Path to SQLite database (default: `mibee_rec.db`)
+- `--reset-password`: Reset password for a user (prompts for credentials)
+
+## Configuration File
+
+### Local Configuration
+
+Copy and customize the default configuration:
+
+```bash
+cp config.toml config.local.toml
+```
+
+Edit `config.local.toml` for local overrides. This file is gitignored and won't be committed.
+
+### Default Configuration
+
+```toml
+[web]
+port = 8443
+host = "0.0.0.0"
+
+[rtsp]
+server_port = 8554
+
+[rtmp]
+ingest_port = 1935
+
+[capture]
+video_device = "/dev/video0"
+audio_device = "default"
+
+[security]
+rate_limit_max = 20
+rate_limit_window_secs = 60
+
+[observability]
+otel_endpoint = "http://localhost:4317"
+log_level = "info"
+```
+
+### Configuration Options
+
+- **web**: Web UI settings (port, host)
+- **rtsp**: RTSP server configuration
+- **rtmp**: RTMP ingest settings
+- **capture**: Video/audio device paths
+- **security**: Rate limiting configuration
+- **observability**: Logging and metrics settings
+
+## TLS Certificates
+
+### Development Setup
+
+For development, notebook-cam automatically generates self-signed TLS certificates on first run:
+
+```bash
+# First run generates certificates
+./target/release/mibee-rec --config config.local.toml
+
+# Certificates are saved to:
+# - tls/cert.pem
+# - tls/key.pem
+```
+
+The certificates use:
+- Subject: CN=notebook-cam
+- SAN: notebook-cam.local
+- Validity: ~30 days
+
+### Production Setup
+
+For production, use certificates from a trusted CA:
+
+```bash
+# Using Let's Encrypt with certbot
+sudo apt install certbot
+sudo certbot certonly --standalone -d your-domain.com
+
+# Copy certificates to appropriate location
+sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem ./tls/cert.pem
+sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem ./tls/key.pem
+
+# Set appropriate permissions
+sudo chown $USER:$USER ./tls/cert.pem ./tls/key.pem
+chmod 600 ./tls/cert.pem ./tls/key.pem
+```
+
+### Certificate Management
+
+- **Auto-renewal**: Set up cron job for Let's Encrypt certificates
+- **Rotation**: Replace certificates and restart the service
+- **Backup**: Keep certificate backups in secure location
+
+## Deployment
+
+### Systemd Service
+
+Create a systemd service file at `/etc/systemd/system/mibee-rec.service`:
+
+```ini
+[Unit]
+Description=MiBee Rec Surveillance Agent
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=mibee
+Group=mibee
+WorkingDirectory=/opt/mibee-rec
+ExecStart=/opt/mibee-rec/target/release/mibee-rec --config /opt/mibee-rec/config.local.toml
+Restart=always
+RestartSec=10
+Environment=RUST_LOG=info
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Service Management
+
+```bash
+# Enable and start the service
+sudo systemctl enable mibee-rec
+sudo systemctl start mibee-rec
+
+# Check status
+sudo systemctl status mibee-rec
+
+# View logs
+sudo journalctl -u mibee-rec -f
+
+# Restart service
+sudo systemctl restart mibee-rec
+```
+
+### User Setup
+
+Create dedicated user for the service:
+
+```bash
+sudo useradd -r -s /bin/false mibee
+sudo mkdir -p /opt/mibee-rec
+sudo chown mibee:mibee /opt/mibee-rec
+```
+
+### Reverse Proxy Configuration
+
+#### Nginx with TLS Termination
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    ssl_certificate /path/to/your/cert.pem;
+    ssl_certificate_key /path/to/your/key.pem;
+
+    # Security headers
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Proxy to notebook-cam
+    location / {
+        proxy_pass https://localhost:8443;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Timeouts
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+}
+```
+
+### Podman/Docker Considerations
+
+For containerized deployment:
+
+```bash
+# Build with Podman
+podman build -t mibee-rec .
+
+# Run with volume mounts
+podman run -d \
+  --name mibee-rec \
+  --restart unless-stopped \
+  --cap-add=NET_BIND_SERVICE \
+  -v /opt/mibee-rec/config.local.toml:/config.toml:ro \
+  -v /opt/mibee-rec/tls:/tls:ro \
+  -p 8443:8443 \
+  -p 8554:8554 \
+  -p 1935:1935 \
+  mibee-rec
+```
+
+## Troubleshooting
+
+### Common Issues
+
+#### Permission Denied (Webcam Access)
+
+**Symptom**: "Permission denied" when accessing webcam
+
+**Solution**: Verify user is in video group
+
+```bash
+# Check group membership
+groups $USER
+
+# If not in video group, add and re-login
+sudo usermod -aG video $USER
+# Log out and back in
+```
+
+#### Device Not Found
+
+**Symptom**: Camera or microphone device not found
+
+**Solution**: Check device paths and permissions
+
+```bash
+# List video devices
+ls /dev/video*
+
+# List audio devices
+arecord -l
+
+# Check device permissions
+ls -la /dev/video0
+```
+
+#### Port in Use
+
+**Symptom**: Port already in use error
+
+**Solution**: Check port usage and adjust configuration
+
+```bash
+# Check port usage
+sudo netstat -tulpn | grep 8443
+sudo netstat -tulpn | grep 8554
+
+# Kill conflicting processes
+sudo fuser -k 8443/tcp
+```
+
+#### TLS Certificate Issues
+
+**Symptom**: TLS handshake failures or certificate errors
+
+**Solution**: Regenerate or replace certificates
+
+```bash
+# Remove existing certificates
+rm -f tls/cert.pem tls/key.pem
+
+# Restart service to regenerate
+sudo systemctl restart mibee-rec
+```
+
+#### Database Connection Errors
+
+**Symptom**: SQLite connection failed errors
+
+**Solution**: Check database path and permissions
+
+```bash
+# Check database file
+ls -la mibee_rec.db
+
+# Check permissions
+chmod 640 mibee_rec.db
+```
+
+#### Resource Limits Hit
+
+**Symptom**: "Too many streams" or memory limit errors
+
+**Solution**: Adjust resource limits or reduce concurrent streams
+
+```bash
+# Check current resource usage
+systemctl show mibee-rec --property=MemoryCurrent,LimitNOFILE
+
+# Adjust systemd service limits if needed
+```
+
+### Performance Issues
+
+#### High CPU Usage
+
+**Solution**: Check streaming configuration and resource limits
+
+```bash
+# Monitor resource usage
+top -p $(pidof mibee-rec)
+htop -p $(pidof mibee-rec)
+
+# Check streaming logs for errors
+sudo journalctl -u mibee-rec | grep -i error
+```
+
+#### Memory Usage High
+
+**Solution**: Check concurrent streams and buffer configuration
+
+```bash
+# Check memory usage
+ps aux | grep mibee-rec
+
+# Check streaming configuration
+grep -i buffer config.local.toml
+```
+
+### Debug Mode
+
+Enable debug logging for troubleshooting:
+
+```bash
+# Set RUST_LOG environment variable
+RUST_LOG=debug ./target/release/mibee-rec --config config.local.toml
+
+# Or set in systemd service file
+Environment="RUST_LOG=debug"
+```
+
+### System Information
+
+For bug reports, collect system information:
+
+```bash
+# System and Rust version
+rustc --version
+cargo --version
+uname -a
+
+# Package versions (Ubuntu/Debian)
+dpkg -l | grep -E "(libv4l|libasound|libclang)"
+
+# Kernel modules
+lsmod | grep -E "(v4l2|snd)"
+
+# Network information
+ip a
+ss -tulpn | grep -E "(8443|8554|1935)"
+```
+
+### Getting Help
+
+If you continue to have issues:
+
+1. Check the [GitHub Issues](https://github.com/xiqing85/mibee-eye-notebook/issues)
+2. Review [full documentation](https://github.com/xiqing85/mibee-eye-notebook/docs/en/)
+3. Create a detailed issue with:
+   - System information (OS, version)
+   - Exact error messages
+   - Configuration files (redact sensitive data)
+   - Steps to reproduce
+   - Expected vs actual behavior
