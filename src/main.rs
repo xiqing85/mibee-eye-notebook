@@ -1,5 +1,8 @@
 use clap::Parser;
+use protocols::rtsp_server::{RtspServer, RtspServerConfig};
+use protocols::rtmp::RtmpServer;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "mibee-rec", about = "MiBee Rec — Professional laptop surveillance agent")]
@@ -43,13 +46,36 @@ async fn main() -> anyhow::Result<()> {
     let db_path = args.db_path.to_string_lossy().to_string();
     let conn = web::db::init_db(&db_path)?;
 
+    // Start RTSP server in background task
+    let rtsp_config = RtspServerConfig {
+        port: config.rtsp.server_port,
+        ..Default::default()
+    };
+    let rtsp_server = Arc::new(RtspServer::new(rtsp_config));
+    let rtsp_server_clone = rtsp_server.clone();
+    tokio::spawn(async move {
+        if let Err(e) = rtsp_server_clone.run().await {
+            tracing::error!(error = %e, "RTSP server error");
+        }
+    });
+    tracing::info!(port = config.rtsp.server_port, "RTSP server started");
+
+    // Start RTMP server in background task (optional — for external NVR push)
+    let rtmp_server = RtmpServer::new(config.rtmp.ingest_port, "live");
+    tokio::spawn(async move {
+        if let Err(e) = rtmp_server.run().await {
+            tracing::warn!(error = %e, "RTMP server failed to start (may be port in use)");
+        }
+    });
+    tracing::info!(port = config.rtmp.ingest_port, "RTMP server started");
+
     println!(
         "mibee-rec server starting on {}:{}...",
         config.web.host, config.web.port
     );
-
-    // Run server (blocks until shutdown)
-    web::server::run(&config.web.host, config.web.port, conn).await?;
+    // Create StreamManager and run server (blocks until shutdown)
+    let stream_manager = Arc::new(web::stream_manager::StreamManager::new());
+    web::server::run(&config.web.host, config.web.port, conn, stream_manager, rtsp_server).await?;
 
     Ok(())
 }

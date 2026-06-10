@@ -3,6 +3,7 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
+use protocols::rtsp_server::{RtspServer, RtspServerConfig};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -12,6 +13,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::assets;
 use crate::routes;
+use crate::stream_manager::StreamManager;
 
 // ---------------------------------------------------------------------------
 // Shared state types
@@ -25,6 +27,8 @@ pub struct ActiveStreams(pub Arc<Mutex<HashMap<String, bool>>>);
 pub struct AppRouterState {
     pub db: Arc<Mutex<Connection>>,
     pub active: ActiveStreams,
+    pub stream_manager: Arc<StreamManager>,
+    pub rtsp_server: Arc<RtspServer>,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,16 +70,18 @@ async fn static_handler() -> impl IntoResponse {
 pub fn build_app_with_state(state: AppRouterState) -> Router {
     let db = state.db.clone();
     let active = state.active.clone();
+    let stream_manager = state.stream_manager.clone();
+    let rtsp_server = state.rtsp_server.clone();
 
     // -- Auth routes (public — these ARE the login/setup endpoints) --
     let login_route = Router::new()
-        .route("/api/auth/login", post(routes::auth_placeholder_handler))
+        .route("/api/auth/login", post(routes::login_handler))
         .route_layer(middleware::from_fn(security::middleware::rate_limit));
 
     let auth_routes = Router::new()
         .merge(login_route)
         .route("/api/auth/setup", post(routes::setup_handler))
-        .route("/api/auth/logout", post(routes::auth_placeholder_handler));
+        .route("/api/auth/logout", post(routes::logout_handler));
 
     // -- Protected routes (require auth) --
     let protected_routes = Router::new()
@@ -99,6 +105,9 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/settings", put(routes::settings::update_settings))
         // ONVIF
         .route("/api/onvif/discover", get(routes::onvif::discover))
+        // Device enumeration
+        .route("/api/devices/video", get(routes::devices::list_video_devices))
+        .route("/api/devices/audio", get(routes::devices::list_audio_devices))
         // Auth middleware
         .route_layer(middleware::from_fn(security::middleware::require_auth));
 
@@ -116,19 +125,24 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // Setup-required middleware — blocks non-allowed routes during first run
         .route_layer(middleware::from_fn(security::middleware::require_setup))
         // Extensions — must be OUTER layer so middleware can access db
+        .layer(Extension(stream_manager))
+        .layer(Extension(rtsp_server))
         .layer(Extension(active))
         .layer(Extension(db))
         // CORS — permissive for localhost dev
         .layer(CorsLayer::permissive())
 }
 
-/// Convenience builder that creates a default `ActiveStreams`.
+/// Convenience builder that creates a default `ActiveStreams`, `StreamManager`,
+/// and `RtspServer`.
 ///
 /// Provided for backward compatibility with existing tests.
 pub fn build_app(db: Arc<Mutex<Connection>>) -> Router {
     build_app_with_state(AppRouterState {
         db,
         active: ActiveStreams::default(),
+        stream_manager: Arc::new(StreamManager::new()),
+        rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
     })
 }
 
@@ -136,7 +150,13 @@ pub fn build_app(db: Arc<Mutex<Connection>>) -> Router {
 /// router, and start serving.
 ///
 /// This function blocks the current task until the server shuts down.
-pub async fn run(host: &str, port: u16, db: Connection) -> anyhow::Result<()> {
+pub async fn run(
+    host: &str,
+    port: u16,
+    db: Connection,
+    stream_manager: Arc<StreamManager>,
+    rtsp_server: Arc<RtspServer>,
+) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
 
@@ -144,6 +164,8 @@ pub async fn run(host: &str, port: u16, db: Connection) -> anyhow::Result<()> {
     let state = AppRouterState {
         db,
         active: ActiveStreams::default(),
+        stream_manager,
+        rtsp_server,
     };
     let app = build_app_with_state(state);
 
