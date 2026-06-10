@@ -305,8 +305,7 @@ mod tests {
     async fn test_health_handler_returns_ok() {
         let resp = health_handler().await;
         assert_eq!(resp.0["status"], "ok");
-        let uptime = resp.0["uptime"].as_u64().expect("uptime should be a u64");
-        assert!(uptime == 0 || uptime > 0, "uptime should be valid");
+        let _uptime = resp.0["uptime"].as_u64().expect("uptime should be a u64");
     }
 
     #[tokio::test]

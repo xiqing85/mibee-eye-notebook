@@ -56,22 +56,6 @@ impl Default for RtspConfig {
 // RTMP
 // ---------------------------------------------------------------------------
 
-/// RTMP ingest server configuration (listening port).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RtmpConfig {
-    #[serde(default = "default_rtmp_port")]
-    pub ingest_port: u16,
-}
-
-fn default_rtmp_port() -> u16 {
-    1935
-}
-
-impl Default for RtmpConfig {
-    fn default() -> Self {
-        Self { ingest_port: 1935 }
-    }
-}
 // ---------------------------------------------------------------------------
 // ONVIF Device
 // ---------------------------------------------------------------------------
@@ -340,10 +324,6 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub rtsp: RtspConfig,
-
-    #[serde(default)]
-    pub rtmp: RtmpConfig,
-
     #[serde(default)]
     pub capture: CaptureConfig,
 
@@ -393,11 +373,6 @@ mod tests {
         assert_eq!(cfg.server_port, 8554);
     }
 
-    #[test]
-    fn test_rtmp_config_default() {
-        let cfg = RtmpConfig::default();
-        assert_eq!(cfg.ingest_port, 1935);
-    }
 
     #[test]
     fn test_capture_config_default() {
@@ -465,7 +440,6 @@ fn test_rtmp_push_config_default() {
         assert_eq!(cfg.web.port, 8443);
         assert_eq!(cfg.web.host, "0.0.0.0");
         assert_eq!(cfg.rtsp.server_port, 8554);
-        assert_eq!(cfg.rtmp.ingest_port, 1935);
         assert_eq!(cfg.capture.video_device, "/dev/video0");
         assert_eq!(cfg.capture.audio_device, "default");
         assert_eq!(cfg.security.rate_limit_max, 20);
@@ -669,7 +643,6 @@ push_url = ""
         let toml_str = r#"
 [web]
 [rtsp]
-[rtmp]
 [capture]
 [security]
 [observability]
@@ -681,7 +654,6 @@ push_url = ""
         assert_eq!(cfg.web.port, 8443, "web.port");
         assert_eq!(cfg.web.host, "0.0.0.0", "web.host");
         assert_eq!(cfg.rtsp.server_port, 8554, "rtsp.server_port");
-        assert_eq!(cfg.rtmp.ingest_port, 1935, "rtmp.ingest_port");
         assert_eq!(cfg.capture.video_device, "/dev/video0", "capture.video_device");
         assert_eq!(cfg.capture.audio_device, "default", "capture.audio_device");
         assert_eq!(cfg.security.rate_limit_max, 20, "security.rate_limit_max");

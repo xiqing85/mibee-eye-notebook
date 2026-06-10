@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(consumed, 9);
         match value {
             Amf0Value::Number(n) => {
-                assert!((n - 3.141592653589793).abs() < 1e-10);
+                assert!((n - std::f64::consts::PI).abs() < 1e-10);
             }
             _ => panic!("Expected number"),
         }

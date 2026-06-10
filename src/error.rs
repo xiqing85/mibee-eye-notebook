@@ -103,7 +103,7 @@ mod tests {
     fn test_from_std_io_error() {
         // std::io::Error converts via tokio::io::Error::from()
         let std_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "std io error");
-        let err = Error::Io(tokio::io::Error::from(std_err));
+        let err = Error::Io(std_err);
         assert!(matches!(err, Error::Io(_)));
         assert_eq!(err.to_string(), "I/O error: std io error");
     }

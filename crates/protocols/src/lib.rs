@@ -14,6 +14,6 @@ pub mod rtsp_server;
 mod tests {
     #[test]
     fn it_works() {
-        assert!(true);
+        // Intentionally empty — verifies the crate compiles and links in test mode
     }
 }

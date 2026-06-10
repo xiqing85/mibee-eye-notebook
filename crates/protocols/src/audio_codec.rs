@@ -376,7 +376,7 @@ mod tests {
         let samples = vec![0i16; 160];
         let packets = packetizer.packetize_pcm_ulaw(&samples, 8000, 1, 1000, 0xABCD1234);
 
-        assert!(packets.len() >= 1, "Should produce at least 1 packet");
+        assert!(!packets.is_empty(), "Should produce at least 1 packet");
         let packet = &packets[0];
 
         // Verify packet is at least header (12 bytes) + payload

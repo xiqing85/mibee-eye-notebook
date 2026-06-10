@@ -6,12 +6,15 @@
 //! - Client sends C2
 //! - Handshake complete
 
+#[cfg(test)]
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
 use std::io::{Read, Write};
 
 pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_SIZE: usize = 1536;
 
+#[cfg(test)]
 /// Perform RTMP handshake as a server
 ///
 /// Sequence:
@@ -79,6 +82,7 @@ pub fn handle_handshake<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Re
     Ok(())
 }
 
+#[cfg(test)]
 /// Generate S1 handshake packet
 ///
 /// Format: 4 bytes time + 4 bytes zero + 1528 bytes random
@@ -105,6 +109,7 @@ fn generate_s1() -> [u8; HANDSHAKE_SIZE] {
     s1
 }
 
+#[cfg(test)]
 /// Generate S2 handshake packet (echo of C1)
 ///
 /// Format: 4 bytes time (echo of C1) + 4 bytes time2 (when C1 was read) + 1528 bytes random echo
@@ -149,6 +154,7 @@ pub fn generate_c2(s1: &[u8; HANDSHAKE_SIZE], c1: &[u8; HANDSHAKE_SIZE]) -> [u8;
     c2
 }
 
+#[cfg(test)]
 /// Perform RTMP handshake as a client
 ///
 /// Sends C0+C1, receives S0+S1+S2, verifies S2 echoes C1, sends C2.

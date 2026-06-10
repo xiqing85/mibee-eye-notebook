@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(body["name"], "Front Door");
         assert_eq!(body["camera_type"], "rtsp");
         assert_eq!(body["status"], "stopped");
-        assert!(body["id"].as_str().unwrap().len() > 0);
+        assert!(!body["id"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]

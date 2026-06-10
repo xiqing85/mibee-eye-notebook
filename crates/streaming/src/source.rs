@@ -142,7 +142,7 @@ pub(crate) mod tests {
             timestamp: 1000,
         };
         assert!(frame.timestamp() == 1000);
-        assert!(frame.data() == &[0x00, 0x00, 0x00, 0x01, 0x67]);
+        assert!(frame.data() == [0x00, 0x00, 0x00, 0x01, 0x67]);
         assert!(matches!(frame, MediaFrame::Video { .. }));
     }
 

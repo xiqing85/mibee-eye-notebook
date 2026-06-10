@@ -223,6 +223,7 @@ impl StreamHub {
             guard.outputs.keys().copied().collect()
         };
 
+        #[allow(clippy::unnecessary_to_owned)]
         for id in ids.iter().copied() {
             let inner = inner.clone();
             let bt = self.broadcast_tx.clone();

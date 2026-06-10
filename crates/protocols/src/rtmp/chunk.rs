@@ -680,7 +680,7 @@ mod tests {
         data.extend_from_slice(&1u32.to_le_bytes()); // 4 bytes stream ID
 
         // Chunk data (50 bytes)
-        data.extend_from_slice(&vec![0xAA; 50]);
+        data.extend_from_slice(&[0xAA; 50]);
 
         let mut parser = ChunkStreamParser::new();
         let mut reader = data.as_slice();
@@ -703,11 +703,11 @@ mod tests {
         data.extend_from_slice(&len[1..4]);
         data.push(MessageType::Command.to_u8());
         data.extend_from_slice(&1u32.to_le_bytes());
-        data.extend_from_slice(&vec![0xAA; 128]);
+        data.extend_from_slice(&[0xAA; 128]);
 
         // Chunk 2: Type 3 continuation + 72 bytes data
         data.push(0xC3); // Basic header: Type 3, CS ID 3
-        data.extend_from_slice(&vec![0xBB; 72]);
+        data.extend_from_slice(&[0xBB; 72]);
 
         let mut parser = ChunkStreamParser::new();
         let mut reader = data.as_slice();
