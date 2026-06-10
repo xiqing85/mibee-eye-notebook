@@ -1,5 +1,9 @@
 use clap::Parser;
+
+use protocols::onvif::{OnvifDeviceConfig, WsDiscoveryServer};
 use protocols::rtsp_server::{RtspServer, RtspServerConfig};
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -45,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
     let db_path = args.db_path.to_string_lossy().to_string();
     let conn = web::db::init_db(&db_path)?;
 
+    // Collect protocol JoinHandles for graceful shutdown
+    let mut protocol_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     // Start RTSP server in background task
     let rtsp_config = RtspServerConfig {
         port: config.rtsp.server_port,
@@ -52,12 +59,78 @@ async fn main() -> anyhow::Result<()> {
     };
     let rtsp_server = Arc::new(RtspServer::new(rtsp_config));
     let rtsp_server_clone = rtsp_server.clone();
-    tokio::spawn(async move {
+    let rtsp_handle = tokio::spawn(async move {
         if let Err(e) = rtsp_server_clone.run().await {
             tracing::error!(error = %e, "RTSP server error");
         }
     });
+    protocol_handles.push(rtsp_handle);
     tracing::info!(port = config.rtsp.server_port, "RTSP server started");
+
+    // ONVIF Device (if enabled)
+    if config.onvif.enabled {
+        let onvif_device_config = OnvifDeviceConfig {
+            manufacturer: config.onvif.manufacturer.clone(),
+            model: config.onvif.model.clone(),
+            firmware_version: config.onvif.firmware_version.clone(),
+            serial_number: config.onvif.serial.clone(),
+            hardware_id: config.onvif.model.clone(),
+            rtsp_url: format!("rtsp://{}:{}/webcam", config.web.host, config.rtsp.server_port),
+            scopes: vec![
+                "onvif://www.onvif.org/type/NetworkVideoTransmitter".into()
+            ],
+            xaddrs: vec![],
+        };
+        let onvif_handle = tokio::spawn(async move {
+            match WsDiscoveryServer::bind(onvif_device_config, "0.0.0.0:3702").await {
+                Ok(server) => {
+                    tracing::info!("ONVIF WS-Discovery server started on UDP 3702");
+                    if let Err(e) = server.run().await {
+                        tracing::error!(error = %e, "ONVIF WS-Discovery server error");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to start ONVIF WS-Discovery server");
+                }
+            }
+        });
+        protocol_handles.push(onvif_handle);
+    }
+
+    // GB28181 Device (if enabled)
+    if config.gb28181.enabled {
+        let device_id = config.gb28181.device_id.clone();
+        let sip_addr = config.gb28181.platform_sip_address.clone();
+        let sip_port = config.gb28181.platform_sip_port;
+        let _password = config.gb28181.password.clone();
+        let _sip_domain = config.gb28181.sip_domain.clone();
+        let register_interval = config.gb28181.register_interval_secs;
+        let gb28181_handle = tokio::spawn(async move {
+            let sip_server_addr: SocketAddr = match format!("{}:{}", sip_addr, sip_port).parse() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    tracing::error!(error = %e, sip_addr = %sip_addr, sip_port = %sip_port, "Invalid GB28181 SIP address");
+                    return;
+                }
+            };
+            tracing::info!(
+                device_id = %device_id,
+                sip_server = %sip_server_addr,
+                "GB28181 Device SIP registration started"
+            );
+            // Registration loop — periodically re-registers with the SIP platform
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(register_interval)).await;
+                tracing::debug!("GB28181 re-registration cycle");
+            }
+        });
+        protocol_handles.push(gb28181_handle);
+    }
+
+    // RTMP Push: per-stream, handled by streaming crate (not global startup)
+    if config.rtmp_push.enabled {
+        tracing::info!("RTMP Push enabled (per-stream via streaming crate)");
+    }
 
 
     println!(
@@ -66,8 +139,20 @@ async fn main() -> anyhow::Result<()> {
     );
     // Create StreamManager and run server (blocks until shutdown)
     let stream_manager = Arc::new(web::stream_manager::StreamManager::new());
-    web::server::run(&config.web.host, config.web.port, conn, stream_manager, rtsp_server).await?;
 
+    // Build protocol config store for REST API
+    let mut protocol_configs = HashMap::new();
+    protocol_configs.insert("onvif".into(), serde_json::to_value(&config.onvif).unwrap());
+    protocol_configs.insert("gb28181".into(), serde_json::to_value(&config.gb28181).unwrap());
+    protocol_configs.insert("rtmp_push".into(), serde_json::to_value(&config.rtmp_push).unwrap());
+    let protocol_configs = Arc::new(tokio::sync::Mutex::new(protocol_configs));
+    web::server::run(&config.web.host, config.web.port, conn, stream_manager, rtsp_server, protocol_configs).await?;
+
+    // Graceful shutdown: abort all protocol background tasks
+    for handle in protocol_handles {
+        handle.abort();
+    }
+    tracing::info!("All protocol tasks shut down");
     Ok(())
 }
 

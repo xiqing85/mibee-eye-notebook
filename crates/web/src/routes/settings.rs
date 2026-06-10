@@ -106,6 +106,7 @@ mod tests {
             rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
         let token = {
             let c = state.db.lock().await;
@@ -140,6 +141,7 @@ mod tests {
             rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
         let token = {
             let c = state.db.lock().await;
@@ -226,6 +228,7 @@ mod tests {
             rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
         let app = crate::server::build_app_with_state(state);
 
