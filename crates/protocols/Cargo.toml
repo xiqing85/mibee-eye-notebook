@@ -1,0 +1,15 @@
+[package]
+name = "protocols"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+ring = { version = "0.17", features = ["alloc"] }
+hex = "0.4"
+rand.workspace = true
+oxvif = { version = "0.9", features = ["mock"] }

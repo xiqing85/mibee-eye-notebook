@@ -1,0 +1,13 @@
+[package]
+name = "capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+nokhwa = { workspace = true, features = ["input-native", "camera-sync-impl"] }
+cpal.workspace = true

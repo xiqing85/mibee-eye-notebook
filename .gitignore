@@ -1,0 +1,39 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config overrides (user-local)
+config.local.toml
+
+# Environment files
+.env
+.env.*
+
+# AI agent knowledge bases (not for distribution)
+AGENTS.md
+**/AGENTS.md
+
+# AI orchestration workspace
+.omo/
+.opencode/
+
+# Vendored .deb packages (system deps, not project code)
+*.deb
+
+# Dev TLS certificates (generated at runtime)
+tls/*.pem
+crates/web/tls/*.pem
+
+# Database files (local runtime)
+*.db

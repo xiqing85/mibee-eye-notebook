@@ -1,0 +1,23 @@
+[package]
+name = "security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+axum.workspace = true
+tower.workspace = true
+rusqlite.workspace = true
+bcrypt.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+aes-gcm = "0.10"
+sha2 = "0.10"
+serde_json.workspace = true

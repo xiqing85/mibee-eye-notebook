@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>notebook-cam</title>
+<style>
+:root{--bg:#0a0e17;--bs:#111722;--sf:#182034;--in:#0f1522;--ho:#1e2740;--ac:#00bcd4;--ah:#26c6da;--ad:rgba(0,188,212,0.12);--ok:#4caf50;--od:rgba(76,175,80,0.12);--wa:#ff9800;--wd:rgba(255,152,0,0.12);--da:#ef5350;--dd:rgba(239,83,80,0.12);--bd:#1e2740;--bf:#00bcd4;--t1:#e8edf5;--t2:#8b95a8;--t3:#5a6478;--r4:4px;--r6:6px;--r10:10px;--s4:4px;--s8:8px;--s16:16px;--s24:24px;--s32:32px;--s48:48px;--mo:'JetBrains Mono','Fira Code',Consolas,monospace;--ss:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--sm:0 1px 3px rgba(0,0,0,0.3);--sl:0 8px 32px rgba(0,0,0,0.5);--tr:150ms ease}
+*,::after,::before{box-sizing:border-box;margin:0;padding:0}
+html{font-size:14px}
+body{font-family:var(--ss);background:var(--bg);color:var(--t1);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:var(--ac);text-decoration:none;transition:color var(--tr)}
+a:hover{color:var(--ah)}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--t3)}
+.h{display:none!important}
+.flex{display:flex}
+.tc{text-align:center}
+.tm{color:var(--t2)}
+.nv{display:flex;align-items:center;height:56px;padding:0 var(--s24);background:var(--bs);border-bottom:1px solid var(--bd);gap:var(--s24);position:sticky;top:0;z-index:100}
+.nb{font-family:var(--mo);font-weight:700;font-size:1.071rem;color:var(--ac);letter-spacing:-0.01em;white-space:nowrap}
+.nl{display:flex;gap:var(--s4);flex:1}
+.nl a{padding:var(--s8) var(--s16);border-radius:var(--r6);color:var(--t2);font-size:.929rem;font-weight:500;transition:all var(--tr)}
+.nl a.active,.nl a:hover{color:var(--t1);background:var(--ho)}
+.nr{display:flex;align-items:center;gap:var(--s16)}
+#lo{padding:var(--s4) var(--s16);border-radius:var(--r6);color:var(--t2);font-size:.857rem;transition:all var(--tr);cursor:pointer;border:1px solid var(--bd);background:0 0}
+#lo:hover{color:var(--da);border-color:var(--da);background:var(--dd)}
+.pg{display:none;padding:var(--s24);max-width:1200px;margin:0 auto;width:100%}
+.pg.a{display:block}
+.ph{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--s24);flex-wrap:wrap;gap:var(--s16)}
+.ph h1{font-size:1.429rem;font-weight:700;letter-spacing:-0.01em}
+.fg{margin-bottom:var(--s24)}
+.fg label{display:block;font-size:.929rem;font-weight:500;margin-bottom:var(--s8)}
+.fg .ht{display:block;font-size:.786rem;color:var(--t3);margin-top:var(--s4)}
+input[type=text],input[type=password],input[type=url],input[type=number],select,textarea{width:100%;padding:var(--s8) var(--s16);background:var(--in);border:1px solid var(--bd);border-radius:var(--r6);color:var(--t1);font-family:var(--ss);font-size:.929rem;line-height:1.5;outline:0;transition:border-color var(--tr),box-shadow var(--tr)}
+input:focus,select:focus,textarea:focus{border-color:var(--bf);box-shadow:0 0 0 3px var(--ad)}
+input::placeholder{color:var(--t3)}
+select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b95a8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:36px}
+.b{display:inline-flex;align-items:center;justify-content:center;gap:var(--s8);padding:var(--s8) var(--s24);border-radius:var(--r6);font-family:var(--ss);font-size:.929rem;font-weight:500;cursor:pointer;transition:all var(--tr);border:1px solid transparent;white-space:nowrap;user-select:none}
+.b:disabled{opacity:.5;cursor:not-allowed}
+.bp{background:var(--ac);color:var(--bg);border-color:var(--ac)}
+.bp:hover:not(:disabled){background:var(--ah)}
+.bs{background:0 0;color:var(--t1);border-color:var(--bd)}
+.bs:hover:not(:disabled){background:var(--ho);border-color:var(--t3)}
+.bd{background:0 0;color:var(--da);border-color:var(--da)}
+.bd:hover:not(:disabled){background:var(--dd)}
+.bsm{padding:var(--s4) var(--s16);font-size:.857rem}
+.ap{display:flex;justify-content:center;align-items:center;min-height:100vh;padding:var(--s24)}
+.ac{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s48);width:100%;max-width:400px;box-shadow:var(--sl)}
+.ac .lg{font-family:var(--mo);font-size:1.571rem;font-weight:700;color:var(--ac);margin-bottom:var(--s24);letter-spacing:-0.02em}
+.ac h1{font-size:1.429rem;font-weight:700;margin-bottom:var(--s4)}
+.ac .st{color:var(--t2);font-size:.929rem;margin-bottom:var(--s32)}
+.ae{background:var(--dd);border:1px solid var(--da);border-radius:var(--r6);padding:var(--s8) var(--s16);color:var(--da);font-size:.857rem;margin-bottom:var(--s16);display:none}
+.ae.s{display:block}
+.tc{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:var(--s8) var(--s16);font-size:.786rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);border-bottom:1px solid var(--bd);white-space:nowrap}
+td{padding:var(--s16);font-size:.929rem;border-bottom:1px solid rgba(30,39,64,.6);vertical-align:middle}
+tr:hover{background:var(--ho)}
+tr:last-child td{border-bottom:none}
+.ca{display:flex;gap:var(--s4);flex-wrap:nowrap}
+.bg{display:inline-flex;align-items:center;gap:var(--s4);padding:2px var(--s8);border-radius:20px;font-size:.786rem;font-weight:500;white-space:nowrap}
+.bg::before{content:'';width:6px;height:6px;border-radius:50%}
+.bg-s{background:var(--od);color:var(--ok)}
+.bg-s::before{background:var(--ok)}
+.bg-p{background:var(--wd);color:var(--wa)}
+.bg-p::before{background:var(--wa)}
+.bg-r{background:var(--ad);color:var(--ac)}
+.bg-r::before{background:var(--ac)}
+.bg-e{background:var(--dd);color:var(--da)}
+.bg-e::before{background:var(--da)}
+.mo{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:200;padding:var(--s24)}
+.md{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);width:100%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:var(--sl)}
+.mh{display:flex;align-items:center;justify-content:space-between;padding:var(--s24);border-bottom:1px solid var(--bd)}
+.mh h2{font-size:1.143rem;font-weight:600}
+.mc{background:0 0;border:none;color:var(--t3);font-size:1.429rem;cursor:pointer;padding:var(--s4);line-height:1;border-radius:var(--r4);transition:all var(--tr)}
+.mc:hover{color:var(--t1);background:var(--ho)}
+.mb{padding:var(--s24)}
+.mf{display:flex;justify-content:flex-end;gap:var(--s8);padding:var(--s16) var(--s24);border-top:1px solid var(--bd)}
+.vp{background:#000;border-radius:var(--r10);aspect-ratio:16/9;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--s16);color:var(--t3);border:1px solid var(--bd)}
+.vp .vi{font-size:3rem;opacity:.4}
+.vp h3{color:var(--t2);font-size:1.143rem}
+.ig{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:var(--s16)}
+.ii{display:flex;flex-direction:column;gap:var(--s4)}
+.ii .l{font-size:.786rem;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);font-weight:600}
+.ii .v{font-size:.929rem;color:var(--t1);font-family:var(--mo)}
+.to{position:fixed;top:var(--s24);right:var(--s24);z-index:300;display:flex;flex-direction:column;gap:var(--s8);pointer-events:none}
+.to>div{padding:var(--s8) var(--s24);border-radius:var(--r6);font-size:.929rem;box-shadow:0 4px 12px rgba(0,0,0,.4);pointer-events:auto;max-width:360px}
+.to-s{background:#1b5e20;color:#a5d6a7;border:1px solid #2e7d32}
+.to-e{background:#b71c1c;color:#ef9a9a;border:1px solid #c62828}
+.to-i{background:#0d47a1;color:#90caf9;border:1px solid #1565c0}
+.sg{display:flex;flex-direction:column;gap:var(--s24)}
+.sh h3{font-size:1rem;font-weight:600;margin-bottom:var(--s16);padding-bottom:var(--s8);border-bottom:1px solid var(--bd)}
+.sp{display:inline-block;width:20px;height:20px;border:2px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ld{display:flex;align-items:center;justify-content:center;padding:var(--s48);color:var(--t3);gap:var(--s8)}
+.em{text-align:center;padding:var(--s48) var(--s24);color:var(--t3)}
+.em .ei{font-size:2.5rem;margin-bottom:var(--s16);opacity:.5}
+.em h3{font-size:1.143rem;color:var(--t2);margin-bottom:var(--s8)}
+@media(min-width:1024px){html{font-size:15px}.pg{padding:var(--s32)}}
+</style>
+</head>
+<body>
+<div id=to class=to></div>
+<nav id=nv class="nv h"><div class=nb>notebook-cam</div><div class=nl><a href="#db" class=nl>Dashboard</a><a href="#st" class=nl>Settings</a></div><div class=nr><button id=lo>Logout</button></div></nav>
+
+<section id=pg-login class="pg ap">
+<div class=ac><div class=lg>notebook-cam</div><h1>Sign In</h1><p class=st>Camera surveillance management</p><div id=le class=ae></div>
+<form id=lf><div class=fg><label for=lu>Username</label><input type=text id=lu placeholder=Username required autocomplete=username></div>
+<div class=fg><label for=lp>Password</label><input type=password id=lp placeholder=Password required autocomplete=current-password></div>
+<button type=submit class="b bp" style=width:100% id=ls>Sign In</button></form></div></section>
+
+<section id=pg-stp class="pg ap">
+<div class=ac><div class=lg>notebook-cam</div><h1>Initial Setup</h1><p class=st>Create admin account</p><div id=se class=ae></div>
+<form id=sf><div class=fg><label for=su>Admin Username</label><input type=text id=su placeholder=admin required autocomplete=username></div>
+<div class=fg><label for=sp>Password</label><input type=password id=sp placeholder="Strong password" required autocomplete=new-password></div>
+<div class=fg><label for=sc>Confirm Password</label><input type=password id=sc placeholder="Repeat password" required autocomplete=new-password></div>
+<button type=submit class="b bp" style=width:100% id=ss>Create Account</button></form></div></section>
+
+<section id=pg-db class=pg>
+<div class=ph><div><h1>Cameras</h1><p class=tm>Manage surveillance cameras</p></div><button class="b bp" onclick=wa()>+ Add Camera</button></div>
+<div class=sf style=padding:0><div id=cl class=ld><div class=sp></div><span>Loading cameras...</span></div>
+<div id=ce class="em h"><div class=ei>&#x1F4F7;</div><h3>No cameras configured</h3><p class=tm>Add your first camera to start monitoring.</p></div>
+<div id=ct class="tc h"><table><thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody id=cb></tbody></table></div></div></section>
+
+<section id=pg-cam class=pg>
+<div class=ph><div><h1 id=cn>Camera</h1><p id=cs>Loading...</p></div><button class="b bs" onclick=G("#db")>&larr; Back</button></div>
+<div class=lv><div class=vp><div class=vi>&#x25B6;</div><h3>No Stream Available</h3><p class=tm>Use external RTSP player</p><code id=ru style="font-family:var(--mo);font-size:.857rem;background:var(--in);padding:var(--s8) var(--s16);border-radius:var(--r6);border:1px solid var(--bd)"></code><button class="b bs bsm" onclick=cr() style=margin-top:var(--s8)>Copy RTSP URL</button></div>
+<div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=ig><div class=ii><span class=l>ID</span><span class=v id=ci->-</span></div><div class=ii><span class=l>Type</span><span class=v id=cit>-</span></div><div class=ii><span class=l>Status</span><span class=v id=cis>-</span></div><div class=ii><span class=l>Created</span><span class=v id=cic>-</span></div></div></div></div></section>
+
+<section id=pg-st class=pg>
+<div class=ph><div><h1>Settings</h1><p class=tm>Configure system settings</p></div><button class="b bp" onclick=Q() id=sb>Save Changes</button></div>
+<div id=sl class=ld><div class=sp></div><span>Loading settings...</span></div>
+<form id=sfm class="sg h"><div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3>Server</h3></div>
+<div class=fg><label for=swp>Web UI Port</label><input type=number id=swp placeholder=9090></div>
+<div class=fg><label for=srp>RTSP Port</label><input type=number id=srp placeholder=8554></div></div>
+<div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3>MiBee NVR</h3></div>
+<div class=fg><label for=smu>MiBee URL</label><input type=url id=smu placeholder="http://192.168.1.100:9090"></div>
+<div class=fg><label for=smk>MiBee API Key</label><input type=password id=smk placeholder=Optional></div></div>
+<div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3>Recording</h3></div>
+<div class=fg><label for=srp2>Recordings Path</label><input type=text id=srp2 placeholder=/var/lib/notebook-cam/recordings></div>
+<div class=fg><label for=smd>Max Segment Duration (s)</label><input type=number id=smd placeholder=300></div></div></form></section>
+
+<div id=mo class="mo h"><div class=md><div class=mh><h2 id=mt>Add Camera</h2><button class=mc onclick=cm()>&times;</button></div>
+<div class=mb><div id=me class=ae></div>
+<div class=fg><label for=cn2>Camera Name</label><input type=text id=cn2 placeholder="Front Door" required></div>
+<div class=fg><label for=cty>Camera Type</label><select id=cty required><option value="">Select type...</option><option value=rtsp>RTSP</option><option value=onvif>ONVIF</option><option value=usb>USB</option><option value=gb28181>GB/T 28181</option><option value=rtmp>RTMP</option></select></div>
+<div class=fg><label for=cc>Config (JSON)</label><textarea id=cc rows=3 placeholder='{"url":"rtsp://192.168.1.100:554/stream1"}' style="font-family:var(--mo);font-size:.857rem"></textarea><span class=ht>Camera-specific configuration as JSON</span></div></div>
+<div class=mf><button class="b bs" onclick=cm()>Cancel</button><button class="b bp" id=msb onclick=sc()>Add Camera</button></div></div></div>
+
+<div id=co class="mo h"><div class=md style=max-width:400px><div class=tc style=padding:var(--s48) var(--s24)><div style="font-size:2.5rem;margin-bottom:var(--s16)">&#x26A0;</div><h3 style=font-size:1.143rem;margin-bottom:var(--s8)>Delete Camera</h3><p id=ct2 style=color:var(--t2);font-size:.929rem>Are you sure?</p></div>
+<div class=mf style=justify-content:center><button class="b bs" onclick=cC()>Cancel</button><button class="b bd" id=cdb onclick=cD()>Delete</button></div></div></div>
+
+<script>
+(function(){'use strict';let S={a:0,c:[],s:{},dc:null};
+async function A(m,p,b){let o={method:m,headers:{Accept:'application/json'},credentials:'same-origin'};if(b!==undefined){o.headers['Content-Type']='application/json';o.body=JSON.stringify(b)}let r=await fetch(p,o),d=null;if((r.headers.get('content-type')||'').includes('application/json'))d=await r.json();return{ok:r.ok,status:r.status,data:d}}
+function T(msg,t){t=t||'info';let e=document.createElement('div');e.className='to-'+t;e.textContent=msg;document.getElementById('to').appendChild(e);setTimeout(()=>{e.style.opacity='0';e.style.transition='opacity 300ms ease';setTimeout(()=>e.remove(),300)},4000)}
+function G(h){window.location.hash=h}
+function R(){let h=window.location.hash||'#db',m=h.match(/^#\/c\/(.+)/);if(m)return{p:'c',id:decodeURIComponent(m[1])};let pg=h.replace(/^#\/?/,'')||'db';return{p:pg,id:null}}
+function P(id){document.querySelectorAll('.pg').forEach(p=>p.classList.remove('a'));let e=document.getElementById('pg-'+id);if(e)e.classList.add('a')}
+function N(s){document.getElementById('nv').classList.toggle('h',!s)}
+function U(pg){document.querySelectorAll('.nl a').forEach(a=>a.classList.toggle('active',a.dataset.p===pg))}
+async function C(){let r=await A('GET','/api/cameras');if(r.status==200){S.a=1;return{a:1,s:0}}if(r.status==503)return{a:0,s:1};return{a:0,s:0}}
+async function L(e){e.preventDefault();let u=document.getElementById('lu').value.trim(),p=document.getElementById('lp').value,el=document.getElementById('le'),sb=document.getElementById('ls');if(!u||!p){el.textContent='Please enter both username and password.';el.classList.add('s');return}
+el.classList.remove('s');sb.disabled=1;sb.textContent='Signing in...';try{let r=await A('POST','/api/auth/login',{username:u,password:p});if(r.ok){T('Signed in','success');await D()}else{el.textContent=r.data&&r.data.error?r.data.error:'Login failed';el.classList.add('s')}}catch(_){el.textContent='Connection error.';el.classList.add('s')}finally{sb.disabled=0;sb.textContent='Sign In'}}
+async function H(e){e.preventDefault();let u=document.getElementById('su').value.trim(),p=document.getElementById('sp').value,c=document.getElementById('sc').value,el=document.getElementById('se'),sb=document.getElementById('ss');if(!u||!p){el.textContent='Please fill all fields.';el.classList.add('s');return}
+if(p!==c){el.textContent='Passwords do not match.';el.classList.add('s');return}if(p.length<6){el.textContent='Password must be 6+ characters.';el.classList.add('s');return}
+el.classList.remove('s');sb.disabled=1;sb.textContent='Setting up...';try{let r=await A('POST','/api/auth/setup',{username:u,password:p});if(r.ok){T('Account created! Sign in.','success');P('login');document.getElementById('lu').value=u;document.getElementById('lp').value=''}else{el.textContent=r.data&&r.data.error?r.data.error:'Setup failed';el.classList.add('s')}}catch(_){el.textContent='Connection error.';el.classList.add('s')}finally{sb.disabled=0;sb.textContent='Create Account'}}
+async function O(){try{await A('POST','/api/auth/logout')}catch(_){}S.a=0;S.c=[];N(0);P('login');window.location.hash='#login';T('Signed out','info')}
+async function D(){P('db');N(1);U('db');document.getElementById('cl').classList.remove('h');document.getElementById('ce').classList.add('h');document.getElementById('ct').classList.add('h');try{let r=await A('GET','/api/cameras');if(!r.ok){if(r.status==401){S.a=0;N(0);P('login');return}T('Failed: '+(r.data&&r.data.error||'Unknown'),'e');document.getElementById('cl').classList.add('h');return}S.c=Array.isArray(r.data)?r.data:[];V()}catch(_){T('Connection error','e');document.getElementById('cl').classList.add('h')}}
+function V(){document.getElementById('cl').classList.add('h');if(S.c.length===0){document.getElementById('ce').classList.remove('h');document.getElementById('ct').classList.add('h');return}
+document.getElementById('ce').classList.add('h');document.getElementById('ct').classList.remove('h');let b=document.getElementById('cb');b.innerHTML='';S.c.forEach(c=>{let tr=document.createElement('tr'),bc='bg-'+(c.status==='running'?'r':c.status==='stopped'?'p':'e');tr.innerHTML='<td><a href="#/c/'+encodeURIComponent(c.id)+'" style=font-weight:500>'+E(c.name)+'</a></td><td><span class=tm style="font-family:var(--mo);font-size:.857rem">'+E(F(c.camera_type))+'</span></td><td><span class="bg '+bc+'">'+E(c.status)+'</span></td><td class=ca>'+(c.status==='running'?'<button class="b bd bsm" onclick=w("'+encodeURIComponent(c.id)+'")>Stop</button>':'<button class="b bp bsm" onclick=Y("'+encodeURIComponent(c.id)+'")>Start</button>')+'<button class="b bs bsm" onclick=G("#/c/'+encodeURIComponent(c.id)+'")>View</button><button class="b bd bsm" onclick=x("'+encodeURIComponent(c.id)+'","'+J(c.name)+'")>Delete</button></td>';b.appendChild(tr)})}
+function F(t){return({usb:'USB',rtsp:'RTSP',onvif:'ONVIF',gb28181:'GB/T 28181',rtmp:'RTMP'})[t]||t}
+async function Y(id){let r=await A('POST','/api/cameras/'+id+'/start');if(r.ok){T('Stream started','s');await D()}else T(r.data&&r.data.error?r.data.error:'Failed','e')}
+async function w(id){let r=await A('POST','/api/cameras/'+id+'/stop');if(r.ok){T('Stream stopped','s');await D()}else T(r.data&&r.data.error?r.data.error:'Failed','e')}
+function wa(){document.getElementById('mt').textContent='Add Camera';document.getElementById('cn2').value='';document.getElementById('cty').value='';document.getElementById('cc').value='';document.getElementById('me').classList.remove('s');document.getElementById('me').textContent='';document.getElementById('msb').textContent='Add Camera';document.getElementById('mo').classList.remove('h');document.getElementById('cn2').focus()}
+function cm(){document.getElementById('mo').classList.add('h')}
+async function sc(){let n=document.getElementById('cn2').value.trim(),t=document.getElementById('cty').value,cfg=document.getElementById('cc').value.trim(),el=document.getElementById('me'),sb=document.getElementById('msb');if(!n){el.textContent='Name required.';el.classList.add('s');return}if(!t){el.textContent='Type required.';el.classList.add('s');return}
+let c={};if(cfg)try{c=JSON.parse(cfg)}catch(_){el.textContent='Invalid JSON.';el.classList.add('s');return}el.classList.remove('s');sb.disabled=1;sb.textContent='Saving...';try{let r=await A('POST','/api/cameras',{name:n,camera_type:t,config:c});if(r.ok){T('Camera added','s');cm();await D()}else{el.textContent=r.data&&r.data.error?r.data.error:'Failed';el.classList.add('s')}}catch(_){el.textContent='Connection error';el.classList.add('s')}finally{sb.disabled=0;sb.textContent='Add Camera'}}
+function x(id,nm){S.dc=decodeURIComponent(id);document.getElementById('ct2').textContent='Delete "'+nm+'"? This cannot be undone.';document.getElementById('co').classList.remove('h')}
+function cC(){document.getElementById('co').classList.add('h');S.dc=null}
+async function cD(){let id=S.dc;if(!id)return;let btn=document.getElementById('cdb');btn.disabled=1;btn.textContent='Deleting...';try{let r=await A('DELETE','/api/cameras/'+id);if(r.ok){T('Deleted','s');cC();await D()}else{T(r.data&&r.data.error?r.data.error:'Failed','e');cC()}}catch(_){T('Connection error','e');cC()}finally{btn.disabled=0;btn.textContent='Delete'}}
+async function K(id){P('c');N(1);U('');document.getElementById('cn').textContent='Loading...';document.getElementById('cs').textContent='';try{let r=await A('GET','/api/cameras/'+id);if(!r.ok){T('Failed to load camera','e');G('#db');return}let c=r.data;document.getElementById('cn').textContent=c.name;document.getElementById('cs').textContent=c.status;document.getElementById('ci-').textContent=c.id;document.getElementById('cit').textContent=F(c.camera_type);document.getElementById('cis').textContent=c.status;document.getElementById('cic').textContent=c.created_at||'-';document.getElementById('ru').textContent=c.config&&c.config.url?c.config.url:'rtsp://localhost:8554/'+c.id}catch(_){T('Connection error','e');G('#db')}}
+function cr(){let u=document.getElementById('ru').textContent;if(!u)return;if(navigator.clipboard){navigator.clipboard.writeText(u).then(()=>T('RTSP URL copied','s')).catch(()=>fC(u))}else fC(u)}
+function fC(t){let ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();T('RTSP URL copied','s')}
+async function M(){P('st');N(1);U('st');document.getElementById('sl').classList.remove('h');document.getElementById('sfm').classList.add('h');try{let r=await A('GET','/api/settings');if(!r.ok){if(r.status==401){S.a=0;N(0);P('login');return}T('Failed to load settings','e');document.getElementById('sl').classList.add('h');return}S.s=r.data||{};['web_port','rtsp_port','mibee_url','mibee_api_key','recordings_path','max_segment_duration'].forEach(k=>{let m={web_port:'swp',rtsp_port:'srp',mibee_url:'smu',mibee_api_key:'smk',recordings_path:'srp2',max_segment_duration:'smd'},el=document.getElementById(m[k]);if(el)el.value=S.s[k]||''});document.getElementById('sl').classList.add('h');document.getElementById('sfm').classList.remove('h')}catch(_){T('Connection error','e');document.getElementById('sl').classList.add('h')}}
+async function Q(){let s={};['web_port','rtsp_port','mibee_url','mibee_api_key','recordings_path','max_segment_duration'].forEach(k=>{let m={web_port:'swp',rtsp_port:'srp',mibee_url:'smu',mibee_api_key:'smk',recordings_path:'srp2',max_segment_duration:'smd'},el=document.getElementById(m[k]);if(el){let v=el.value.trim();if(v)s[k]=v}});let btn=document.getElementById('sb');btn.disabled=1;btn.textContent='Saving...';try{let r=await A('PUT','/api/settings',{settings:s});if(r.ok)T('Settings saved','s');else T(r.data&&r.data.error?r.data.error:'Failed','e')}catch(_){T('Connection error','e')}finally{btn.disabled=0;btn.textContent='Save Changes'}}
+async function r(){let r=R();switch(r.p){case'login':N(0);P('login');break;case'stp':N(0);P('stp');break;case'c':if(!S.a){await i();return}await K(r.id);break;case'st':if(!S.a){await i();return}await M();break;default:if(!S.a){await i();return}await D()}}
+async function i(){let s=await C();if(s.a){S.a=1;N(1);await D()}else if(s.s){S.a=0;N(0);P('stp');window.location.hash='#stp'}else{S.a=0;N(0);P('login');window.location.hash='#login'}}
+function E(s){if(typeof s!='string')return'';return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function J(s){if(typeof s!='string')return'';return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+document.addEventListener('DOMContentLoaded',function(){document.getElementById('lf').addEventListener('submit',L);document.getElementById('sf').addEventListener('submit',H);document.getElementById('lo').addEventListener('click',O);document.getElementById('mo').addEventListener('click',function(e){if(e.target===this)cm()});document.getElementById('co').addEventListener('click',function(e){if(e.target===this)cC()});document.addEventListener('keydown',function(e){if(e.key==='Escape'){if(!document.getElementById('mo').classList.contains('h'))cm();if(!document.getElementById('co').classList.contains('h'))cC()}});window.addEventListener('hashchange',r);i()});
+window.G=G;window.wa=wa;window.cm=cm;window.sc=sc;window.x=x;window.cC=cC;window.cD=cD;window.Y=Y;window.w=w;window.cr=cr;window.Q=Q;window.A=A})();
+</script>
+</body>
+</html>

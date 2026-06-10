@@ -1,0 +1,21 @@
+[web]
+port = 8443
+host = "0.0.0.0"
+
+[rtsp]
+server_port = 8554
+
+[rtmp]
+ingest_port = 1935
+
+[capture]
+video_device = "/dev/video0"
+audio_device = "default"
+
+[security]
+rate_limit_max = 20
+rate_limit_window_secs = 60
+
+[observability]
+otel_endpoint = "http://localhost:4317"
+log_level = "info"
