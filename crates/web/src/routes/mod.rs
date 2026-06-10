@@ -13,6 +13,7 @@ pub mod cameras;
 pub mod settings;
 pub mod streams;
 pub mod devices;
+pub mod protocols;
 
 /// Helper: consistent error JSON response with code.
 pub fn error_response(status: StatusCode, msg: &str) -> axum::response::Response {

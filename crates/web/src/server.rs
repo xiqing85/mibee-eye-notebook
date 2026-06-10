@@ -29,6 +29,7 @@ pub struct AppRouterState {
     pub active: ActiveStreams,
     pub stream_manager: Arc<StreamManager>,
     pub rtsp_server: Arc<RtspServer>,
+    pub protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let active = state.active.clone();
     let stream_manager = state.stream_manager.clone();
     let rtsp_server = state.rtsp_server.clone();
+    let protocol_configs = state.protocol_configs.clone();
 
     // -- Auth routes (public — these ARE the login/setup endpoints) --
     let login_route = Router::new()
@@ -102,6 +104,13 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // Settings
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
+        // Protocol configs
+        .route("/api/protocols/onvif", get(routes::protocols::get_protocols_onvif))
+        .route("/api/protocols/onvif", put(routes::protocols::update_protocols_onvif))
+        .route("/api/protocols/gb28181", get(routes::protocols::get_protocols_gb28181))
+        .route("/api/protocols/gb28181", put(routes::protocols::update_protocols_gb28181))
+        .route("/api/protocols/rtmp", get(routes::protocols::get_protocols_rtmp))
+        .route("/api/protocols/rtmp", put(routes::protocols::update_protocols_rtmp))
         // ONVIF
         // Device enumeration
         .route("/api/devices/video", get(routes::devices::list_video_devices))
@@ -127,6 +136,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(rtsp_server))
         .layer(Extension(active))
         .layer(Extension(db))
+        .layer(Extension(protocol_configs))
         // CORS — permissive for localhost dev
         .layer(CorsLayer::permissive())
 }
@@ -141,6 +151,7 @@ pub fn build_app(db: Arc<Mutex<Connection>>) -> Router {
         active: ActiveStreams::default(),
         stream_manager: Arc::new(StreamManager::new()),
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
+        protocol_configs: Arc::new(Mutex::new(HashMap::new())),
     })
 }
 
@@ -154,6 +165,7 @@ pub async fn run(
     db: Connection,
     stream_manager: Arc<StreamManager>,
     rtsp_server: Arc<RtspServer>,
+    protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -164,6 +176,7 @@ pub async fn run(
         active: ActiveStreams::default(),
         stream_manager,
         rtsp_server,
+        protocol_configs,
     };
     let app = build_app_with_state(state);
 
