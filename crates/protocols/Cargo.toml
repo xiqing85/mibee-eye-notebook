@@ -9,7 +9,6 @@ rust-version.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-ring = { version = "0.17", features = ["alloc"] }
 hex = "0.4"
 rand.workspace = true
 oxvif = { version = "0.9", features = ["mock"] }
