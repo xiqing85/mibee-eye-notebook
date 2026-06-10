@@ -801,7 +801,7 @@ mod tests {
         // Test Annex B fixture with multiple NAL units
         let keyframes = find_keyframes(ANNEX_B_FIXTURE);
         // Should find at least the IDR NAL unit
-        assert!(keyframes.len() >= 1);
+        assert!(!keyframes.is_empty());
 
         // Non-IDR fixture should have no keyframes
         let keyframes = find_keyframes(NON_IDR_FIXTURE);
@@ -849,10 +849,10 @@ mod tests {
         let mut bits = BitIter::new(data);
 
         // Read individual bits
-        assert_eq!(bits.read_bit().unwrap(), true);
-        assert_eq!(bits.read_bit().unwrap(), false);
-        assert_eq!(bits.read_bit().unwrap(), true);
-        assert_eq!(bits.read_bit().unwrap(), true);
+        assert!(bits.read_bit().unwrap());
+        assert!(!bits.read_bit().unwrap());
+        assert!(bits.read_bit().unwrap());
+        assert!(bits.read_bit().unwrap());
 
         // Read multiple bits
         let val = bits.read_bits(4).unwrap();
