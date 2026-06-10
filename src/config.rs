@@ -72,6 +72,168 @@ impl Default for RtmpConfig {
         Self { ingest_port: 1935 }
     }
 }
+// ---------------------------------------------------------------------------
+// ONVIF Device
+// ---------------------------------------------------------------------------
+
+/// ONVIF device endpoint configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OnvifConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_onvif_device_name")]
+    pub device_name: String,
+    #[serde(default = "default_onvif_manufacturer")]
+    pub manufacturer: String,
+    #[serde(default = "default_onvif_model")]
+    pub model: String,
+    #[serde(default = "default_onvif_serial")]
+    pub serial: String,
+    #[serde(default = "default_onvif_firmware")]
+    pub firmware_version: String,
+}
+
+fn default_onvif_device_name() -> String {
+    "notebook-cam".into()
+}
+fn default_onvif_manufacturer() -> String {
+    "MiBee".into()
+}
+fn default_onvif_model() -> String {
+    "Rec-01".into()
+}
+fn default_onvif_serial() -> String {
+    "NC00000001".into()
+}
+fn default_onvif_firmware() -> String {
+    "1.0.0".into()
+}
+
+impl Default for OnvifConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            device_name: "notebook-cam".into(),
+            manufacturer: "MiBee".into(),
+            model: "Rec-01".into(),
+            serial: "NC00000001".into(),
+            firmware_version: "1.0.0".into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GB/T 28181 Device
+// ---------------------------------------------------------------------------
+
+/// GB28181 device registration configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Gb28181Config {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_gb28181_sip_address")]
+    pub platform_sip_address: String,
+    #[serde(default = "default_gb28181_sip_port")]
+    pub platform_sip_port: u16,
+    #[serde(default = "default_gb28181_device_id")]
+    pub device_id: String,
+    #[serde(default = "default_gb28181_username")]
+    pub username: String,
+    #[serde(default = "default_gb28181_password")]
+    pub password: String,
+    #[serde(default = "default_gb28181_sip_domain")]
+    pub sip_domain: String,
+    #[serde(default = "default_gb28181_register_interval")]
+    pub register_interval_secs: u64,
+}
+
+fn default_gb28181_sip_address() -> String {
+    "192.168.1.100".into()
+}
+fn default_gb28181_sip_port() -> u16 {
+    5060
+}
+fn default_gb28181_device_id() -> String {
+    "34020000002000000001".into()
+}
+fn default_gb28181_username() -> String {
+    String::new()
+}
+fn default_gb28181_password() -> String {
+    String::new()
+}
+fn default_gb28181_sip_domain() -> String {
+    "3402000000".into()
+}
+fn default_gb28181_register_interval() -> u64 {
+    60
+}
+
+impl Default for Gb28181Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            platform_sip_address: "192.168.1.100".into(),
+            platform_sip_port: 5060,
+            device_id: "34020000002000000001".into(),
+            username: String::new(),
+            password: String::new(),
+            sip_domain: "3402000000".into(),
+            register_interval_secs: 60,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RTMP Push Client
+// ---------------------------------------------------------------------------
+
+/// RTMP push client configuration (pushes local stream to external ingest).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RtmpPushConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_rtmp_push_url")]
+    pub push_url: String,
+    #[serde(default = "default_rtmp_app_name")]
+    pub app_name: String,
+    #[serde(default = "default_rtmp_stream_name")]
+    pub stream_name: String,
+    #[serde(default = "default_rtmp_reconnect_interval")]
+    pub reconnect_interval_secs: u64,
+    #[serde(default = "default_rtmp_max_reconnect")]
+    pub max_reconnect_attempts: u32,
+}
+
+fn default_rtmp_push_url() -> String {
+    "rtmp://192.168.1.100:1935/live".into()
+}
+fn default_rtmp_app_name() -> String {
+    "live".into()
+}
+fn default_rtmp_stream_name() -> String {
+    "stream1".into()
+}
+fn default_rtmp_reconnect_interval() -> u64 {
+    5
+}
+fn default_rtmp_max_reconnect() -> u32 {
+    10
+}
+
+impl Default for RtmpPushConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            push_url: "rtmp://192.168.1.100:1935/live".into(),
+            app_name: "live".into(),
+            stream_name: "stream1".into(),
+            reconnect_interval_secs: 5,
+            max_reconnect_attempts: 10,
+        }
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Capture
@@ -190,8 +352,16 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub observability: ObservabilityConfig,
-}
 
+    #[serde(default)]
+    pub onvif: OnvifConfig,
+
+    #[serde(default)]
+    pub gb28181: Gb28181Config,
+
+    #[serde(default)]
+    pub rtmp_push: RtmpPushConfig,
+}
 impl AppConfig {
     /// Load configuration from a TOML file.
     ///
@@ -250,6 +420,43 @@ mod tests {
         assert_eq!(cfg.log_level, "info");
     }
 
+// --- New protocol config defaults ---
+
+#[test]
+fn test_onvif_config_default() {
+    let cfg = OnvifConfig::default();
+    assert!(!cfg.enabled, "ONVIF must default to disabled");
+    assert_eq!(cfg.device_name, "notebook-cam");
+    assert_eq!(cfg.manufacturer, "MiBee");
+    assert_eq!(cfg.model, "Rec-01");
+    assert_eq!(cfg.serial, "NC00000001");
+    assert_eq!(cfg.firmware_version, "1.0.0");
+}
+
+#[test]
+fn test_gb28181_config_default() {
+    let cfg = Gb28181Config::default();
+    assert!(!cfg.enabled, "GB28181 must default to disabled");
+    assert_eq!(cfg.platform_sip_address, "192.168.1.100");
+    assert_eq!(cfg.platform_sip_port, 5060);
+    assert_eq!(cfg.device_id, "34020000002000000001");
+    assert_eq!(cfg.username, "");
+    assert_eq!(cfg.password, "");
+    assert_eq!(cfg.sip_domain, "3402000000");
+    assert_eq!(cfg.register_interval_secs, 60);
+}
+
+#[test]
+fn test_rtmp_push_config_default() {
+    let cfg = RtmpPushConfig::default();
+    assert!(!cfg.enabled, "RTMP push must default to disabled");
+    assert_eq!(cfg.push_url, "rtmp://192.168.1.100:1935/live");
+    assert_eq!(cfg.app_name, "live");
+    assert_eq!(cfg.stream_name, "stream1");
+    assert_eq!(cfg.reconnect_interval_secs, 5);
+    assert_eq!(cfg.max_reconnect_attempts, 10);
+}
+
     // --- AppConfig default ---
 
     #[test]
@@ -265,6 +472,12 @@ mod tests {
         assert_eq!(cfg.security.rate_limit_window_secs, 60);
         assert_eq!(cfg.observability.otel_endpoint, "http://localhost:4317");
         assert_eq!(cfg.observability.log_level, "info");
+        assert!(!cfg.onvif.enabled);
+        assert_eq!(cfg.onvif.device_name, "notebook-cam");
+        assert!(!cfg.gb28181.enabled);
+        assert_eq!(cfg.gb28181.platform_sip_address, "192.168.1.100");
+        assert!(!cfg.rtmp_push.enabled);
+        assert_eq!(cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live");
     }
 
     // --- Serde round-trip ---
