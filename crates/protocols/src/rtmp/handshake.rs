@@ -9,8 +9,8 @@
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 
-const RTMP_VERSION: u8 = 3;
-const HANDSHAKE_SIZE: usize = 1536;
+pub const RTMP_VERSION: u8 = 3;
+pub const HANDSHAKE_SIZE: usize = 1536;
 
 /// Perform RTMP handshake as a server
 ///
@@ -121,6 +121,79 @@ fn generate_s2(c1: &[u8; HANDSHAKE_SIZE], s1_time: u32) -> [u8; HANDSHAKE_SIZE] 
     s2[8..].copy_from_slice(&c1[8..]);
 
     s2
+}
+
+/// Generate C1 handshake packet (time + zeros + random)
+pub fn generate_c1() -> [u8; HANDSHAKE_SIZE] {
+    let mut c1 = [0u8; HANDSHAKE_SIZE];
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u32;
+    c1[0..4].copy_from_slice(&time.to_be_bytes());
+    // Fill random bytes
+    let mut seed = time as u64;
+    for byte in &mut c1[8..] {
+        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+        *byte = (seed >> 8) as u8;
+    }
+    c1
+}
+
+/// Generate C2 handshake packet (echo of S1)
+pub fn generate_c2(s1: &[u8; HANDSHAKE_SIZE], c1: &[u8; HANDSHAKE_SIZE]) -> [u8; HANDSHAKE_SIZE] {
+    let mut c2 = [0u8; HANDSHAKE_SIZE];
+    c2[0..4].copy_from_slice(&s1[0..4]);
+    c2[4..8].copy_from_slice(&c1[0..4]);
+    c2[8..].copy_from_slice(&s1[8..]);
+    c2
+}
+
+/// Perform RTMP handshake as a client
+///
+/// Sends C0+C1, receives S0+S1+S2, verifies S2 echoes C1, sends C2.
+pub fn perform_client_handshake<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    c1: &[u8; HANDSHAKE_SIZE],
+) -> Result<()> {
+    let c1_time = u32::from_be_bytes([c1[0], c1[1], c1[2], c1[3]]);
+
+    // Send C0 + C1
+    writer.write_all(&[RTMP_VERSION])?;
+    writer.write_all(c1)?;
+    writer.flush()?;
+
+    // Read S0
+    let mut s0 = [0u8; 1];
+    reader.read_exact(&mut s0)?;
+    if s0[0] != RTMP_VERSION {
+        bail!("Unsupported RTMP version from server: {}", s0[0]);
+    }
+
+    // Read S1
+    let mut s1 = [0u8; HANDSHAKE_SIZE];
+    reader.read_exact(&mut s1)?;
+
+    // Read S2
+    let mut s2 = [0u8; HANDSHAKE_SIZE];
+    reader.read_exact(&mut s2)?;
+
+    // Verify S2 echoes C1
+    let s2_time = u32::from_be_bytes([s2[0], s2[1], s2[2], s2[3]]);
+    if s2_time != c1_time {
+        bail!("S2 time {} does not match C1 time {}", s2_time, c1_time);
+    }
+    if s2[8..] != c1[8..] {
+        bail!("S2 random data does not match C1");
+    }
+
+    // Send C2 (echo of S1)
+    let c2 = generate_c2(&s1, c1);
+    writer.write_all(&c2)?;
+    writer.flush()?;
+
+    Ok(())
 }
 
 #[cfg(test)]

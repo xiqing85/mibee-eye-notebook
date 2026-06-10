@@ -1,25 +1,26 @@
-//! GB/T 28181-2016/2022 integration module.
+//! GB/T 28181-2016/2022 Device module.
 //!
 //! This module provides an implementation of the Chinese national standard
-//! for video surveillance systems, GB/T 28181-2016 and GB/T 28181-2022.
+//! for video surveillance systems, GB/T 28181-2016 and GB/T 28181-2022,
+//! operating as a **device** that registers with a SIP platform.
 //!
 //! ## Architecture
 //!
 //! - **Device ID**: 20-digit national standard format
 //! - **SIP signaling**: Hand-written parser/serializer for the SIP subset
 //!   used by GB/T 28181 (REGISTER, INVITE, MESSAGE, BYE, etc.)
-//! - **Device Registry**: In-memory registry tracking registered cameras
+//! - **Digest Auth**: RFC 7616 Digest authentication for SIP REGISTER
 //! - **PS (Program Stream) Parser**: Extracts H.264 NAL units from MPEG-2
 //!   Program Stream encapsulation used by GB/T 28181 for RTP media transport
-//! - **Platform Interface**: High-level `Gb28181Platform` for managing devices
-//!   and requesting streams
+//! - **SipDeviceClient**: Manages device registration with a SIP platform
+//! - **RtpPusher**: Constructs and sends RTP packets to a destination
 
-use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+
+use crate::rtp::{RtpHeaderFlags, RtpPacket, H264_PAYLOAD_TYPE};
 
 // ─── Device ID ───────────────────────────────────────────────────────────────
 // GB/T 28181 device IDs are 20-digit codes with the structure:
@@ -579,94 +580,6 @@ pub fn build_register_request(
     }
 }
 
-/// Build a SIP INVITE request for real-time preview or playback.
-#[allow(clippy::too_many_arguments)]
-pub fn build_invite_request(
-    local_id: &str,
-    local_addr: &str,
-    device_id: &str,
-    device_addr: &str,
-    _ssrc: u32,
-    transport: Transport,
-    call_id: &str,
-    cseq: u32,
-    is_playback: bool,
-) -> SipMessage {
-    let sdp = SdpSession {
-        origin: format!("{} 0 0 IN IP4 {}", local_id, local_addr),
-        session_name: if is_playback {
-            "Playback".to_string()
-        } else {
-            "Play".to_string()
-        },
-        connection_address: Some(format!("IN IP4 {}", local_addr)),
-        bandwidth: None,
-        media: vec![SdpMedia {
-            media_type: "video".to_string(),
-            port: 0,
-            proto: format!(
-                "RTP/AVP/{}",
-                match transport {
-                    Transport::Tcp => "TCP",
-                    Transport::Udp => "UDP",
-                }
-            ),
-            payload_types: vec![96],
-            attributes: vec![
-                ("recvonly".to_string(), String::new()),
-                ("rtpmap".to_string(), "96 PS/90000".to_string()),
-                if is_playback {
-                    ("playback".to_string(), String::new())
-                } else {
-                    ("sendonly".to_string(), String::new())
-                },
-            ],
-        }],
-    };
-
-    let sdp_str = sdp.serialize();
-
-    let mut headers = Vec::new();
-    headers.push((
-        "Via".to_string(),
-        format!(
-            "SIP/2.0/UDP {}:{};rport;branch=z9hG4bK{}",
-            local_addr, 5060, cseq
-        ),
-    ));
-    headers.push((
-        "From".to_string(),
-        format!("<sip:{}@{}>;tag={}", local_id, local_addr, cseq),
-    ));
-    headers.push((
-        "To".to_string(),
-        format!("<sip:{}@{}>", device_id, device_addr),
-    ));
-    headers.push(("Call-ID".to_string(), call_id.to_string()));
-    headers.push(("CSeq".to_string(), format!("{} INVITE", cseq)));
-    headers.push((
-        "Contact".to_string(),
-        format!("<sip:{}@{}:{}>", local_id, local_addr, 5060),
-    ));
-    headers.push(("Max-Forwards".to_string(), "70".to_string()));
-    headers.push(("User-Agent".to_string(), "notebook-cam/0.1".to_string()));
-    headers.push(("Content-Type".to_string(), "application/sdp".to_string()));
-    headers.push(("Content-Length".to_string(), sdp_str.len().to_string()));
-    if is_playback {
-        headers.push(("Subject".to_string(), format!("{}:0,0", device_id)));
-    }
-
-    SipMessage {
-        start_line: format!("INVITE sip:{}@{} SIP/2.0", device_id, device_addr),
-        method: Some(SipMethod::Invite),
-        status_code: None,
-        uri: Some(format!("sip:{}@{}", device_id, device_addr)),
-        version: "SIP/2.0".to_string(),
-        headers,
-        body: sdp_str,
-    }
-}
-
 /// Build a SIP BYE request.
 pub fn build_bye_request(
     local_id: &str,
@@ -854,180 +767,6 @@ fn hex_encode(data: &[u8]) -> String {
         let _ = write!(hex, "{:02x}", byte);
     }
     hex
-}
-
-// ─── Device Registry ────────────────────────────────────────────────────────
-
-/// Status of a device channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelStatus {
-    Online,
-    Offline,
-}
-
-/// Information about a device channel (camera).
-#[derive(Debug, Clone)]
-pub struct ChannelInfo {
-    pub channel_id: String,
-    pub name: String,
-    pub status: ChannelStatus,
-}
-
-/// A registered device (IPC, NVR, etc.).
-#[derive(Debug, Clone)]
-pub struct RegisteredDevice {
-    /// 20-digit device ID
-    pub device_id: String,
-    /// Device IP address
-    pub ip: String,
-    /// Device SIP port
-    pub port: u16,
-    /// When the device was registered
-    pub registered_at: Instant,
-    /// When the registration expires
-    pub expires_at: Instant,
-    /// Device channels (sub-devices)
-    pub channels: Vec<ChannelInfo>,
-    /// Last heartbeat time
-    pub last_heartbeat: Instant,
-}
-
-impl RegisteredDevice {
-    /// Check if the device registration has expired.
-    pub fn is_expired(&self) -> bool {
-        Instant::now() >= self.expires_at
-    }
-
-    /// Check if the device heartbeat is current within the given timeout.
-    pub fn heartbeat_current(&self, timeout: Duration) -> bool {
-        Instant::now().duration_since(self.last_heartbeat) <= timeout
-    }
-}
-
-/// In-memory registry of GB/T 28181 devices.
-#[derive(Debug, Clone)]
-pub struct DeviceRegistry {
-    devices: HashMap<String, RegisteredDevice>,
-    /// Heartbeat timeout (device is considered offline after this)
-    heartbeat_timeout: Duration,
-}
-
-impl DeviceRegistry {
-    /// Create a new empty device registry.
-    pub fn new() -> Self {
-        Self {
-            devices: HashMap::new(),
-            heartbeat_timeout: Duration::from_secs(120),
-        }
-    }
-
-    /// Create a new device registry with custom timeouts.
-    pub fn with_timeouts(_default_expiry: Duration, heartbeat_timeout: Duration) -> Self {
-        Self {
-            devices: HashMap::new(),
-            heartbeat_timeout,
-        }
-    }
-
-    /// Register or update a device.
-    ///
-    /// Returns the old registration if the device was already registered.
-    #[allow(clippy::too_many_arguments)]
-    pub fn register(
-        &mut self,
-        device_id: &str,
-        ip: &str,
-        port: u16,
-        expires: Duration,
-        channels: Vec<ChannelInfo>,
-    ) -> Option<RegisteredDevice> {
-        let now = Instant::now();
-        let registered = RegisteredDevice {
-            device_id: device_id.to_string(),
-            ip: ip.to_string(),
-            port,
-            registered_at: now,
-            expires_at: now + expires,
-            channels,
-            last_heartbeat: now,
-        };
-        self.devices.insert(device_id.to_string(), registered)
-    }
-
-    /// Unregister a device (e.g., on receiving a REGISTER with expires=0).
-    pub fn unregister(&mut self, device_id: &str) -> Option<RegisteredDevice> {
-        self.devices.remove(device_id)
-    }
-
-    /// Get a reference to a registered device.
-    pub fn get(&self, device_id: &str) -> Option<&RegisteredDevice> {
-        self.devices.get(device_id)
-    }
-
-    /// Get a mutable reference to a registered device.
-    pub fn get_mut(&mut self, device_id: &str) -> Option<&mut RegisteredDevice> {
-        self.devices.get_mut(device_id)
-    }
-
-    /// Update the heartbeat timestamp for a device.
-    pub fn update_heartbeat(&mut self, device_id: &str) -> bool {
-        if let Some(device) = self.devices.get_mut(device_id) {
-            device.last_heartbeat = Instant::now();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Check if a device has a current heartbeat.
-    pub fn check_heartbeat(&self, device_id: &str) -> bool {
-        self.devices
-            .get(device_id)
-            .is_some_and(|d| d.heartbeat_current(self.heartbeat_timeout))
-    }
-
-    /// Remove all expired devices. Returns the IDs of removed devices.
-    pub fn purge_expired(&mut self) -> Vec<String> {
-        let expired: Vec<String> = self
-            .devices
-            .iter()
-            .filter(|(_, d)| d.is_expired())
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &expired {
-            self.devices.remove(id);
-        }
-        expired
-    }
-
-    /// Get a list of all devices that have current heartbeats (online).
-    pub fn online_devices(&self) -> Vec<&RegisteredDevice> {
-        self.devices
-            .values()
-            .filter(|d| d.heartbeat_current(self.heartbeat_timeout))
-            .collect()
-    }
-
-    /// Get the catalog of all registered devices.
-    pub fn catalog(&self) -> Vec<&RegisteredDevice> {
-        self.devices.values().collect()
-    }
-
-    /// Number of devices in the registry.
-    pub fn len(&self) -> usize {
-        self.devices.len()
-    }
-
-    /// Check if the registry is empty.
-    pub fn is_empty(&self) -> bool {
-        self.devices.is_empty()
-    }
-}
-
-impl Default for DeviceRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 // ─── PS (Program Stream) Parser ────────────────────────────────────────────
@@ -1363,112 +1102,264 @@ pub struct RtpStreamInfo {
     pub remote_port: u16,
 }
 
-// ─── Platform Interface ─────────────────────────────────────────────────────
+// ─── SipDeviceClient ─────────────────────────────────────────────────────────
+// New: device-side SIP client that registers with a platform.
 
-/// A GB/T 28181 platform server instance.
+/// A GB/T 28181 SIP device client that registers with a SIP platform.
 ///
-/// Manages device registration, stream setup, and heartbeat tracking.
-pub struct Gb28181Platform {
-    /// SIP listening address
-    pub sip_addr: SocketAddr,
-    /// Platform device ID (20-digit)
-    pub platform_id: String,
-    /// Platform SIP domain
+/// Manages the REGISTER dialog with a GB/T 28181 SIP platform, including
+/// digest authentication challenge-response.
+#[derive(Debug, Clone)]
+pub struct SipDeviceClient {
+    /// 20-digit device ID
+    pub device_id: String,
+    /// SIP server (platform) address
+    pub sip_server_addr: SocketAddr,
+    /// Local IP address advertised in SIP messages
+    pub local_ip: String,
+    /// Local SIP port
+    pub local_port: u16,
+    /// SIP domain (usually the platform's domain)
     pub domain: String,
-    /// Device registry
-    pub registry: DeviceRegistry,
-    /// Active streams
-    pub active_streams: HashMap<String, RtpStreamInfo>,
+    /// Authentication username (usually same as device_id)
+    pub username: String,
+    /// Authentication password
+    pub password: String,
+    /// Current Call-ID for SIP dialogs
+    pub call_id: String,
+    /// Current CSeq number
+    pub cseq: u32,
+    /// Registration expiry in seconds
+    pub expires: u32,
 }
 
-impl Gb28181Platform {
-    /// Create a new GB/T 28181 platform.
-    pub fn new(sip_addr: SocketAddr, platform_id: &str, domain: &str) -> Self {
+impl SipDeviceClient {
+    /// Create a new SIP device client.
+    pub fn new(
+        device_id: &str,
+        sip_server_addr: SocketAddr,
+        local_ip: &str,
+        local_port: u16,
+        domain: &str,
+        password: &str,
+        expires: u32,
+    ) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         Self {
-            sip_addr,
-            platform_id: platform_id.to_string(),
+            device_id: device_id.to_string(),
+            sip_server_addr,
+            local_ip: local_ip.to_string(),
+            local_port,
             domain: domain.to_string(),
-            registry: DeviceRegistry::new(),
-            active_streams: HashMap::new(),
+            username: device_id.to_string(),
+            password: password.to_string(),
+            call_id: format!("{}-{}", device_id, nanos),
+            cseq: 1,
+            expires,
         }
     }
 
-    /// Handle an incoming SIP REGISTER request.
-    ///
-    /// Returns the response status code (200 on success).
-    pub fn handle_register(&mut self, device_id: &str, ip: &str, port: u16, expires: u32) -> u16 {
-        if expires == 0 {
-            // Unregistration
-            self.registry.unregister(device_id);
-            return 200;
-        }
+    /// Build an initial (unauthenticated) SIP REGISTER request.
+    pub fn build_register(&self) -> SipMessage {
+        build_register_request(
+            &self.device_id,
+            &self.local_ip,
+            &self.domain,
+            &self.domain,
+            self.expires,
+            None,
+            &self.call_id,
+            self.cseq,
+        )
+    }
 
-        let expiry_dur = if expires > 0 {
-            Duration::from_secs(expires as u64)
-        } else {
-            Duration::from_secs(3600)
+    /// Build a SIP REGISTER request with Digest authentication.
+    pub fn build_register_with_auth(&self, auth: &DigestAuthParams) -> SipMessage {
+        let uri = format!("sip:{}@{}", self.device_id, self.domain);
+        let auth_header = build_digest_auth(
+            &self.username,
+            &auth.realm,
+            &self.password,
+            &auth.nonce,
+            &uri,
+            "REGISTER",
+            auth.algorithm.as_deref().unwrap_or("SHA-256"),
+        );
+        build_register_request(
+            &self.device_id,
+            &self.local_ip,
+            &self.domain,
+            &self.domain,
+            self.expires,
+            Some(&auth_header),
+            &self.call_id,
+            self.cseq,
+        )
+    }
+
+    /// Build a SIP BYE request to end a session.
+    pub fn build_bye(&self, remote_id: &str, remote_addr: &str, call_id: &str, cseq: u32) -> SipMessage {
+        build_bye_request(
+            &self.device_id,
+            &self.local_ip,
+            remote_id,
+            remote_addr,
+            call_id,
+            cseq,
+        )
+    }
+
+    /// Increment the CSeq counter.
+    pub fn inc_cseq(&mut self) {
+        self.cseq = self.cseq.wrapping_add(1);
+    }
+}
+
+/// Parse the WWW-Authenticate header from a 401 SIP response to extract
+/// the Digest challenge parameters.
+pub fn parse_401_challenge(msg: &SipMessage) -> Result<DigestAuthParams> {
+    let auth_header = msg
+        .get_header("WWW-Authenticate")
+        .ok_or_else(|| anyhow!("401 response missing WWW-Authenticate header"))?;
+    parse_digest_auth(auth_header)
+}
+
+// ─── InviteInfo + parse_invite ───────────────────────────────────────────────
+
+/// Information extracted from a received SIP INVITE request.
+#[derive(Debug, Clone)]
+pub struct InviteInfo {
+    /// Call-ID from the INVITE
+    pub call_id: String,
+    /// Media address (IP) extracted from SDP
+    pub media_address: String,
+    /// Media port from SDP m= line
+    pub media_port: u16,
+    /// SSRC (0 if not specified in SDP)
+    pub ssrc: u32,
+    /// RTP payload type
+    pub payload_type: u8,
+}
+
+/// Parse a SIP INVITE message to extract stream target information.
+///
+/// The INVITE comes FROM the platform TO this device, containing the
+/// platform's receive address and port in the SDP body.
+pub fn parse_invite(msg: &SipMessage) -> Result<InviteInfo> {
+    let call_id = msg
+        .get_header("Call-ID")
+        .ok_or_else(|| anyhow!("INVITE missing Call-ID header"))?
+        .to_string();
+
+    let sdp = SdpSession::parse(&msg.body)?;
+
+    let media = sdp
+        .media
+        .first()
+        .ok_or_else(|| anyhow!("INVITE SDP has no media lines"))?;
+
+    // Extract IP from connection address (format: "IN IP4 x.x.x.x")
+    let c_addr = sdp
+        .connection_address
+        .as_deref()
+        .unwrap_or("IN IP4 127.0.0.1");
+    let ip = c_addr.split_whitespace().last().unwrap_or("127.0.0.1").to_string();
+
+    let payload_type = media.payload_types.first().copied().unwrap_or(H264_PAYLOAD_TYPE);
+
+    // SSRC may be specified as an SDP attribute
+    let ssrc = media
+        .get_attr("ssrc")
+        .and_then(|s| {
+            // Format: "ssrc:12345678" or just the hex value
+            let val = s.split_whitespace().next().unwrap_or(s);
+            let val = val.strip_prefix("ssrc:").unwrap_or(val);
+            u32::from_str_radix(val, 16).ok()
+        })
+        .unwrap_or(0);
+
+    Ok(InviteInfo {
+        call_id,
+        media_address: ip,
+        media_port: media.port,
+        ssrc,
+        payload_type,
+    })
+}
+
+// ─── RtpPusher ───────────────────────────────────────────────────────────────
+
+/// Constructs RTP packets for pushing media to a destination.
+///
+/// Uses the `crate::rtp::RtpPacket` for constructing RFC 3550 compliant
+/// RTP packets. Each call to `build_rtp_packet` wraps a H.264 NAL unit
+/// in a Single NAL Unit packet (RFC 6184) and increments the sequence number.
+#[derive(Debug, Clone)]
+pub struct RtpPusher {
+    /// Destination socket address
+    pub destination: SocketAddr,
+    /// Synchronization source identifier
+    pub ssrc: u32,
+    /// Sequence number (incremented per packet)
+    pub sequence_number: u16,
+    /// Timestamp (90kHz clock, typical for H.264)
+    pub timestamp: u32,
+    /// RTP payload type (typically 96 for H.264/PS)
+    pub payload_type: u8,
+}
+
+impl RtpPusher {
+    /// Create a new RTP pusher.
+    pub fn new(destination: SocketAddr, ssrc: u32, payload_type: u8) -> Self {
+        Self {
+            destination,
+            ssrc,
+            sequence_number: 0,
+            timestamp: 0,
+            payload_type,
+        }
+    }
+
+    /// Build an RTP packet containing a H.264 NAL unit.
+    ///
+    /// Uses Single NAL Unit packet format (RFC 6184 section 5.6).
+    /// The sequence number is auto-incremented after each packet.
+    /// Returns the serialized RTP packet bytes.
+    pub fn build_rtp_packet(&mut self, nal: &[u8]) -> Vec<u8> {
+        let packet = RtpPacket {
+            flags: RtpHeaderFlags {
+                version: 2,
+                padding: false,
+                extension: false,
+                csrc_count: 0,
+                marker: false,
+                payload_type: self.payload_type,
+            },
+            sequence_number: self.sequence_number,
+            timestamp: self.timestamp,
+            ssrc: self.ssrc,
+            csrc_list: vec![],
+            extension_profile: None,
+            extension_data: vec![],
+            payload: nal.to_vec(),
         };
 
-        self.registry
-            .register(device_id, ip, port, expiry_dur, vec![]);
-        tracing::info!("Device registered: {} at {}:{}", device_id, ip, port);
-        200
+        let bytes = packet.to_bytes();
+
+        // Increment sequence number for next packet
+        self.sequence_number = self.sequence_number.wrapping_add(1);
+
+        bytes
     }
 
-    /// Send an INVITE for real-time preview or playback.
+    /// Increment the timestamp by the given amount.
     ///
-    /// Returns the RTP stream info for the established stream.
-    pub async fn invite_preview(&self, device_id: &str, channel_id: &str) -> Result<RtpStreamInfo> {
-        let device = self
-            .registry
-            .get(device_id)
-            .ok_or_else(|| anyhow!("Device not registered: {}", device_id))?;
-
-        let ssrc = rand::random::<u32>();
-
-        Ok(RtpStreamInfo {
-            device_id: device_id.to_string(),
-            channel_id: channel_id.to_string(),
-            ssrc,
-            transport: Transport::Tcp,
-            remote_addr: device.ip.clone(),
-            remote_port: 0,
-        })
-    }
-
-    /// Query the device catalog (list all registered devices).
-    pub fn query_catalog(&self) -> Vec<&RegisteredDevice> {
-        self.registry.catalog()
-    }
-
-    /// Check if a device heartbeat is current.
-    pub fn check_heartbeat(&self, device_id: &str) -> bool {
-        self.registry.check_heartbeat(device_id)
-    }
-
-    /// Update a device's heartbeat timestamp.
-    pub fn update_heartbeat(&mut self, device_id: &str) -> bool {
-        self.registry.update_heartbeat(device_id)
-    }
-
-    /// Handle an incoming device catalog query response.
-    pub fn update_device_channels(&mut self, device_id: &str, channels: Vec<ChannelInfo>) -> bool {
-        if let Some(device) = self.registry.get_mut(device_id) {
-            device.channels = channels;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Record an active stream in the platform state.
-    pub fn add_stream(&mut self, call_id: String, stream: RtpStreamInfo) {
-        self.active_streams.insert(call_id, stream);
-    }
-
-    /// Remove a finished stream.
-    pub fn remove_stream(&mut self, call_id: &str) -> Option<RtpStreamInfo> {
-        self.active_streams.remove(call_id)
+    /// Typical increment for 30fps H.264 at 90kHz clock is 3000 (90000/30).
+    pub fn increment_timestamp(&mut self, increment: u32) {
+        self.timestamp = self.timestamp.wrapping_add(increment);
     }
 }
 
@@ -1477,7 +1368,6 @@ impl Gb28181Platform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     // ─── Device ID Tests ──────────────────────────────────────────────────
 
@@ -1564,28 +1454,6 @@ mod tests {
     }
 
     #[test]
-    fn test_invite_request_serialize() {
-        let msg = build_invite_request(
-            "34020000002000000001",
-            "192.168.1.10",
-            "34020000001320000001",
-            "192.168.1.100",
-            0x12345678,
-            Transport::Tcp,
-            "invite-call-1",
-            1,
-            false,
-        );
-        let serialized = msg.serialize();
-        assert!(serialized.contains("INVITE sip:34020000001320000001@192.168.1.100 SIP/2.0"));
-        assert!(serialized.contains("Call-ID: invite-call-1"));
-        assert!(serialized.contains("CSeq: 1 INVITE"));
-        assert!(serialized.contains("Content-Type: application/sdp"));
-        assert!(serialized.contains("v=0"));
-        assert!(serialized.contains("m=video 0 RTP/AVP/TCP 96"));
-    }
-
-    #[test]
     fn test_sip_message_parse_minimal() {
         let data = "REGISTER sip:3402000000@3402000000 SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK1\r\n\
@@ -1662,143 +1530,6 @@ mod tests {
         assert_eq!(parsed.session_name, original.session_name);
         assert_eq!(parsed.media.len(), 1);
         assert_eq!(parsed.media[0].port, 10000);
-    }
-
-    // ─── Device Registry Tests ────────────────────────────────────────────
-
-    #[test]
-    fn test_device_registry_register() {
-        let mut registry = DeviceRegistry::new();
-        assert!(registry.is_empty());
-
-        let channels = vec![ChannelInfo {
-            channel_id: "34020000001320000001".to_string(),
-            name: "Front Door".to_string(),
-            status: ChannelStatus::Online,
-        }];
-
-        registry.register(
-            "3402000000111800000001",
-            "192.168.1.100",
-            5060,
-            Duration::from_secs(3600),
-            channels,
-        );
-
-        assert_eq!(registry.len(), 1);
-        assert!(!registry.is_empty());
-
-        let device = registry.get("3402000000111800000001").unwrap();
-        assert_eq!(device.ip, "192.168.1.100");
-        assert_eq!(device.port, 5060);
-        assert_eq!(device.channels.len(), 1);
-        assert_eq!(device.channels[0].name, "Front Door");
-    }
-
-    #[test]
-    fn test_device_registry_expire() {
-        let mut registry = DeviceRegistry::new();
-        registry.register(
-            "3402000000111800000001",
-            "192.168.1.100",
-            5060,
-            Duration::from_secs(0),
-            vec![],
-        );
-
-        let expired = registry.purge_expired();
-        assert_eq!(expired.len(), 1);
-        assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn test_device_registry_unregister() {
-        let mut registry = DeviceRegistry::new();
-        registry.register(
-            "3402000000111800000001",
-            "192.168.1.100",
-            5060,
-            Duration::from_secs(3600),
-            vec![],
-        );
-        assert_eq!(registry.len(), 1);
-
-        let removed = registry.unregister("3402000000111800000001");
-        assert!(removed.is_some());
-        assert!(registry.is_empty());
-
-        let removed = registry.unregister("nonexistent");
-        assert!(removed.is_none());
-    }
-
-    #[test]
-    fn test_heartbeat_check() {
-        let mut registry =
-            DeviceRegistry::with_timeouts(Duration::from_secs(3600), Duration::from_secs(120));
-
-        registry.register(
-            "3402000000111800000001",
-            "192.168.1.100",
-            5060,
-            Duration::from_secs(3600),
-            vec![],
-        );
-
-        assert!(registry.check_heartbeat("3402000000111800000001"));
-        assert!(!registry.check_heartbeat("nonexistent"));
-
-        assert!(registry.update_heartbeat("3402000000111800000001"));
-        assert!(!registry.update_heartbeat("nonexistent"));
-    }
-
-    #[test]
-    fn test_catalog_query_empty() {
-        let registry = DeviceRegistry::new();
-        assert!(registry.catalog().is_empty());
-    }
-
-    #[test]
-    fn test_catalog_query_with_devices() {
-        let mut registry = DeviceRegistry::new();
-        registry.register(
-            "3402000000111800000001",
-            "192.168.1.100",
-            5060,
-            Duration::from_secs(3600),
-            vec![],
-        );
-        registry.register(
-            "3402000000111800000002",
-            "192.168.1.101",
-            5060,
-            Duration::from_secs(3600),
-            vec![],
-        );
-
-        let catalog = registry.catalog();
-        assert_eq!(catalog.len(), 2);
-    }
-
-    #[test]
-    fn test_online_devices() {
-        let mut registry = DeviceRegistry::new();
-
-        registry.register(
-            "3402000000111800000001",
-            "192.168.1.100",
-            5060,
-            Duration::from_secs(3600),
-            vec![],
-        );
-        registry.register(
-            "3402000000111800000002",
-            "192.168.1.101",
-            5060,
-            Duration::from_secs(3600),
-            vec![],
-        );
-
-        assert_eq!(registry.online_devices().len(), 2);
     }
 
     // ─── SIP Method Tests ─────────────────────────────────────────────────
@@ -1932,72 +1663,200 @@ mod tests {
         assert!(auth.starts_with("Digest "));
     }
 
-    // ─── Platform Tests ───────────────────────────────────────────────────
+    // ─── SipDeviceClient Tests ─────────────────────────────────────────────
 
     #[test]
-    fn test_platform_handle_register() {
-        let addr: SocketAddr = "0.0.0.0:5060".parse().unwrap();
-        let mut platform = Gb28181Platform::new(addr, "34020000002000000001", "3402000000");
+    fn test_sip_device_client_register() {
+        let addr: SocketAddr = "192.168.1.200:5060".parse().unwrap();
+        let client = SipDeviceClient::new(
+            "34020000001320000001",
+            addr,
+            "192.168.1.100",
+            5060,
+            "3402000000",
+            "testpass",
+            3600,
+        );
 
-        let status =
-            platform.handle_register("3402000000111800000001", "192.168.1.100", 5060, 3600);
-        assert_eq!(status, 200);
-        assert_eq!(platform.registry.len(), 1);
-
-        let catalog = platform.query_catalog();
-        assert_eq!(catalog.len(), 1);
+        let reg = client.build_register();
+        let serialized = reg.serialize();
+        assert!(serialized.contains("REGISTER sip:3402000000@3402000000 SIP/2.0"));
+        assert!(serialized.contains("Expires: 3600"));
+        assert!(serialized.contains("Content-Length: 0"));
+        // Should NOT contain Authorization header (unauthenticated)
+        assert!(!serialized.contains("Authorization"));
     }
 
     #[test]
-    fn test_platform_unregister() {
-        let addr: SocketAddr = "0.0.0.0:5060".parse().unwrap();
-        let mut platform = Gb28181Platform::new(addr, "34020000002000000001", "3402000000");
+    fn test_parse_401_challenge() {
+        let response = "SIP/2.0 401 Unauthorized\r\n\
+                        Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK1\r\n\
+                        From: <sip:34020000001320000001@3402000000>;tag=1\r\n\
+                        To: <sip:34020000001320000001@3402000000>;tag=abc\r\n\
+                        Call-ID: test-call\r\n\
+                        CSeq: 1 REGISTER\r\n\
+                        WWW-Authenticate: Digest realm=\"3402000000\", nonce=\"challenge123\", algorithm=SHA-256\r\n\
+                        Content-Length: 0\r\n\
+                        \r\n";
 
-        platform.handle_register("3402000000111800000001", "192.168.1.100", 5060, 3600);
-        assert_eq!(platform.registry.len(), 1);
-
-        platform.handle_register("3402000000111800000001", "192.168.1.100", 5060, 0);
-        assert!(platform.registry.is_empty());
+        let msg = SipMessage::parse(response).unwrap();
+        let challenge = parse_401_challenge(&msg).unwrap();
+        assert_eq!(challenge.realm, "3402000000");
+        assert_eq!(challenge.nonce, "challenge123");
+        assert_eq!(challenge.algorithm, Some("SHA-256".to_string()));
     }
 
     #[test]
-    fn test_platform_heartbeat() {
-        let addr: SocketAddr = "0.0.0.0:5060".parse().unwrap();
-        let mut platform = Gb28181Platform::new(addr, "34020000002000000001", "3402000000");
+    fn test_build_register_with_auth() {
+        let addr: SocketAddr = "192.168.1.200:5060".parse().unwrap();
+        let client = SipDeviceClient::new(
+            "34020000001320000001",
+            addr,
+            "192.168.1.100",
+            5060,
+            "3402000000",
+            "password123",
+            3600,
+        );
 
-        platform.handle_register("3402000000111800000001", "192.168.1.100", 5060, 3600);
-        assert!(platform.check_heartbeat("3402000000111800000001"));
+        let digest_auth = DigestAuthParams {
+            realm: "3402000000".to_string(),
+            nonce: "challenge123".to_string(),
+            username: String::new(),
+            uri: String::new(),
+            response: String::new(),
+            algorithm: Some("SHA-256".to_string()),
+            opaque: None,
+            qop: None,
+            nc: None,
+            cnonce: None,
+        };
 
-        assert!(platform.update_heartbeat("3402000000111800000001"));
-        assert!(!platform.check_heartbeat("nonexistent"));
+        let reg = client.build_register_with_auth(&digest_auth);
+        let serialized = reg.serialize();
+        assert!(serialized.contains("REGISTER sip:3402000000@3402000000 SIP/2.0"));
+        assert!(serialized.contains("Authorization: Digest"));
+        assert!(serialized.contains("realm=\"3402000000\""));
+        assert!(serialized.contains("nonce=\"challenge123\""));
+        assert!(serialized.contains("algorithm=SHA-256"));
+    }
+
+    // ─── InviteInfo Tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_invite() {
+        let invite = "INVITE sip:34020000001320000001@192.168.1.100 SIP/2.0\r\n\
+                      Via: SIP/2.0/UDP 192.168.1.200:5060;branch=z9hG4bK1234\r\n\
+                      From: <sip:34020000002000000001@3402000000>;tag=abc123\r\n\
+                      To: <sip:34020000001320000001@3402000000>\r\n\
+                      Call-ID: invite-call-456\r\n\
+                      CSeq: 1 INVITE\r\n\
+                      Contact: <sip:34020000002000000001@192.168.1.200:5060>\r\n\
+                      Content-Type: application/sdp\r\n\
+                      Content-Length: 148\r\n\
+                      \r\n\
+                      v=0\r\n\
+                      o=34020000002000000001 0 0 IN IP4 192.168.1.200\r\n\
+                      s=Play\r\n\
+                      c=IN IP4 192.168.1.200\r\n\
+                      t=0 0\r\n\
+                      m=video 10000 RTP/AVP 96\r\n\
+                      a=recvonly\r\n\
+                      a=rtpmap:96 PS/90000\r\n";
+
+        let msg = SipMessage::parse(invite).unwrap();
+        let info = parse_invite(&msg).unwrap();
+        assert_eq!(info.call_id, "invite-call-456");
+        assert_eq!(info.media_address, "192.168.1.200");
+        assert_eq!(info.media_port, 10000);
+        assert_eq!(info.payload_type, 96);
     }
 
     #[test]
-    fn test_platform_channels() {
-        let addr: SocketAddr = "0.0.0.0:5060".parse().unwrap();
-        let mut platform = Gb28181Platform::new(addr, "34020000002000000001", "3402000000");
+    fn test_parse_invite_with_ssrc() {
+        let invite = "INVITE sip:34020000001320000001@192.168.1.100 SIP/2.0\r\n\
+                      Via: SIP/2.0/UDP 192.168.1.200:5060;branch=z9hG4bK1234\r\n\
+                      From: <sip:34020000002000000001@3402000000>;tag=abc123\r\n\
+                      To: <sip:34020000001320000001@3402000000>\r\n\
+                      Call-ID: invite-call-789\r\n\
+                      CSeq: 1 INVITE\r\n\
+                      Content-Type: application/sdp\r\n\
+                      Content-Length: 175\r\n\
+                      \r\n\
+                      v=0\r\n\
+                      o=34020000002000000001 0 0 IN IP4 192.168.1.200\r\n\
+                      s=Play\r\n\
+                      c=IN IP4 192.168.1.200\r\n\
+                      t=0 0\r\n\
+                      m=video 20000 RTP/AVP 96\r\n\
+                      a=recvonly\r\n\
+                      a=rtpmap:96 PS/90000\r\n\
+                      a=ssrc:12345678\r\n";
 
-        platform.handle_register("3402000000111800000001", "192.168.1.100", 5060, 3600);
-
-        let channels = vec![
-            ChannelInfo {
-                channel_id: "34020000001320000001".to_string(),
-                name: "Camera 1".to_string(),
-                status: ChannelStatus::Online,
-            },
-            ChannelInfo {
-                channel_id: "34020000001320000002".to_string(),
-                name: "Camera 2".to_string(),
-                status: ChannelStatus::Offline,
-            },
-        ];
-
-        assert!(platform.update_device_channels("3402000000111800000001", channels));
-        let device = platform.registry.get("3402000000111800000001").unwrap();
-        assert_eq!(device.channels.len(), 2);
-        assert_eq!(device.channels[0].name, "Camera 1");
-        assert_eq!(device.channels[1].status, ChannelStatus::Offline);
+        let msg = SipMessage::parse(invite).unwrap();
+        let info = parse_invite(&msg).unwrap();
+        assert_eq!(info.call_id, "invite-call-789");
+        assert_eq!(info.media_address, "192.168.1.200");
+        assert_eq!(info.media_port, 20000);
+        assert_eq!(info.ssrc, 0x12345678);
+        assert_eq!(info.payload_type, 96);
     }
+
+    // ─── RtpPusher Tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_rtp_pusher_build_packet() {
+        let addr: SocketAddr = "192.168.1.200:10000".parse().unwrap();
+        let mut pusher = RtpPusher::new(addr, 0x12345678, H264_PAYLOAD_TYPE);
+
+        let nal = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E];
+        let packet = pusher.build_rtp_packet(&nal);
+
+        // Verify RTP header
+        assert!(packet.len() >= 12);
+        assert_eq!(packet[0] >> 6, 2); // Version = 2
+        assert_eq!(packet[1] & 0x7F, H264_PAYLOAD_TYPE); // Payload type
+
+        // Verify SSRC
+        let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+        assert_eq!(ssrc, 0x12345678);
+
+        // Verify payload includes the NAL
+        assert!(packet.len() > 12);
+        assert_eq!(&packet[12..], &nal[..]);
+    }
+
+    #[test]
+    fn test_rtp_pusher_sequence_increment() {
+        let addr: SocketAddr = "192.168.1.200:10000".parse().unwrap();
+        let mut pusher = RtpPusher::new(addr, 0x12345678, H264_PAYLOAD_TYPE);
+
+        let nal = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E];
+
+        // First packet
+        let p1 = pusher.build_rtp_packet(&nal);
+        let seq1 = u16::from_be_bytes([p1[2], p1[3]]);
+
+        // Second packet should have incremented sequence number
+        let p2 = pusher.build_rtp_packet(&nal);
+        let seq2 = u16::from_be_bytes([p2[2], p2[3]]);
+
+        assert_eq!(seq2, seq1.wrapping_add(1));
+    }
+
+    #[test]
+    fn test_rtp_pusher_timestamp_increment() {
+        let addr: SocketAddr = "192.168.1.200:10000".parse().unwrap();
+        let mut pusher = RtpPusher::new(addr, 0x12345678, H264_PAYLOAD_TYPE);
+
+        assert_eq!(pusher.timestamp, 0);
+        pusher.increment_timestamp(3000);
+        assert_eq!(pusher.timestamp, 3000);
+        pusher.increment_timestamp(3000);
+        assert_eq!(pusher.timestamp, 6000);
+    }
+
+    // ─── BYE Request Tests ────────────────────────────────────────────────
 
     #[test]
     fn test_bye_request_serialize() {
@@ -2015,6 +1874,8 @@ mod tests {
         assert!(serialized.contains("Content-Length: 0"));
     }
 
+    // ─── Device Type Constants Tests ───────────────────────────────────────
+
     #[test]
     fn test_device_type_constants() {
         assert_eq!(device_types::IPC, 111);
@@ -2023,6 +1884,8 @@ mod tests {
         assert_eq!(device_types::ALARM, 122);
         assert_eq!(device_types::AUDIO, 134);
     }
+
+    // ─── RTP Stream Info Tests ─────────────────────────────────────────────
 
     #[test]
     fn test_rtp_stream_info() {
@@ -2039,52 +1902,15 @@ mod tests {
         assert_eq!(stream.transport, Transport::Tcp);
     }
 
-    #[test]
-    fn test_platform_invite_preview() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let addr: SocketAddr = "0.0.0.0:5060".parse().unwrap();
-            let mut platform = Gb28181Platform::new(addr, "34020000002000000001", "3402000000");
-
-            platform.handle_register("3402000000111800000001", "192.168.1.100", 5060, 3600);
-
-            let result = platform
-                .invite_preview("3402000000111800000001", "34020000001320000001")
-                .await;
-            assert!(result.is_ok());
-            let stream = result.unwrap();
-            assert_eq!(stream.device_id, "3402000000111800000001");
-            assert_eq!(stream.channel_id, "34020000001320000001");
-        });
-    }
-
-    #[test]
-    fn test_platform_stream_management() {
-        let addr: SocketAddr = "0.0.0.0:5060".parse().unwrap();
-        let mut platform = Gb28181Platform::new(addr, "34020000002000000001", "3402000000");
-
-        let stream = RtpStreamInfo {
-            device_id: "34020000001320000001".to_string(),
-            channel_id: "34020000001320000001".to_string(),
-            ssrc: 0x12345678,
-            transport: Transport::Tcp,
-            remote_addr: "192.168.1.100".to_string(),
-            remote_port: 10000,
-        };
-
-        platform.add_stream("call-1".to_string(), stream);
-        assert_eq!(platform.active_streams.len(), 1);
-
-        let removed = platform.remove_stream("call-1");
-        assert!(removed.is_some());
-        assert!(platform.active_streams.is_empty());
-    }
+    // ─── Transport Display Tests ───────────────────────────────────────────
 
     #[test]
     fn test_transport_display() {
         assert_eq!(Transport::Tcp.to_string(), "TCP");
         assert_eq!(Transport::Udp.to_string(), "UDP");
     }
+
+    // ─── SIP Message Case Insensitive Tests ────────────────────────────────
 
     #[test]
     fn test_sip_message_header_case_insensitive() {
@@ -2098,16 +1924,47 @@ mod tests {
         assert_eq!(msg.get_header("CALL-ID"), Some("case-test"));
     }
 
+    // ─── SDP Missing Required Tests ────────────────────────────────────────
+
     #[test]
     fn test_sdp_missing_required() {
         assert!(SdpSession::parse("v=0\r\n").is_err());
         assert!(SdpSession::parse("").is_err());
     }
 
+    // ─── Hex Encode Tests ──────────────────────────────────────────────────
+
     #[test]
     fn test_hex_encode_fn() {
         let result = hex_encode(b"hello");
         assert_eq!(result, "68656c6c6f");
         assert_eq!(hex_encode(b""), "");
+    }
+
+    // ─── 401 Challenge Missing Header Tests ────────────────────────────────
+
+    #[test]
+    fn test_parse_401_challenge_missing_header() {
+        let response = "SIP/2.0 401 Unauthorized\r\n\
+                        Content-Length: 0\r\n\
+                        \r\n";
+        let msg = SipMessage::parse(response).unwrap();
+        assert!(parse_401_challenge(&msg).is_err());
+    }
+
+    // ─── InviteInfo Missing Call-ID ─────────────────────────────────────────
+
+    #[test]
+    fn test_parse_invite_missing_call_id() {
+        let invite = "INVITE sip:test@test.com SIP/2.0\r\n\
+                      Content-Type: application/sdp\r\n\
+                      Content-Length: 50\r\n\
+                      \r\n\
+                      v=0\r\n\
+                      o=- 0 0 IN IP4 127.0.0.1\r\n\
+                      s=Test\r\n\
+                      t=0 0\r\n";
+        let msg = SipMessage::parse(invite).unwrap();
+        assert!(parse_invite(&msg).is_err());
     }
 }
