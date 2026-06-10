@@ -132,6 +132,11 @@ impl VideoCapture {
             .take()
             .context("camera not available (already consumed)")?;
 
+        // nokhwa 0.10 requires open_stream() before frame()
+        camera
+            .open_stream()
+            .context("failed to open camera stream")?;
+
         // Spawn a blocking task because Camera::frame() calls blocking
         // V4L2 ioctl / read syscalls.  We use blocking_send on the
         // async mpsc Sender to bridge the blocking → async boundary.
