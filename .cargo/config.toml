@@ -1,0 +1,11 @@
+[alias]
+# Run clippy on the whole workspace
+ci-clippy = "clippy --workspace --all-targets -- -D warnings"
+# Run tests with nocapture for debugging
+test-verbose = "test --workspace -- --nocapture"
+# Format check without modifying
+fmt-check = "fmt --check"
+
+[env]
+# Use nextest-compatible test output style
+CARGO_TERM_COLOR = "always"

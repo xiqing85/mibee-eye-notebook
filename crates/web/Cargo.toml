@@ -1,0 +1,23 @@
+[package]
+name = "web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+include_dir.workspace = true
+serde.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+security = { path = "../security" }
+observability = { path = "../observability" }
+protocols = { path = "../protocols" }
+uuid.workspace = true
+axum-server.workspace = true
