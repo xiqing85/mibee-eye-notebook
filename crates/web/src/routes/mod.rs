@@ -13,6 +13,7 @@ pub mod cameras;
 pub mod onvif;
 pub mod settings;
 pub mod streams;
+pub mod devices;
 
 /// Helper: consistent error JSON response with code.
 pub fn error_response(status: StatusCode, msg: &str) -> axum::response::Response {
@@ -58,12 +59,110 @@ pub async fn not_implemented_handler() -> impl IntoResponse {
     )
 }
 
-/// Placeholder handler for auth routes.
-pub async fn auth_placeholder_handler() -> impl IntoResponse {
+/// Request body for POST /api/auth/login
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// POST /api/auth/login — authenticate and create a session.
+///
+/// Validates credentials against the stored bcrypt hash.
+/// On success, returns a `Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Strict; Path=/` header
+/// and a JSON body `{"status":"ok"}`.
+/// Returns 401 on invalid credentials.
+pub async fn login_handler(
+    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Json(body): Json<LoginRequest>,
+) -> impl IntoResponse {
+    let conn = db.lock().await;
+
+    // Look up stored password hash
+    let stored_hash = match security::auth::get_user_password(&conn, &body.username) {
+        Ok(Some(h)) => h,
+        Ok(None) => {
+            return error_response(StatusCode::UNAUTHORIZED, "invalid credentials");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "login_handler: failed to query user");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        }
+    };
+
+    // Verify password
+    match security::password::verify_password(&body.password, &stored_hash) {
+        Ok(true) => {}
+        Ok(false) => {
+            return error_response(StatusCode::UNAUTHORIZED, "invalid credentials");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "login_handler: password verification failed");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        }
+    }
+
+    // Create session
+    let token = match security::auth::create_session(&conn, &body.username) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %e, "login_handler: failed to create session");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        }
+    };
+
+    drop(conn);
+
+    tracing::info!(username = %body.username, "User logged in");
+
+    // Set HttpOnly + Secure + SameSite cookie
+    let cookie = format!(
+        "session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400"
+    );
+
     (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({"error": "auth not implemented"})),
+        StatusCode::OK,
+        [("set-cookie", cookie)],
+        Json(serde_json::json!({"status": "ok"})),
     )
+        .into_response()
+}
+
+/// POST /api/auth/logout — invalidate the current session.
+///
+/// Reads the session cookie, deletes the session from the database,
+/// and clears the cookie by setting Max-Age=0.
+pub async fn logout_handler(
+    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    let token = req
+        .headers()
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .find_map(|c| c.trim().strip_prefix("session="))
+                .map(|s| s.to_owned())
+        });
+
+    if let Some(token) = token {
+        let conn = db.lock().await;
+        if let Err(e) = security::auth::invalidate_session(&conn, &token) {
+            tracing::warn!(error = %e, "logout_handler: failed to invalidate session");
+        }
+    }
+
+    // Clear the cookie regardless of whether we found a session
+    let cookie = "session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0";
+
+    (
+        StatusCode::OK,
+        [("set-cookie", cookie.to_owned())],
+        Json(serde_json::json!({"status": "ok"})),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -237,9 +336,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_auth_placeholder_called_directly() {
-        let resp = auth_placeholder_handler().await.into_response();
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    async fn test_login_rejects_wrong_credentials() {
+        // Use a DB with a seeded user so setup is complete
+        let app = crate::server::build_app(crate::server::test_db_with_user());
+
+        let req = Request::builder()
+            .uri("/api/auth/login")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "username": "admin",
+                    "password": "wrong_password"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -462,6 +576,82 @@ mod tests {
         assert_ne!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    // -----------------------------------------------------------------------
+    // Login tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_login_success() {
+        let (db, _token) = test_app_with_user();
+        let app = crate::server::build_app(db);
+
+        let req = Request::builder()
+            .uri("/api/auth/login")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "username": "admin",
+                    "password": "current_pass"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Verify Set-Cookie header
+        let set_cookie = res
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(set_cookie.starts_with("session="), "should set session cookie");
+        assert!(set_cookie.contains("HttpOnly"), "cookie should be HttpOnly");
+        assert!(set_cookie.contains("Secure"), "cookie should be Secure");
+    }
+
+    #[tokio::test]
+    async fn test_login_nonexistent_user() {
+        let (db, _token) = test_app_with_user();
+        let app = crate::server::build_app(db);
+
+        let req = Request::builder()
+            .uri("/api/auth/login")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "username": "nobody",
+                    "password": "whatever"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_logout_clears_cookie() {
+        let (db, _token) = test_app_with_user();
+        let app = crate::server::build_app(db);
+
+        let req = Request::builder()
+            .uri("/api/auth/logout")
+            .method("POST")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let set_cookie = res
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(set_cookie.contains("Max-Age=0"), "logout should clear cookie");
+    }
     // -----------------------------------------------------------------------
     // Password reset tests
     // -----------------------------------------------------------------------

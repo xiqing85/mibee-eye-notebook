@@ -236,7 +236,11 @@ mod tests {
         let token = security::auth::create_session(&conn, "admin").unwrap();
         let db = Arc::new(Mutex::new(conn));
         let active = crate::server::ActiveStreams::default();
-        let state = crate::server::AppRouterState { db, active };
+        let stream_manager = Arc::new(crate::stream_manager::StreamManager::new());
+        let rtsp_server = Arc::new(protocols::rtsp_server::RtspServer::new(
+            protocols::rtsp_server::RtspServerConfig::default(),
+        ));
+        let state = crate::server::AppRouterState { db, active, stream_manager, rtsp_server };
         (state, token)
     }
 
@@ -257,6 +261,10 @@ mod tests {
         let state = crate::server::AppRouterState {
             db: conn,
             active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
         };
         let token = {
             let c = state.db.lock().await;
@@ -455,6 +463,10 @@ mod tests {
         let state = crate::server::AppRouterState {
             db: conn,
             active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
         };
         let app = crate::server::build_app_with_state(state);
 

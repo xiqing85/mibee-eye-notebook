@@ -50,6 +50,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_onvif_discover_requires_auth() {
@@ -68,6 +69,10 @@ mod tests {
         let state = crate::server::AppRouterState {
             db: conn,
             active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
         };
         let app = crate::server::build_app_with_state(state);
 

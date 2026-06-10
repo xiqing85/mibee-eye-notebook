@@ -102,6 +102,10 @@ mod tests {
         let state = crate::server::AppRouterState {
             db: conn,
             active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
         };
         let token = {
             let c = state.db.lock().await;
@@ -132,6 +136,10 @@ mod tests {
         let state = crate::server::AppRouterState {
             db: conn,
             active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
         };
         let token = {
             let c = state.db.lock().await;
@@ -214,6 +222,10 @@ mod tests {
         let state = crate::server::AppRouterState {
             db: conn,
             active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
         };
         let app = crate::server::build_app_with_state(state);
 
