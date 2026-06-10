@@ -8,7 +8,6 @@ pub mod gb28181;
 pub mod h264;
 pub mod onvif;
 pub mod rtp;
-pub mod rtsp;
 pub mod rtsp_server;
 
 #[cfg(test)]

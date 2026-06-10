@@ -156,10 +156,9 @@ impl StreamManager {
     /// # Parameters
     ///
     /// * `camera_id` — Unique identifier for the camera.
-    /// * `camera_type` — Type of camera (`"usb"` or `"rtsp"`).
+    /// * `camera_type` — Type of camera (`"usb"`).
     /// * `config` — JSON configuration with type-specific fields:
     ///   - `"usb"`: `{ "device_index": <u64> }`
-    ///   - `"rtsp"`: `{ "url": "<str>", "username": "<str>", "password": "<str>" }`
     /// * `rtsp_server` — Optional [`RtspServer`] for publishing the stream
     ///   so RTSP clients can connect.
     ///
@@ -208,23 +207,6 @@ impl StreamManager {
                 Box::new(
                     streaming::capture_source::VideoCaptureSource::new(device_index as usize),
                 )
-            }
-            "rtsp" => {
-                let url = config
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("RTSP camera config must include 'url'")
-                    })?;
-                let username = config
-                    .get("username")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let password = config
-                    .get("password")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                Box::new(streaming::source::RtspSource::new(url, username, password))
             }
             other => anyhow::bail!("unsupported camera type: {other}"),
         };
@@ -457,23 +439,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_create_stream_rtsp_missing_url() {
-        let manager = StreamManager::new();
-        let err = manager
-            .create_stream(
-                "cam-1".into(),
-                "rtsp",
-                &serde_json::json!({}),
-                None,
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("url"),
-            "expected missing url error, got: {err}"
-        );
-    }
 
     #[tokio::test]
     async fn test_create_stream_rejects_duplicate() {

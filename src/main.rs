@@ -1,6 +1,5 @@
 use clap::Parser;
 use protocols::rtsp_server::{RtspServer, RtspServerConfig};
-use protocols::rtmp::RtmpServer;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -60,14 +59,6 @@ async fn main() -> anyhow::Result<()> {
     });
     tracing::info!(port = config.rtsp.server_port, "RTSP server started");
 
-    // Start RTMP server in background task (optional — for external NVR push)
-    let rtmp_server = RtmpServer::new(config.rtmp.ingest_port, "live");
-    tokio::spawn(async move {
-        if let Err(e) = rtmp_server.run().await {
-            tracing::warn!(error = %e, "RTMP server failed to start (may be port in use)");
-        }
-    });
-    tracing::info!(port = config.rtmp.ingest_port, "RTMP server started");
 
     println!(
         "mibee-rec server starting on {}:{}...",

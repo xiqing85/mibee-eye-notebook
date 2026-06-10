@@ -2,14 +2,12 @@
 
 [中文文档](README.zh-CN.md) · [Documentation](docs/en/)
 
-Professional laptop surveillance agent built in Rust.
-
-Captures webcam and microphone, connects to IP cameras and NVRs, and streams via RTSP / RTMP / ONVIF / GB/T 28181. Part of the [MiBee](https://https://github.com/xiqing85) ecosystem.
+Captures webcam and microphone from the host machine, encodes to H.264/AAC, and serves streams to external NVRs via RTSP Server / RTMP Push / ONVIF Device / GB/T 28181 Device. Part of the [MiBee](https://https://github.com/xiqing85) ecosystem.
 
 ## Features
 
 - **Local capture** — webcam via V4L2 (Linux) / MSMF (Windows), microphone via ALSA / WASAPI
-- **Protocol support** — RTSP client & server, RTMP ingest, ONVIF discovery & PTZ, GB/T 28181 (SIP + RTP)
+- **Outbound protocols** — RTSP server (clients pull), RTMP push, ONVIF device endpoint, GB/T 28181 device registration
 - **H.264 / H.265** — hand-written NAL unit parser, keyframe detection, SPS/PPS extraction
 - **MiBee NVR integration** — REST API client, camera sync, SSE event stream
 - **Web UI** — Axum REST API + embedded SPA, TLS via rustls, session-based auth
@@ -70,14 +68,15 @@ mibee-rec/
 
 | Protocol | Component | Implementation | Status |
 |----------|-----------|----------------|--------|
-| RTSP | Client & Server | Hand-written (`RtspClient`, `RtspServer`) | ✅ |
-| RTMP | Ingest server | Hand-written (`RtmpServer`) | ✅ |
-| ONVIF | Discovery & PTZ | Wrapper via [oxvif](https://crates.io/crates/oxvif) (`OnvifClient`) | ✅ |
+| RTSP | Server | Hand-written (`RtspServer`) — external clients connect to pull streams | ✅ |
+| RTMP | Push client | Push local stream to external NVR ingest | ✅ |
+| ONVIF | Device endpoint | Serve device info, let external NVR discover this host | ✅ |
+| GB/T 28181 | Device | Register with external platform, push RTP on INVITE | ✅ |
 | GB/T 28181 | SIP + RTP | Wrapper via [gmv](https://crates.io/crates/gmv) (`Gb28181Client`) | ✅ |
 | H.264 | NAL unit parser | Hand-written (`H264Parser`) | ✅ |
 | H.265 | Decoding | Browser fallback to H.264 | ⚠️ |
-| CaptureSource | Streaming adapter | `crates/streaming/src/source.rs` | ❌ Missing |
-| Streaming → Root | Wiring | root `main.rs` → streaming crate | ❌ Not wired |
+| CaptureSource | Capture→streaming adapter | `crates/streaming/src/capture_source.rs` | ✅ |
+| Streaming → Root | Wiring | root `main.rs` → streaming crate | ✅ |
 | Auth Login/Logout | Session management | Returns 501 | 🚧 Stub |
 
 **Legend**: ✅ Implemented · ⚠️ Partial / Fallback · ❌ Missing · 🚧 Stub

@@ -14,13 +14,201 @@
 
 use anyhow::{Result, bail};
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
 
-use crate::rtsp::{RtspMethod, TransportInfo};
+// ═══════════════════════════════════════════════════════════════════════════════
+// RTSP Methods (RFC 2326 section 10)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// RTSP method types (RFC 2326 section 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtspMethod {
+    Options,
+    Describe,
+    Setup,
+    Play,
+    Pause,
+    Teardown,
+    Announce,
+    GetParameter,
+    SetParameter,
+}
+
+impl fmt::Display for RtspMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Options => write!(f, "OPTIONS"),
+            Self::Describe => write!(f, "DESCRIBE"),
+            Self::Setup => write!(f, "SETUP"),
+            Self::Play => write!(f, "PLAY"),
+            Self::Pause => write!(f, "PAUSE"),
+            Self::Teardown => write!(f, "TEARDOWN"),
+            Self::Announce => write!(f, "ANNOUNCE"),
+            Self::GetParameter => write!(f, "GET_PARAMETER"),
+            Self::SetParameter => write!(f, "SET_PARAMETER"),
+        }
+    }
+}
+
+impl FromStr for RtspMethod {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "OPTIONS" => Ok(Self::Options),
+            "DESCRIBE" => Ok(Self::Describe),
+            "SETUP" => Ok(Self::Setup),
+            "PLAY" => Ok(Self::Play),
+            "PAUSE" => Ok(Self::Pause),
+            "TEARDOWN" => Ok(Self::Teardown),
+            "ANNOUNCE" => Ok(Self::Announce),
+            "GET_PARAMETER" => Ok(Self::GetParameter),
+            "SET_PARAMETER" => Ok(Self::SetParameter),
+            _ => bail!("Unknown RTSP method: {s}"),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Transport Info
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Transport information for RTP/RTCP session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransportInfo {
+    /// Interleaved channel pair for TCP transport: (rtp_channel, rtcp_channel).
+    pub interleaved: Option<(u8, u8)>,
+    /// Client port pair for UDP transport: (rtp_port, rtcp_port).
+    pub client_port: Option<(u16, u16)>,
+    /// Server port pair for UDP transport: (rtp_port, rtcp_port).
+    pub server_port: Option<(u16, u16)>,
+    /// Session identifier.
+    pub session_id: String,
+    /// Synchronization source identifier.
+    pub ssrc: Option<u32>,
+    /// Transport mode (e.g., "unicast").
+    pub mode: Option<String>,
+}
+
+impl TransportInfo {
+    /// Parse a Transport header value.
+    ///
+    /// Example: `RTP/AVP/TCP;interleaved=0-1;ssrc=ABCD1234`
+    pub fn parse(header: &str) -> Result<Self> {
+        let params: Vec<&str> = header.split(';').collect();
+        let mut interleaved: Option<(u8, u8)> = None;
+        let mut client_port: Option<(u16, u16)> = None;
+        let mut server_port: Option<(u16, u16)> = None;
+        let session_id = String::new();
+        let mut ssrc: Option<u32> = None;
+        let mut mode: Option<String> = None;
+
+        for param in &params {
+            let param = param.trim();
+            if let Some((key, value)) = param.split_once('=') {
+                let key = key.trim().to_lowercase();
+                let value = value.trim();
+                match key.as_str() {
+                    "interleaved" => {
+                        let ports: Vec<&str> = value.split('-').collect();
+                        if ports.len() == 2 {
+                            let rtp = ports[0].parse().ok();
+                            let rtcp = ports[1].parse().ok();
+                            if let (Some(r), Some(c)) = (rtp, rtcp) {
+                                interleaved = Some((r, c));
+                            }
+                        }
+                    }
+                    "client_port" => {
+                        let ports: Vec<&str> = value.split('-').collect();
+                        if ports.len() == 2 {
+                            let rtp = ports[0].parse().ok();
+                            let rtcp = ports[1].parse().ok();
+                            if let (Some(r), Some(c)) = (rtp, rtcp) {
+                                client_port = Some((r, c));
+                            }
+                        }
+                    }
+                    "server_port" => {
+                        let ports: Vec<&str> = value.split('-').collect();
+                        if ports.len() == 2 {
+                            let rtp = ports[0].parse().ok();
+                            let rtcp = ports[1].parse().ok();
+                            if let (Some(r), Some(c)) = (rtp, rtcp) {
+                                server_port = Some((r, c));
+                            }
+                        }
+                    }
+                    "ssrc" => {
+                        // SSRC can be hex or decimal
+                        ssrc = parse_ssrc(value);
+                    }
+                    "mode" => {
+                        mode = Some(value.to_string());
+                    }
+                    _ => {}
+                }
+            } else {
+                let p = param.trim().to_lowercase();
+                // Handle transport protocol prefix like "RTP/AVP/TCP"
+                if p.starts_with("rtp/") {
+                    // Transport specifier; ignore for parsing
+                }
+            }
+        }
+
+        Ok(Self {
+            interleaved,
+            client_port,
+            server_port,
+            session_id,
+            ssrc,
+            mode,
+        })
+    }
+
+    /// Serialize to Transport header value string.
+    pub fn serialize(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+
+        parts.push("RTP/AVP/TCP".to_string());
+
+        if let Some((rtp, rtcp)) = self.interleaved {
+            parts.push(format!("interleaved={rtp}-{rtcp}"));
+        }
+        if let Some((rtp, rtcp)) = self.client_port {
+            parts.push(format!("client_port={rtp}-{rtcp}"));
+        }
+        if let Some((rtp, rtcp)) = self.server_port {
+            parts.push(format!("server_port={rtp}-{rtcp}"));
+        }
+        if let Some(ssrc) = self.ssrc {
+            parts.push(format!("ssrc=0x{ssrc:08x}"));
+        }
+        if let Some(ref mode) = self.mode {
+            parts.push(format!("mode={mode}"));
+        }
+
+        parts.join(";")
+    }
+}
+
+/// Parse an SSRC value that may be hex (with or without 0x prefix) or decimal.
+fn parse_ssrc(value: &str) -> Option<u32> {
+    let value = value.trim();
+    // Try decimal first
+    if let Ok(v) = value.parse::<u32>() {
+        return Some(v);
+    }
+    // Then try hex
+    u32::from_str_radix(value.trim_start_matches("0x"), 16).ok()
+}
 
 /// Case-insensitive header lookup helper.
 fn get_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -176,7 +364,7 @@ fn hex_encode(data: &[u8]) -> String {
 // Type re-exports from sibling modules
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub use crate::rtsp::TransportInfo as RtpTransportInfo;
+pub use TransportInfo as RtpTransportInfo;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Configuration
