@@ -19,3 +19,29 @@ rate_limit_window_secs = 60
 [observability]
 otel_endpoint = "http://localhost:4317"
 log_level = "info"
+
+[onvif]
+enabled = false
+device_name = "notebook-cam"
+manufacturer = "MiBee"
+model = "Rec-01"
+serial = "NC00000001"
+firmware_version = "1.0.0"
+
+[gb28181]
+enabled = false
+platform_sip_address = "192.168.1.100"
+platform_sip_port = 5060
+device_id = "34020000002000000001"
+username = ""
+password = ""
+sip_domain = "3402000000"
+register_interval_secs = 60
+
+[rtmp_push]
+enabled = false
+push_url = "rtmp://192.168.1.100:1935/live"
+app_name = "live"
+stream_name = "stream1"
+reconnect_interval_secs = 5
+max_reconnect_attempts = 10
