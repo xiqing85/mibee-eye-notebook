@@ -10,7 +10,6 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub mod cameras;
-pub mod onvif;
 pub mod settings;
 pub mod streams;
 pub mod devices;
