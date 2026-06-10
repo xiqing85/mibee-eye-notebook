@@ -5,6 +5,7 @@ use std::path::Path;
 // Web
 // ---------------------------------------------------------------------------
 
+/// Web UI server configuration (TLS host and port).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WebConfig {
     #[serde(default = "default_web_port")]
@@ -34,6 +35,7 @@ impl Default for WebConfig {
 // RTSP
 // ---------------------------------------------------------------------------
 
+/// RTSP server configuration (listening port).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RtspConfig {
     #[serde(default = "default_rtsp_port")]
@@ -54,6 +56,7 @@ impl Default for RtspConfig {
 // RTMP
 // ---------------------------------------------------------------------------
 
+/// RTMP ingest server configuration (listening port).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RtmpConfig {
     #[serde(default = "default_rtmp_port")]
@@ -74,6 +77,7 @@ impl Default for RtmpConfig {
 // Capture
 // ---------------------------------------------------------------------------
 
+/// Local video/audio capture device configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureConfig {
     #[serde(default = "default_video_device")]
@@ -103,6 +107,7 @@ impl Default for CaptureConfig {
 // Security
 // ---------------------------------------------------------------------------
 
+/// Authentication rate-limiting configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecurityConfig {
     #[serde(default = "default_rate_limit_max")]
@@ -132,6 +137,7 @@ impl Default for SecurityConfig {
 // Observability
 // ---------------------------------------------------------------------------
 
+/// OpenTelemetry tracing and log level configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObservabilityConfig {
     #[serde(default = "default_otel_endpoint")]
@@ -161,6 +167,10 @@ impl Default for ObservabilityConfig {
 // AppConfig — top-level configuration
 // ---------------------------------------------------------------------------
 
+/// Top-level application configuration loaded from `config.toml`.
+///
+/// Each sub-section has sensible defaults; only the fields that differ from
+/// defaults need to be specified in the TOML file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default)]

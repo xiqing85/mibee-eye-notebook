@@ -1,5 +1,7 @@
 # MiBee Rec
 
+[中文文档](README.zh-CN.md) · [Documentation](docs/en/)
+
 Professional laptop surveillance agent built in Rust.
 
 Captures webcam and microphone, connects to IP cameras and NVRs, and streams via RTSP / RTMP / ONVIF / GB/T 28181. Part of the [MiBee](https://https://github.com/xiqing85) ecosystem.
@@ -15,23 +17,37 @@ Captures webcam and microphone, connects to IP cameras and NVRs, and streams via
 - **Observable** — structured logging, OpenTelemetry export, Prometheus metrics endpoint
 - **Low footprint** — targets <5% CPU idle, <200 MB RAM; zero-copy where possible
 
+### Crate Responsibilities
+
+| Crate | LOC | Role |
+|-------|-----|------|
+| `protocols` | ~11.4k | RTSP, RTMP, ONVIF, GB28181, RTP, H.264 — hand-written codec and protocol implementations |
+| `streaming` | ~4.1k | StreamHub fan-out orchestrator, source/output adapters, MiBee NVR client |
+| `web` | ~2.5k | Axum REST API + embedded SPA + TLS via rustls |
+| `security` | ~1.9k | Session-based auth, rate limiting, encryption |
+| `capture` | ~800 | Video (nokhwa) + Audio (cpal) device wrappers |
+| `observability` | ~423 | Structured tracing, OpenTelemetry export, Prometheus metrics |
 ## Architecture
 
 ```
-┌──────────────────────────────┐
-│  Web UI (Axum + embedded SPA)│
-├──────────────────────────────┤
-│  Streaming Hub               │
-│  Source → fan-out → N Outputs│
-├──────────────────────────────┤
-│  Protocol Layer              │
-│  RTSP · RTMP · ONVIF · 28181│
-├──────────────────────────────┤
-│  Capture Layer               │
-│  Video (nokhwa) · Audio(cpal)│
-├──────────────────────────────┤
-│  Security · Observability    │
-└──────────────────────────────┘
+┌──────────────────────────────────┐
+│        Web UI (Axum + SPA)       │
+│  REST API · TLS · Auth Session   │
+├──────────────────────────────────┤
+│       Streaming Hub              │
+│  Source → BufferPool → fan-out   │
+│  ResourceController (max 16)     │
+├──────────────────────────────────┤
+│        Protocol Layer            │
+│  RTSP · RTMP · ONVIF · GB28181   │
+│  RTP · H.264 NAL Parser          │
+├──────────────────────────────────┤
+│        Capture Layer             │
+│  Video (nokhwa) · Audio (cpal)   │
+├──────────────────────────────────┤
+│   Security · Observability       │
+│  Auth · TLS · Tracing · Metrics  │
+└──────────────────────────────────┘
 ```
 
 ## Workspace Layout
@@ -48,6 +64,54 @@ mibee-rec/
 │  └─ observability/   # tracing + OTel + Prometheus
 ├─ migrations/         # SQLite schema
 └─ config.toml         # Default runtime config
+```
+
+## Protocol Support Status
+
+| Protocol | Component | Implementation | Status |
+|----------|-----------|----------------|--------|
+| RTSP | Client & Server | Hand-written (`RtspClient`, `RtspServer`) | ✅ |
+| RTMP | Ingest server | Hand-written (`RtmpServer`) | ✅ |
+| ONVIF | Discovery & PTZ | Wrapper via [oxvif](https://crates.io/crates/oxvif) (`OnvifClient`) | ✅ |
+| GB/T 28181 | SIP + RTP | Wrapper via [gmv](https://crates.io/crates/gmv) (`Gb28181Client`) | ✅ |
+| H.264 | NAL unit parser | Hand-written (`H264Parser`) | ✅ |
+| H.265 | Decoding | Browser fallback to H.264 | ⚠️ |
+| CaptureSource | Streaming adapter | `crates/streaming/src/source.rs` | ❌ Missing |
+| Streaming → Root | Wiring | root `main.rs` → streaming crate | ❌ Not wired |
+| Auth Login/Logout | Session management | Returns 501 | 🚧 Stub |
+
+**Legend**: ✅ Implemented · ⚠️ Partial / Fallback · ❌ Missing · 🚧 Stub
+
+## Resource Targets
+
+| Metric | Target | Mechanism |
+|--------|--------|-----------|
+| CPU (idle) | <5% | Zero-copy I/O, async everywhere, no busy loops |
+| Memory | <200 MB | `BufferPool` (10 MB pool), per-stream budgets, `ResourceController` |
+| Concurrent streams | ≤16 | `tokio::sync::Semaphore`-guarded in `ResourceController` |
+| First frame latency | <500 ms | Minimal buffering, eager keyframe detection |
+
+## Quick Start
+
+```bash
+# Clone and enter
+git clone https://github.com/xiqing85/mibee-eye-notebook.git
+cd mibee-rec
+
+# Install system dependencies (Linux)
+sudo apt install libv4l-dev libasound2-dev libclang-dev
+sudo usermod -aG video $USER
+# Log out and back in for group change to take effect
+
+# Build
+cargo build --release
+
+# Configure
+cp config.toml config.local.toml
+# Edit config.local.toml as needed
+
+# Run
+cargo run --release -- --config config.local.toml
 ```
 
 ## Building
@@ -92,6 +156,22 @@ cp config.toml config.local.toml
 `config.local.toml` is gitignored — put local overrides there.
 
 Default ports: web UI `8443` (TLS), RTSP `8554`, RTMP `1935`.
+
+## Documentation
+
+Full documentation is available under [docs/en/](docs/en/):
+
+- [Getting Started](docs/en/getting-started.md)
+- [Installation](docs/en/installation.md)
+- [Configuration](docs/en/configuration.md)
+- [API Reference](docs/en/api.md)
+- [Architecture](docs/en/architecture.md)
+- [Contributing](docs/en/contributing.md)
+
+Chinese documentation: [README.zh-CN.md](README.zh-CN.md) | [docs/zh/](docs/zh/)
+
+---
+
 
 ## License
 
