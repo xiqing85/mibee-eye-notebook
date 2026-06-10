@@ -472,8 +472,10 @@ fn spawn_output_task(
 mod tests {
     use super::*;
     use crate::output::tests::MockOutput;
+    use crate::output::RtspOutput;
     use crate::source::tests::MockSource;
     use std::time::Duration;
+    use tokio::sync::mpsc;
 
     fn test_frame(ts: u64) -> MediaFrame {
         MediaFrame::Video {
@@ -654,5 +656,75 @@ mod tests {
         let mut buf = pool.acquire(100).await.unwrap();
         buf.data().extend_from_slice(&[0x42; 50]);
         assert_eq!(buf.len(), 50);
+    }
+
+    // ── Hub integration: concrete output types ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_hub_with_rtsp_output() {
+        let frames = vec![test_frame(0), test_frame(33), test_frame(66)];
+        let source = MockSource::new(frames);
+        let mut hub = StreamHub::new(Box::new(source));
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let rtsp_out = RtspOutput::with_channel(
+            "test".to_string(),
+            "s=Test".to_string(),
+            1,
+            tx,
+        );
+        let _id = hub.add_output(Box::new(rtsp_out)).await;
+
+        let _handle = hub.run();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Verify frames arrived via the channel
+        let mut count = 0;
+        loop {
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(data)) => {
+                    count += 1;
+                    assert_eq!(data, vec![0x67, 0x42, 0x80]);
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        // All 3 frames should arrive (same data since test_frame uses static data)
+        assert_eq!(count, 3, "RtspOutput should receive all 3 frames");
+
+        hub.stop();
+    }
+
+    #[tokio::test]
+    async fn test_hub_mixed_outputs() {
+        let frames = vec![test_frame(0), test_frame(33)];
+        let source = MockSource::new(frames);
+        let mut hub = StreamHub::new(Box::new(source));
+
+        // RtspOutput (verified via channel, but we only check MockOutput here)
+        let (tx, _rx) = mpsc::channel(64);
+        let rtsp_out = RtspOutput::with_channel(
+            "test".to_string(),
+            "s=Test".to_string(),
+            1,
+            tx,
+        );
+        let mock_out = MockOutput::new();
+        let mock_recv = mock_out.receiver();
+
+        let _rtsp_id = hub.add_output(Box::new(rtsp_out)).await;
+        let _mock_id = hub.add_output(Box::new(mock_out)).await;
+
+        let _handle = hub.run();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Verify MockOutput received all frames through the hub
+        let mock_frames = mock_recv.lock().await;
+        assert_eq!(mock_frames.len(), 2, "MockOutput should receive 2 frames");
+        assert_eq!(mock_frames[0].timestamp(), 0);
+        assert_eq!(mock_frames[1].timestamp(), 33);
+
+        hub.stop();
     }
 }

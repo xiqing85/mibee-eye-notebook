@@ -560,5 +560,139 @@ port = 9090
         let result = AppConfig::load(&path);
         assert!(result.is_err(), "Invalid TOML must fail");
         std::fs::remove_file(&path).ok();
+}
+
+    // --- Edge case tests ---
+    //
+    // These verify that empty/missing sections fall back to defaults, that
+    // unusual-but-valid values deserialize without panicking, and that
+    // validation-adjacent edge cases are handled gracefully.
+
+    #[test]
+    fn test_empty_gb28181_section_uses_defaults() {
+        let toml_str = "[gb28181]\n";
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.gb28181.enabled);
+        assert_eq!(cfg.gb28181.platform_sip_address, "192.168.1.100");
+        assert_eq!(cfg.gb28181.platform_sip_port, 5060);
+        assert_eq!(cfg.gb28181.device_id, "34020000002000000001");
+        assert_eq!(cfg.gb28181.register_interval_secs, 60);
+    }
+
+    #[test]
+    fn test_empty_onvif_section_uses_defaults() {
+        let toml_str = "[onvif]\n";
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.onvif.enabled);
+        assert_eq!(cfg.onvif.device_name, "notebook-cam");
+        assert_eq!(cfg.onvif.manufacturer, "MiBee");
+        assert_eq!(cfg.onvif.model, "Rec-01");
+        assert_eq!(cfg.onvif.firmware_version, "1.0.0");
+    }
+
+    #[test]
+    fn test_empty_rtmp_push_section_uses_defaults() {
+        let toml_str = "[rtmp_push]\n";
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.rtmp_push.enabled);
+        assert_eq!(cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live");
+        assert_eq!(cfg.rtmp_push.app_name, "live");
+        assert_eq!(cfg.rtmp_push.stream_name, "stream1");
+        assert_eq!(cfg.rtmp_push.reconnect_interval_secs, 5);
+        assert_eq!(cfg.rtmp_push.max_reconnect_attempts, 10);
+    }
+
+    #[test]
+    fn test_gb28181_device_id_empty() {
+        let toml_str = r#"
+[gb28181]
+device_id = ""
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.gb28181.device_id, "");
+        // Other fields keep defaults
+        assert_eq!(cfg.gb28181.platform_sip_port, 5060);
+        assert_eq!(cfg.gb28181.register_interval_secs, 60);
+    }
+
+    #[test]
+    fn test_gb28181_device_id_short() {
+        let toml_str = r#"
+[gb28181]
+device_id = "123"
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.gb28181.device_id, "123");
+        assert_eq!(cfg.gb28181.platform_sip_port, 5060);
+    }
+
+    #[test]
+    fn test_gb28181_device_id_19_chars() {
+        let toml_str = r#"
+[gb28181]
+device_id = "3402000000200000000"
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.gb28181.device_id.len(), 19);
+        assert_eq!(cfg.gb28181.platform_sip_port, 5060);
+    }
+
+    #[test]
+    fn test_port_zero_edge_case() {
+        let toml_str = r#"
+[web]
+port = 0
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.web.port, 0);
+        // host falls back to default since not specified
+        assert_eq!(cfg.web.host, "0.0.0.0");
+    }
+
+    #[test]
+    fn test_rtmp_push_url_empty_keeps_other_defaults() {
+        let toml_str = r#"
+[rtmp_push]
+push_url = ""
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.rtmp_push.push_url, "");
+        // Other fields keep their own defaults
+        assert_eq!(cfg.rtmp_push.app_name, "live");
+        assert_eq!(cfg.rtmp_push.stream_name, "stream1");
+        assert_eq!(cfg.rtmp_push.reconnect_interval_secs, 5);
+        assert_eq!(cfg.rtmp_push.max_reconnect_attempts, 10);
+    }
+
+    #[test]
+    fn test_all_empty_sections_use_defaults() {
+        let toml_str = r#"
+[web]
+[rtsp]
+[rtmp]
+[capture]
+[security]
+[observability]
+[onvif]
+[gb28181]
+[rtmp_push]
+"#;
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.web.port, 8443, "web.port");
+        assert_eq!(cfg.web.host, "0.0.0.0", "web.host");
+        assert_eq!(cfg.rtsp.server_port, 8554, "rtsp.server_port");
+        assert_eq!(cfg.rtmp.ingest_port, 1935, "rtmp.ingest_port");
+        assert_eq!(cfg.capture.video_device, "/dev/video0", "capture.video_device");
+        assert_eq!(cfg.capture.audio_device, "default", "capture.audio_device");
+        assert_eq!(cfg.security.rate_limit_max, 20, "security.rate_limit_max");
+        assert_eq!(cfg.security.rate_limit_window_secs, 60, "security.rate_limit_window_secs");
+        assert_eq!(cfg.observability.otel_endpoint, "http://localhost:4317", "observability.otel_endpoint");
+        assert_eq!(cfg.observability.log_level, "info", "observability.log_level");
+        assert!(!cfg.onvif.enabled);
+        assert_eq!(cfg.onvif.device_name, "notebook-cam", "onvif.device_name");
+        assert!(!cfg.gb28181.enabled);
+        assert_eq!(cfg.gb28181.device_id, "34020000002000000001", "gb28181.device_id");
+        assert!(!cfg.rtmp_push.enabled);
+        assert_eq!(cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live", "rtmp_push.push_url");
     }
 }
