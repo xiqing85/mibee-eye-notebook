@@ -10,4 +10,5 @@ tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 hex = "0.4"
+sha2 = "0.10"
 rand.workspace = true
