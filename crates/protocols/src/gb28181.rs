@@ -21,6 +21,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::rtp::{RtpHeaderFlags, RtpPacket, H264_PAYLOAD_TYPE};
+use sha2::{Digest, Sha256};
 
 // ─── Device ID ───────────────────────────────────────────────────────────────
 // GB/T 28181 device IDs are 20-digit codes with the structure:
@@ -721,15 +722,12 @@ pub fn parse_digest_auth(header_value: &str) -> Result<DigestAuthParams> {
     })
 }
 
-/// Build a Digest Authorization header value for SIP REGISTER.
+/// Build a Digest Authorization header value for SIP 401 challenge responses.
 ///
-/// Uses SHA-256 for hashing. While GB/T 28181 compliance suggests SM3,
-/// SHA-256 is used as it's widely available. This implementation produces
-/// a correctly formatted Digest Authorization header.
-///
-/// For production use, replace the hash computation with a proper crypto
-/// library (ring, sha2). This implementation uses a deterministic encoding
-/// of the input for protocol format validation.
+/// Computes SHA-256 digest per RFC 7616:
+///   HA1 = SHA-256(username:realm:password)
+///   HA2 = SHA-256(method:uri)
+///   response = SHA-256(HA1:nonce:HA2)
 pub fn build_digest_auth(
     username: &str,
     realm: &str,
@@ -739,19 +737,21 @@ pub fn build_digest_auth(
     method: &str,
     algorithm: &str,
 ) -> String {
-    // In production, compute:
-    //   HA1 = SHA-256(username:realm:password)
-    //   HA2 = SHA-256(method:uri)
-    //   response = SHA-256(HA1:nonce:HA2)
-    //
-    // For testing and format validation we produce a deterministic
-    // string-based encoding that avoids external crate dependencies.
-    let ha1_input = format!("{}:{}:{}", username, realm, password);
-    let ha1 = hex_encode(ha1_input.as_bytes());
-    let ha2_input = format!("{}:{}", method.to_uppercase(), uri);
-    let ha2 = hex_encode(ha2_input.as_bytes());
-    let response_input = format!("{}:{}:{}", ha1, nonce, ha2);
-    let response = hex_encode(response_input.as_bytes());
+    let ha1 = {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{}:{}:{}", username, realm, password).as_bytes());
+        hex::encode(hasher.finalize())
+    };
+    let ha2 = {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{}:{}", method.to_uppercase(), uri).as_bytes());
+        hex::encode(hasher.finalize())
+    };
+    let response = {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{}:{}:{}", ha1, nonce, ha2).as_bytes());
+        hex::encode(hasher.finalize())
+    };
 
     format!(
         "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\", algorithm={}",
@@ -759,15 +759,7 @@ pub fn build_digest_auth(
     )
 }
 
-/// Simple hex encoding from bytes (no external dependencies).
-fn hex_encode(data: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut hex = String::with_capacity(data.len() * 2);
-    for byte in data {
-        let _ = write!(hex, "{:02x}", byte);
-    }
-    hex
-}
+
 
 // ─── PS (Program Stream) Parser ────────────────────────────────────────────
 
@@ -1930,15 +1922,6 @@ mod tests {
     fn test_sdp_missing_required() {
         assert!(SdpSession::parse("v=0\r\n").is_err());
         assert!(SdpSession::parse("").is_err());
-    }
-
-    // ─── Hex Encode Tests ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_hex_encode_fn() {
-        let result = hex_encode(b"hello");
-        assert_eq!(result, "68656c6c6f");
-        assert_eq!(hex_encode(b""), "");
     }
 
     // ─── 401 Challenge Missing Header Tests ────────────────────────────────
