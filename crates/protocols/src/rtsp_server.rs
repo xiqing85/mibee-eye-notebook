@@ -456,7 +456,7 @@ struct ParsedRequest {
 #[derive(Debug, Clone, PartialEq)]
 enum SessionState {
     Init,
-    Described,
+    Described { stream_path: String },
     Setup {
         session_id: String,
         transport: TransportInfo,
@@ -823,7 +823,9 @@ fn handle_describe(
     let base_url = uri.trim_end_matches(&stream.url_path());
     let sdp = stream.sdp_body.clone();
 
-    session.state = SessionState::Described;
+    session.state = SessionState::Described {
+        stream_path: stream.path.clone(),
+    };
 
     build_ok_response(
         cseq,
@@ -1108,6 +1110,18 @@ async fn handle_connection(
                             .map(|(path, entry)| {
                                 StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
                             })
+                    })
+                    .or_else(|| {
+                        // Fallback: use the stream path saved during DESCRIBE
+                        if let SessionState::Described { stream_path } = &session.state {
+                            let path = stream_path.clone();
+                            let live_map = server.live_streams.lock().unwrap();
+                            live_map.get(&path).map(|entry| {
+                                StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
+                            })
+                        } else {
+                            None
+                        }
                     });
 
                 let mut temp_map = HashMap::new();
