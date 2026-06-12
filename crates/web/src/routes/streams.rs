@@ -178,8 +178,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
     use protocols::rtsp_server::RtspServerConfig;
+    use tower::ServiceExt;
 
     fn test_db() -> Arc<Mutex<Connection>> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -234,7 +234,13 @@ mod tests {
         let active = crate::server::ActiveStreams::default();
         let stream_manager = Arc::new(StreamManager::new());
         let rtsp_server = Arc::new(RtspServer::new(RtspServerConfig::default()));
-        let state = crate::server::AppRouterState { db, active, stream_manager, rtsp_server, protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())) };
+        let state = crate::server::AppRouterState {
+            db,
+            active,
+            stream_manager,
+            rtsp_server,
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        };
         (state, token, id)
     }
 
