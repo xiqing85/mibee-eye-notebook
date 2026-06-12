@@ -6,9 +6,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 #[derive(Parser, Debug)]
-#[command(name = "mibee-rec", about = "MiBee Rec — Professional laptop surveillance agent")]
+#[command(
+    name = "mibee-rec",
+    about = "MiBee Rec — Professional laptop surveillance agent"
+)]
 struct Args {
     /// Path to config file
     #[arg(short, long, default_value = "config.toml")]
@@ -75,10 +79,11 @@ async fn main() -> anyhow::Result<()> {
             firmware_version: config.onvif.firmware_version.clone(),
             serial_number: config.onvif.serial.clone(),
             hardware_id: config.onvif.model.clone(),
-            rtsp_url: format!("rtsp://{}:{}/webcam", config.web.host, config.rtsp.server_port),
-            scopes: vec![
-                "onvif://www.onvif.org/type/NetworkVideoTransmitter".into()
-            ],
+            rtsp_url: format!(
+                "rtsp://{}:{}/webcam",
+                config.web.host, config.rtsp.server_port
+            ),
+            scopes: vec!["onvif://www.onvif.org/type/NetworkVideoTransmitter".into()],
             xaddrs: vec![],
         };
         let onvif_handle = tokio::spawn(async move {
@@ -132,6 +137,30 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("RTMP Push enabled (per-stream via streaming crate)");
     }
 
+    // Shutdown coordination signal
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Signal handler task: listen for SIGINT (ctrl-c) and SIGTERM
+    let signal_handle = tokio::spawn(async move {
+        let ctrl_c = tokio::signal::ctrl_c();
+
+        #[cfg(unix)]
+        let terminate = async {
+            let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Failed to register SIGTERM handler");
+            sig.recv().await;
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+
+        tokio::select! {
+            _ = ctrl_c => tracing::info!("Received SIGINT, shutting down"),
+            _ = terminate => tracing::info!("Received SIGTERM, shutting down"),
+        }
+
+        // Signal the web server to stop. Second signal is a no-op (watch already true).
+        let _ = shutdown_tx.send(true);
+    });
 
     println!(
         "mibee-rec server starting on {}:{}...",
@@ -143,10 +172,33 @@ async fn main() -> anyhow::Result<()> {
     // Build protocol config store for REST API
     let mut protocol_configs = HashMap::new();
     protocol_configs.insert("onvif".into(), serde_json::to_value(&config.onvif).unwrap());
-    protocol_configs.insert("gb28181".into(), serde_json::to_value(&config.gb28181).unwrap());
-    protocol_configs.insert("rtmp_push".into(), serde_json::to_value(&config.rtmp_push).unwrap());
+    protocol_configs.insert(
+        "gb28181".into(),
+        serde_json::to_value(&config.gb28181).unwrap(),
+    );
+    protocol_configs.insert(
+        "rtmp_push".into(),
+        serde_json::to_value(&config.rtmp_push).unwrap(),
+    );
     let protocol_configs = Arc::new(tokio::sync::Mutex::new(protocol_configs));
-    web::server::run(&config.web.host, config.web.port, conn, stream_manager, rtsp_server, protocol_configs).await?;
+
+    // Run server with graceful shutdown signal
+    web::server::run_with_shutdown(
+        &config.web.host,
+        config.web.port,
+        conn,
+        stream_manager.clone(),
+        rtsp_server,
+        protocol_configs,
+        shutdown_rx,
+    )
+    .await?;
+
+    // Abort the signal handler task
+    signal_handle.abort();
+
+    // Stop all active streams
+    stream_manager.shutdown_all().await;
 
     // Graceful shutdown: abort all protocol background tasks
     for handle in protocol_handles {

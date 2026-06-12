@@ -10,10 +10,10 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub mod cameras;
-pub mod settings;
-pub mod streams;
 pub mod devices;
 pub mod protocols;
+pub mod settings;
+pub mod streams;
 
 /// Helper: consistent error JSON response with code.
 pub fn error_response(status: StatusCode, msg: &str) -> axum::response::Response {
@@ -116,9 +116,8 @@ pub async fn login_handler(
     tracing::info!(username = %body.username, "User logged in");
 
     // Set HttpOnly + Secure + SameSite cookie
-    let cookie = format!(
-        "session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400"
-    );
+    let cookie =
+        format!("session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400");
 
     (
         StatusCode::OK,
@@ -605,7 +604,10 @@ mod tests {
             .get("set-cookie")
             .and_then(|v| v.to_str().ok())
             .unwrap();
-        assert!(set_cookie.starts_with("session="), "should set session cookie");
+        assert!(
+            set_cookie.starts_with("session="),
+            "should set session cookie"
+        );
         assert!(set_cookie.contains("HttpOnly"), "cookie should be HttpOnly");
         assert!(set_cookie.contains("Secure"), "cookie should be Secure");
     }
@@ -649,7 +651,10 @@ mod tests {
             .get("set-cookie")
             .and_then(|v| v.to_str().ok())
             .unwrap();
-        assert!(set_cookie.contains("Max-Age=0"), "logout should clear cookie");
+        assert!(
+            set_cookie.contains("Max-Age=0"),
+            "logout should clear cookie"
+        );
     }
     // -----------------------------------------------------------------------
     // Password reset tests

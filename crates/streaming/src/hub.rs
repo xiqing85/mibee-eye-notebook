@@ -92,7 +92,7 @@ impl StreamHub {
     ///
     /// The source is moved into the hub and will be started when [`run`](Self::run)
     /// is called.
-    pub fn new(source: Box<dyn Source>) -> Self {
+    pub fn new(source: Box<dyn Source>, resource_controller: ResourceController) -> Self {
         let (stop_tx, stop_rx) = watch::channel(false);
         // Broadcast channel capacity: 64 frames. If outputs are slow they'll
         // lag and drop old frames rather than blocking the source.
@@ -109,7 +109,7 @@ impl StreamHub {
                 running: false,
             })),
             buffer_pool: BufferPool::new(10 * 1024 * 1024), // 10 MB per stream
-            resource: ResourceController::new(16),
+            resource: resource_controller,
             lifecycle: StreamLifecycle::new(),
             budget: StreamBudget::new(),
             stream_id: Uuid::new_v4(),
@@ -472,8 +472,8 @@ fn spawn_output_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::tests::MockOutput;
     use crate::output::RtspOutput;
+    use crate::output::tests::MockOutput;
     use crate::source::tests::MockSource;
     use std::time::Duration;
     use tokio::sync::mpsc;
@@ -491,7 +491,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_new() {
         let source = MockSource::new(vec![test_frame(0)]);
-        let hub = StreamHub::new(Box::new(source));
+        let hub = StreamHub::new(Box::new(source), ResourceController::new(16));
         assert!(!hub.is_stopped());
         assert!(hub.source.is_some());
     }
@@ -499,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_add_remove_output() {
         let source = MockSource::new(vec![test_frame(0)]);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         let out = MockOutput::new();
         let id = hub.add_output(Box::new(out)).await;
@@ -522,7 +522,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_remove_nonexistent_output() {
         let source = MockSource::new(vec![test_frame(0)]);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
         let removed = hub.remove_output(Uuid::new_v4()).await;
         assert!(!removed);
     }
@@ -533,7 +533,7 @@ mod tests {
     async fn test_hub_fan_out_to_three_outputs() {
         let frames = vec![test_frame(0), test_frame(33), test_frame(66)];
         let source = MockSource::new(frames);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         let out1 = MockOutput::new();
         let out2 = MockOutput::new();
@@ -569,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_fan_out_single_frame() {
         let source = MockSource::new(vec![test_frame(42)]);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         let out = MockOutput::new();
         let recv = out.receiver();
@@ -590,7 +590,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_lifecycle() {
         let source = MockSource::new(vec![test_frame(0), test_frame(1)]);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         let out = MockOutput::new();
         let _id = hub.add_output(Box::new(out)).await;
@@ -607,7 +607,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_stop_before_run() {
         let source = MockSource::new(vec![test_frame(0)]);
-        let hub = StreamHub::new(Box::new(source));
+        let hub = StreamHub::new(Box::new(source), ResourceController::new(16));
         hub.stop();
         assert!(hub.is_stopped());
     }
@@ -617,7 +617,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_source_exhaustion_cleans_up() {
         let source = MockSource::new(vec![test_frame(99)]);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         let out = MockOutput::new();
         let recv = out.receiver();
@@ -652,7 +652,7 @@ mod tests {
     #[tokio::test]
     async fn test_hub_buffer_pool_access() {
         let source = MockSource::new(vec![test_frame(0)]);
-        let hub = StreamHub::new(Box::new(source));
+        let hub = StreamHub::new(Box::new(source), ResourceController::new(16));
         let pool = hub.buffer_pool();
         let mut buf = pool.acquire(100).await.unwrap();
         buf.data().extend_from_slice(&[0x42; 50]);
@@ -665,15 +665,10 @@ mod tests {
     async fn test_hub_with_rtsp_output() {
         let frames = vec![test_frame(0), test_frame(33), test_frame(66)];
         let source = MockSource::new(frames);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         let (tx, mut rx) = mpsc::channel(64);
-        let rtsp_out = RtspOutput::with_channel(
-            "test".to_string(),
-            "s=Test".to_string(),
-            1,
-            tx,
-        );
+        let rtsp_out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         let _id = hub.add_output(Box::new(rtsp_out)).await;
 
         let _handle = hub.run();
@@ -701,16 +696,11 @@ mod tests {
     async fn test_hub_mixed_outputs() {
         let frames = vec![test_frame(0), test_frame(33)];
         let source = MockSource::new(frames);
-        let mut hub = StreamHub::new(Box::new(source));
+        let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         // RtspOutput (verified via channel, but we only check MockOutput here)
         let (tx, _rx) = mpsc::channel(64);
-        let rtsp_out = RtspOutput::with_channel(
-            "test".to_string(),
-            "s=Test".to_string(),
-            1,
-            tx,
-        );
+        let rtsp_out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         let mock_out = MockOutput::new();
         let mock_recv = mock_out.receiver();
 

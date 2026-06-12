@@ -240,7 +240,13 @@ mod tests {
         let rtsp_server = Arc::new(protocols::rtsp_server::RtspServer::new(
             protocols::rtsp_server::RtspServerConfig::default(),
         ));
-        let state = crate::server::AppRouterState { db, active, stream_manager, rtsp_server, protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())) };
+        let state = crate::server::AppRouterState {
+            db,
+            active,
+            stream_manager,
+            rtsp_server,
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        };
         (state, token)
     }
 

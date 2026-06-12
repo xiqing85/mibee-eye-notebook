@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::rtp::{RtpHeaderFlags, RtpPacket, H264_PAYLOAD_TYPE};
+use crate::rtp::{H264_PAYLOAD_TYPE, RtpHeaderFlags, RtpPacket};
 use sha2::{Digest, Sha256};
 
 // ─── Device ID ───────────────────────────────────────────────────────────────
@@ -759,8 +759,6 @@ pub fn build_digest_auth(
     )
 }
 
-
-
 // ─── PS (Program Stream) Parser ────────────────────────────────────────────
 
 /// MPEG-2 Program Stream pack header.
@@ -1193,7 +1191,13 @@ impl SipDeviceClient {
     }
 
     /// Build a SIP BYE request to end a session.
-    pub fn build_bye(&self, remote_id: &str, remote_addr: &str, call_id: &str, cseq: u32) -> SipMessage {
+    pub fn build_bye(
+        &self,
+        remote_id: &str,
+        remote_addr: &str,
+        call_id: &str,
+        cseq: u32,
+    ) -> SipMessage {
         build_bye_request(
             &self.device_id,
             &self.local_ip,
@@ -1258,9 +1262,17 @@ pub fn parse_invite(msg: &SipMessage) -> Result<InviteInfo> {
         .connection_address
         .as_deref()
         .unwrap_or("IN IP4 127.0.0.1");
-    let ip = c_addr.split_whitespace().last().unwrap_or("127.0.0.1").to_string();
+    let ip = c_addr
+        .split_whitespace()
+        .last()
+        .unwrap_or("127.0.0.1")
+        .to_string();
 
-    let payload_type = media.payload_types.first().copied().unwrap_or(H264_PAYLOAD_TYPE);
+    let payload_type = media
+        .payload_types
+        .first()
+        .copied()
+        .unwrap_or(H264_PAYLOAD_TYPE);
 
     // SSRC may be specified as an SDP attribute
     let ssrc = media

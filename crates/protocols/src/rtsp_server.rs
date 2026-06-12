@@ -17,9 +17,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -456,7 +456,9 @@ struct ParsedRequest {
 #[derive(Debug, Clone, PartialEq)]
 enum SessionState {
     Init,
-    Described { stream_path: String },
+    Described {
+        stream_path: String,
+    },
     Setup {
         session_id: String,
         transport: TransportInfo,
@@ -1061,10 +1063,9 @@ async fn handle_connection(
                         // Fallback: check live streams (scope lock to avoid holding across await)
                         let live_found = {
                             let live_map = server.live_streams.lock().unwrap();
-                            find_live_stream(&request.uri, &live_map)
-                                .map(|(path, entry)| {
-                                    StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
-                                })
+                            find_live_stream(&request.uri, &live_map).map(|(path, entry)| {
+                                StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
+                            })
                         };
                         match live_found {
                             Some(stream) => stream,
@@ -1106,19 +1107,18 @@ async fn handle_connection(
                     .cloned()
                     .or_else(|| {
                         let live_map = server.live_streams.lock().unwrap();
-                        find_live_stream(&request.uri, &live_map)
-                            .map(|(path, entry)| {
-                                StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
-                            })
+                        find_live_stream(&request.uri, &live_map).map(|(path, entry)| {
+                            StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
+                        })
                     })
                     .or_else(|| {
                         // Fallback: use the stream path saved during DESCRIBE
                         if let SessionState::Described { stream_path } = &session.state {
                             let path = stream_path.clone();
                             let live_map = server.live_streams.lock().unwrap();
-                            live_map.get(&path).map(|entry| {
-                                StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
-                            })
+                            live_map
+                                .get(&path)
+                                .map(|entry| StreamConfig::new(&path, &entry.sdp_body, entry.ssrc))
                         } else {
                             None
                         }
@@ -2327,7 +2327,10 @@ mod tests {
         );
         // Verify sender works by sending data
         let result = tx.try_send(vec![0x00, 0x00, 0x00, 0x01, 0x67]);
-        assert!(result.is_ok(), "Should be able to send to live stream channel");
+        assert!(
+            result.is_ok(),
+            "Should be able to send to live stream channel"
+        );
         // Verify entry is stored in server
         let live_map = server.inner.live_streams.lock().unwrap();
         assert!(live_map.contains_key("livecam"));
@@ -2358,11 +2361,7 @@ mod tests {
 
         // Register a live stream
         let sdp = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=LiveCam\r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n";
-        let tx = server.register_live_stream(
-            "livecam".to_string(),
-            sdp.to_string(),
-            0xdeadbeef,
-        );
+        let tx = server.register_live_stream("livecam".to_string(), sdp.to_string(), 0xdeadbeef);
 
         let (client, server_stream) = tokio::io::duplex(65536);
         let inner = server.inner.clone();
@@ -2381,14 +2380,20 @@ mod tests {
         let request = b"DESCRIBE rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\n\r\n";
         let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
         let resp_str = String::from_utf8_lossy(&resp);
-        assert!(resp_str.contains("200 OK"), "DESCRIBE should return 200 for live stream, got: {resp_str}");
+        assert!(
+            resp_str.contains("200 OK"),
+            "DESCRIBE should return 200 for live stream, got: {resp_str}"
+        );
         assert!(resp_str.contains("H264"), "SDP should contain H264");
 
         // 3. SETUP
         let request = b"SETUP rtsp://localhost:8554/livecam/track1 RTSP/1.0\r\nCSeq: 3\r\nTransport: RTP/AVP/TCP;interleaved=0-1\r\n\r\n";
         let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
         let resp_str = String::from_utf8_lossy(&resp);
-        assert!(resp_str.contains("200 OK"), "SETUP should return 200, got: {resp_str}");
+        assert!(
+            resp_str.contains("200 OK"),
+            "SETUP should return 200, got: {resp_str}"
+        );
 
         // Extract session ID
         let session_id = resp_str
@@ -2436,11 +2441,18 @@ mod tests {
         let mut len_buf = [0u8; 2];
         client_reader.read_exact(&mut len_buf).await.unwrap();
         let frame_len = u16::from_be_bytes(len_buf) as usize;
-        assert_eq!(frame_len, nal_data.len(), "Frame length should match NAL data");
+        assert_eq!(
+            frame_len,
+            nal_data.len(),
+            "Frame length should match NAL data"
+        );
 
         let mut received_data = vec![0u8; frame_len];
         client_reader.read_exact(&mut received_data).await.unwrap();
-        assert_eq!(received_data, nal_data, "Received data should match sent NAL data");
+        assert_eq!(
+            received_data, nal_data,
+            "Received data should match sent NAL data"
+        );
 
         // 6. TEARDOWN
         let teardown_request = format!(
@@ -2448,9 +2460,11 @@ mod tests {
         );
         // After TEARDOWN, the connection should close
         // We send TEARDOWN through the writer
-        client_writer.write_all(teardown_request.as_bytes()).await.unwrap();
+        client_writer
+            .write_all(teardown_request.as_bytes())
+            .await
+            .unwrap();
         // Give time for the handler to process
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-
 }

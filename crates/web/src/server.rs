@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tower_http::cors::CorsLayer;
 
 use crate::assets;
@@ -105,16 +105,40 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
         // Protocol configs
-        .route("/api/protocols/onvif", get(routes::protocols::get_protocols_onvif))
-        .route("/api/protocols/onvif", put(routes::protocols::update_protocols_onvif))
-        .route("/api/protocols/gb28181", get(routes::protocols::get_protocols_gb28181))
-        .route("/api/protocols/gb28181", put(routes::protocols::update_protocols_gb28181))
-        .route("/api/protocols/rtmp", get(routes::protocols::get_protocols_rtmp))
-        .route("/api/protocols/rtmp", put(routes::protocols::update_protocols_rtmp))
+        .route(
+            "/api/protocols/onvif",
+            get(routes::protocols::get_protocols_onvif),
+        )
+        .route(
+            "/api/protocols/onvif",
+            put(routes::protocols::update_protocols_onvif),
+        )
+        .route(
+            "/api/protocols/gb28181",
+            get(routes::protocols::get_protocols_gb28181),
+        )
+        .route(
+            "/api/protocols/gb28181",
+            put(routes::protocols::update_protocols_gb28181),
+        )
+        .route(
+            "/api/protocols/rtmp",
+            get(routes::protocols::get_protocols_rtmp),
+        )
+        .route(
+            "/api/protocols/rtmp",
+            put(routes::protocols::update_protocols_rtmp),
+        )
         // ONVIF
         // Device enumeration
-        .route("/api/devices/video", get(routes::devices::list_video_devices))
-        .route("/api/devices/audio", get(routes::devices::list_audio_devices))
+        .route(
+            "/api/devices/video",
+            get(routes::devices::list_video_devices),
+        )
+        .route(
+            "/api/devices/audio",
+            get(routes::devices::list_audio_devices),
+        )
         // Auth middleware
         .route_layer(middleware::from_fn(security::middleware::require_auth));
 
@@ -190,6 +214,61 @@ pub async fn run(
     axum_server::bind_rustls(addr, tls_config)
         .serve(app.into_make_service())
         .await?;
+
+    Ok(())
+}
+
+/// Like [`run`] but accepts a shutdown signal for graceful termination.
+///
+/// When the `shutdown_rx` watch channel receives `true`, the server stops
+/// accepting new connections, finishes in-flight requests, and returns.
+pub async fn run_with_shutdown(
+    host: &str,
+    port: u16,
+    db: Connection,
+    stream_manager: Arc<StreamManager>,
+    rtsp_server: Arc<RtspServer>,
+    protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    // Register Prometheus metrics
+    observability::register_metrics()?;
+
+    let db = Arc::new(Mutex::new(db));
+    let state = AppRouterState {
+        db,
+        active: ActiveStreams::default(),
+        stream_manager,
+        rtsp_server,
+        protocol_configs,
+    };
+    let app = build_app_with_state(state);
+
+    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+
+    // Build TLS config from cert/key files; generates self-signed if missing
+    let tls_conf = security::tls::build_tls_config("tls/cert.pem", "tls/key.pem")?;
+    let tls_config = RustlsConfig::from_config(Arc::new(tls_conf));
+    tracing::info!("notebook-cam server starting on https://{}", addr);
+
+    // Create a handle for graceful shutdown
+    let handle = axum_server::Handle::new();
+    let shutdown_handle_clone = handle.clone();
+
+    // Spawn a task that watches for the shutdown signal
+    let shutdown_handle = tokio::spawn(async move {
+        let _ = shutdown_rx.changed().await;
+        tracing::info!("Shutdown signal received, stopping server");
+        shutdown_handle_clone.graceful_shutdown(None);
+    });
+
+    let result = axum_server::bind_rustls(addr, tls_config)
+        .handle(handle)
+        .serve(app.into_make_service())
+        .await;
+
+    shutdown_handle.abort();
+    result?;
 
     Ok(())
 }

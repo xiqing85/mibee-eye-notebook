@@ -124,8 +124,12 @@ impl RtmpPushClient {
         socket.flush().await?;
 
         // 3. Bump chunk size for efficient transfer
-        Self::write_protocol_message(&mut socket, MessageType::SetChunkSize, &CHUNK_SIZE.to_be_bytes())
-            .await?;
+        Self::write_protocol_message(
+            &mut socket,
+            MessageType::SetChunkSize,
+            &CHUNK_SIZE.to_be_bytes(),
+        )
+        .await?;
         self.chunk_size = CHUNK_SIZE;
 
         // 4. NetConnection.connect
@@ -155,7 +159,9 @@ impl RtmpPushClient {
         if let Some(mut stream) = self.stream.take() {
             // Send FCUnpublish + deleteStream for a clean shutdown
             let fcunpublish = Self::encode_fcunpublish(&self.stream_name);
-            Self::write_command_chunk(&mut stream, 0, 0, &fcunpublish).await.ok();
+            Self::write_command_chunk(&mut stream, 0, 0, &fcunpublish)
+                .await
+                .ok();
             stream.shutdown().await?;
         }
         self.stream_id = 0;
@@ -174,7 +180,16 @@ impl RtmpPushClient {
     pub async fn send_video(&mut self, data: &[u8], timestamp: u32) -> Result<()> {
         self.video_timestamp = timestamp;
         let stream = self.stream.as_mut().context("Not connected")?;
-        Self::write_data_chunk(stream, 5, MessageType::Video, self.stream_id, timestamp, self.chunk_size, data).await
+        Self::write_data_chunk(
+            stream,
+            5,
+            MessageType::Video,
+            self.stream_id,
+            timestamp,
+            self.chunk_size,
+            data,
+        )
+        .await
     }
 
     /// Send an AAC audio frame
@@ -185,7 +200,16 @@ impl RtmpPushClient {
     pub async fn send_audio(&mut self, data: &[u8], timestamp: u32) -> Result<()> {
         self.audio_timestamp = timestamp;
         let stream = self.stream.as_mut().context("Not connected")?;
-        Self::write_data_chunk(stream, 4, MessageType::Audio, self.stream_id, timestamp, self.chunk_size, data).await
+        Self::write_data_chunk(
+            stream,
+            4,
+            MessageType::Audio,
+            self.stream_id,
+            timestamp,
+            self.chunk_size,
+            data,
+        )
+        .await
     }
 
     // ── AMF0 command builders ───────────────────────────────────────────────────────────────
@@ -199,7 +223,10 @@ impl RtmpPushClient {
             &Amf0Value::Object(vec![
                 ("app".to_string(), Amf0Value::String(app.to_string())),
                 ("tcUrl".to_string(), Amf0Value::String(tc_url)),
-                ("flashVer".to_string(), Amf0Value::String("FMLE/3.0 (compatible; mibeerec)".to_string())),
+                (
+                    "flashVer".to_string(),
+                    Amf0Value::String("FMLE/3.0 (compatible; mibeerec)".to_string()),
+                ),
                 ("swfUrl".to_string(), Amf0Value::String(String::new())),
                 ("fpad".to_string(), Amf0Value::Boolean(false)),
                 ("capabilities".to_string(), Amf0Value::Number(239.0)),
@@ -212,9 +239,13 @@ impl RtmpPushClient {
             .serialize(),
         );
         // Optional additional info (Wink amet, etc.)
-        buf.extend_from_slice(&Amf0Value::Object(vec![
-            ("level".to_string(), Amf0Value::String("status".to_string())),
-        ]).serialize());
+        buf.extend_from_slice(
+            &Amf0Value::Object(vec![(
+                "level".to_string(),
+                Amf0Value::String("status".to_string()),
+            )])
+            .serialize(),
+        );
         buf
     }
 
@@ -263,7 +294,16 @@ impl RtmpPushClient {
         timestamp: u32,
         amf_payload: &[u8],
     ) -> Result<()> {
-        Self::write_chunked(stream, 3, MessageType::Command, message_stream_id, timestamp, 128, amf_payload).await
+        Self::write_chunked(
+            stream,
+            3,
+            MessageType::Command,
+            message_stream_id,
+            timestamp,
+            128,
+            amf_payload,
+        )
+        .await
     }
 
     /// Write a data chunk (audio/video) with proper chunking
@@ -276,7 +316,16 @@ impl RtmpPushClient {
         chunk_size: u32,
         data: &[u8],
     ) -> Result<()> {
-        Self::write_chunked(stream, chunk_stream_id, msg_type, message_stream_id, timestamp, chunk_size, data).await
+        Self::write_chunked(
+            stream,
+            chunk_stream_id,
+            msg_type,
+            message_stream_id,
+            timestamp,
+            chunk_size,
+            data,
+        )
+        .await
     }
 
     /// Core chunk writer — handles Type 0 header + Type 3 continuation chunks
@@ -305,7 +354,9 @@ impl RtmpPushClient {
             message_stream_id: Some(message_stream_id),
             extended,
         };
-        stream.write_all(&msg_header.serialize(ChunkType::Type0)).await?;
+        stream
+            .write_all(&msg_header.serialize(ChunkType::Type0))
+            .await?;
 
         // Chunked body
         let mut offset = 0;
@@ -518,7 +569,8 @@ pub fn extract_h264_nal_units(data: &[u8]) -> Result<Vec<Vec<u8>>> {
             let sps_len = u16::from_be_bytes([payload[6], payload[7]]) as usize;
             let sps = payload[8..8 + sps_len].to_vec();
             let pps_offset = 8 + sps_len + 1;
-            let pps_len = u16::from_be_bytes([payload[pps_offset], payload[pps_offset + 1]]) as usize;
+            let pps_len =
+                u16::from_be_bytes([payload[pps_offset], payload[pps_offset + 1]]) as usize;
             let pps = payload[pps_offset + 2..pps_offset + 2 + pps_len].to_vec();
             Ok(vec![sps, pps])
         }
@@ -644,7 +696,11 @@ mod tests {
         let mut reader = Cursor::new(server_data);
         let mut writer = Vec::new();
         let result = handshake::perform_client_handshake(&mut reader, &mut writer, &c1);
-        assert!(result.is_ok(), "Client handshake failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Client handshake failed: {:?}",
+            result.err()
+        );
 
         // Verify client wrote C0 + C1 + C2
         assert!(writer.len() >= 1 + handshake::HANDSHAKE_SIZE + handshake::HANDSHAKE_SIZE);
@@ -723,7 +779,11 @@ mod tests {
 
     #[test]
     fn test_video_chunk_structure() {
-        let video_payload = build_video_nalus(&[0x00, 0x00, 0x00, 0x05, 0x67, 0x42, 0x80, 0x0A, 0xFF], true, 0);
+        let video_payload = build_video_nalus(
+            &[0x00, 0x00, 0x00, 0x05, 0x67, 0x42, 0x80, 0x0A, 0xFF],
+            true,
+            0,
+        );
 
         let basic = ChunkBasicHeader {
             chunk_type: ChunkType::Type0,
