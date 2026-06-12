@@ -309,6 +309,34 @@ impl Default for ObservabilityConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Database
+// ---------------------------------------------------------------------------
+
+/// SQLite database configuration with XDG-compliant default path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    #[serde(default = "default_database_path")]
+    pub path: String,
+}
+
+fn default_database_path() -> String {
+    // XDG default: ~/.local/share/notebook-cam/mibee_rec.db
+    if let Some(data_dir) = dirs::data_dir() {
+        data_dir.join("notebook-cam").join("mibee_rec.db").to_string_lossy().to_string()
+    } else {
+        // Fallback to /tmp if XDG data dir is not available
+        "/tmp/notebook-cam/mibee_rec.db".to_string()
+    }
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            path: default_database_path(),
+        }
+    }
+}
+// ---------------------------------------------------------------------------
 // AppConfig — top-level configuration
 // ---------------------------------------------------------------------------
 
@@ -340,6 +368,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub rtmp_push: RtmpPushConfig,
+
+    #[serde(default)]
+    pub database: DatabaseConfig,
 }
 impl AppConfig {
     /// Load configuration from a TOML file.

@@ -69,3 +69,5 @@ protocols = { path = "crates/protocols" }
 observability = { path = "crates/observability" }
 web = { path = "crates/web" }
 security = { path = "crates/security" }
+
+dirs = "6"

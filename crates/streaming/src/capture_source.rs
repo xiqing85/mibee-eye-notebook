@@ -122,6 +122,31 @@ impl Source for VideoCaptureSource {
             let width = first_frame.width;
             let height = first_frame.height;
             let format = first_frame.format.clone();
+// ── 2. Validate device and configuration before ffmpeg ───────────
+            // Check camera device path exists and is readable
+            let device_path = format!("/dev/video{}", index);
+            if !std::path::Path::new(&device_path).exists() {
+                return Err(anyhow::anyhow!("Camera device {} does not exist: {}", index, device_path));
+            }
+            if !std::fs::metadata(&device_path)
+                .context(format!("Failed to read metadata for camera device {}", device_path))?
+                .is_file()
+            {
+                return Err(anyhow::anyhow!("Camera device {} is not a file: {}", index, device_path));
+            }
+
+            // Validate resolution is not empty/zero
+            if width == 0 || height == 0 {
+                return Err(anyhow::anyhow!("Invalid camera resolution: {}x{} - both width and height must be > 0", width, height));
+            }
+
+            // Validate resolution is reasonable (not excessively large)
+            if width > 7680 || height > 4320 {
+                return Err(anyhow::anyhow!("Camera resolution {}x{} exceeds maximum supported resolution 7680x4320", width, height));
+            }
+
+            // Note: Audio device validation is handled in AudioCaptureSource::start()
+            // This validation focuses on video capture device and configuration
 
             // ── 3. Build ffmpeg command based on frame format ───────────
             let mut cmd = tokio::process::Command::new("ffmpeg");
