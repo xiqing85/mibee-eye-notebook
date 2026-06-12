@@ -18,6 +18,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -67,6 +68,16 @@ pub struct VideoCaptureSource {
     buffer: Vec<u8>,
     /// Whether the source has been started.
     running: bool,
+    /// Consecutive ffmpeg crash count (reset after 30s uptime).
+    crash_count: u32,
+    /// When ffmpeg was last started, for uptime tracking.
+    ffmpeg_start_time: Option<Instant>,
+    /// Camera width (stored for ffmpeg restart).
+    camera_width: u32,
+    /// Camera height (stored for ffmpeg restart).
+    camera_height: u32,
+    /// Camera pixel format (stored for ffmpeg restart).
+    camera_format: String,
 }
 
 impl VideoCaptureSource {
@@ -84,6 +95,11 @@ impl VideoCaptureSource {
             ffmpeg_stdout: None,
             buffer: Vec::new(),
             running: false,
+            crash_count: 0,
+            ffmpeg_start_time: None,
+            camera_width: 0,
+            camera_height: 0,
+            camera_format: String::new(),
         }
     }
 
@@ -96,6 +112,96 @@ impl VideoCaptureSource {
     pub fn device_index(&self) -> usize {
         self.device_index
     }
+}
+
+// ---------------------------------------------------------------------------
+// FFmpeg subprocess spawning
+// ---------------------------------------------------------------------------
+
+/// Spawn an ffmpeg subprocess for H.264 encoding.
+///
+/// Constructs and spawns the ffmpeg command based on the frame format,
+/// takes ownership of stdin/stdout pipes, and returns all three handles.
+async fn spawn_ffmpeg_process(
+    width: u32,
+    height: u32,
+    format: &str,
+) -> Result<(Child, ChildStdin, ChildStdout)> {
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+
+    if format.eq_ignore_ascii_case("MJPEG") {
+        cmd.arg("-f").arg("mjpeg").arg("-i").arg("pipe:0");
+    } else {
+        let pix_fmt = map_pixel_format(format);
+        let size_str = format!("{}x{}", width, height);
+        cmd.arg("-f")
+            .arg("rawvideo")
+            .arg("-pix_fmt")
+            .arg(pix_fmt)
+            .arg("-s")
+            .arg(&size_str)
+            .arg("-i")
+            .arg("pipe:0");
+    }
+
+    cmd.args([
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-f", "h264",
+        "pipe:1",
+    ])
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null());
+
+    let mut child = cmd
+        .spawn()
+        .context("failed to spawn ffmpeg — is ffmpeg installed and in $PATH?")?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .context("failed to capture ffmpeg stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to capture ffmpeg stdout")?;
+
+    Ok((child, stdin, stdout))
+}
+
+// ---------------------------------------------------------------------------
+// FFmpeg crash restart decision logic
+// ---------------------------------------------------------------------------
+
+/// Decide whether to restart ffmpeg after a crash.
+///
+/// If the ffmpeg process ran for more than 30 seconds, the crash counter
+/// is reset to zero (the process was stable before crashing). If the crash
+/// count reaches 3, returns an error (too many consecutive crashes).
+/// Otherwise, increments the counter and returns the exponential backoff
+/// delay (2s, 4s, 8s for attempts 1, 2, 3).
+fn check_ffmpeg_crash_restart(
+    crash_count: &mut u32,
+    ffmpeg_start_time: Instant,
+) -> Result<Duration> {
+    // Reset crash counter if ffmpeg ran for >30s
+    if ffmpeg_start_time.elapsed() > Duration::from_secs(30) {
+        *crash_count = 0;
+    }
+
+    if *crash_count >= 3 {
+        anyhow::bail!(
+            "ffmpeg crash limit reached ({crash_count} consecutive crashes) — \
+             encoder repeatedly failing",
+            crash_count = *crash_count
+        );
+    }
+
+    *crash_count += 1;
+    let delay = Duration::from_secs(1u64 << *crash_count);
+    Ok(delay)
 }
 
 impl Source for VideoCaptureSource {
@@ -148,65 +254,25 @@ impl Source for VideoCaptureSource {
             // Note: Audio device validation is handled in AudioCaptureSource::start()
             // This validation focuses on video capture device and configuration
 
-            // ── 3. Build ffmpeg command based on frame format ───────────
-            let mut cmd = tokio::process::Command::new("ffmpeg");
+            // Store camera params for potential ffmpeg restart
+            self.camera_width = width;
+            self.camera_height = height;
+            self.camera_format = format.clone();
 
-            if format.eq_ignore_ascii_case("MJPEG") {
-                // MJPEG: ffmpeg handles the JPEG decoding internally
-                cmd.arg("-f").arg("mjpeg").arg("-i").arg("pipe:0");
-            } else {
-                // Raw video: specify pixel format and frame size
-                let pix_fmt = map_pixel_format(&format);
-                let size_str = format!("{}x{}", width, height);
-                cmd.arg("-f")
-                    .arg("rawvideo")
-                    .arg("-pix_fmt")
-                    .arg(pix_fmt)
-                    .arg("-s")
-                    .arg(&size_str)
-                    .arg("-i")
-                    .arg("pipe:0");
-            }
-
-            // Common encoder settings: ultrafast + zerolatency for minimal delay
-            cmd.args([
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-                "-tune",
-                "zerolatency",
-                "-f",
-                "h264",
-                "pipe:1",
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-
-            let mut child = cmd
-                .spawn()
-                .context("failed to spawn ffmpeg — is ffmpeg installed and in $PATH?")?;
-
-            let stdin = child
-                .stdin
-                .take()
-                .context("failed to capture ffmpeg stdin")?;
-            let stdout = child
-                .stdout
-                .take()
-                .context("failed to capture ffmpeg stdout")?;
+            // ── 3. Spawn ffmpeg subprocess for H.264 encoding ──────────
+            let (child, stdin, stdout) =
+                spawn_ffmpeg_process(width, height, &format).await?;
 
             // ── 4. Write the very first frame to kick off encoding ──────
             //
             // This gives ffmpeg initial data so that the first next_frame()
             // call is more likely to have encoded output ready immediately.
-            let mut stdin_owned = stdin;
-            stdin_owned
+            let mut stdin = stdin;
+            stdin
                 .write_all(&first_frame.data)
                 .await
                 .context("failed to write first frame to ffmpeg stdin")?;
-            stdin_owned
+            stdin
                 .flush()
                 .await
                 .context("failed to flush ffmpeg stdin")?;
@@ -215,9 +281,10 @@ impl Source for VideoCaptureSource {
             self.capture = Some(capture);
             self.frame_rx = Some(rx);
             self.ffmpeg_child = Some(child);
-            self.ffmpeg_stdin = Some(stdin_owned);
+            self.ffmpeg_stdin = Some(stdin);
             self.ffmpeg_stdout = Some(stdout);
             self.running = true;
+            self.ffmpeg_start_time = Some(Instant::now());
 
             tracing::info!(
                 device_index = index,
@@ -248,12 +315,21 @@ impl Source for VideoCaptureSource {
 
             let timestamp = frame.timestamp.elapsed().as_millis() as u64;
 
-            // ── 2. Write raw frame data to ffmpeg stdin ─────────────────
-            let stdin = self
+            // ── 2. Take ownership of handles to allow re-spawn on crash ─
+            //
+            // .take() removes the Option values so that self is not
+            // borrowed during the crash recovery logic (which needs to
+            // mutate self.crash_count, self.ffmpeg_child, etc.).
+            let mut stdin = self
                 .ffmpeg_stdin
-                .as_mut()
+                .take()
                 .ok_or_else(|| anyhow::anyhow!("ffmpeg stdin not available"))?;
+            let mut stdout = self
+                .ffmpeg_stdout
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
 
+            // ── 3. Write raw frame data to ffmpeg stdin ─────────────────
             stdin
                 .write_all(&frame.data)
                 .await
@@ -263,17 +339,15 @@ impl Source for VideoCaptureSource {
                 .await
                 .context("failed to flush ffmpeg stdin")?;
 
-            // ── 3. Read from ffmpeg stdout until a complete NAL unit ────
-            let stdout = self
-                .ffmpeg_stdout
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
-
+            // ── 4. Read from ffmpeg stdout until a complete NAL unit ────
             loop {
                 // Try to extract a complete NAL unit from accumulated data.
                 if let Some((nal_data, keyframe, new_offset)) = extract_next_nal(&self.buffer, 0) {
                     // Keep any remaining bytes for the next call.
                     self.buffer = self.buffer[new_offset..].to_vec();
+                    // Put handles back before returning.
+                    self.ffmpeg_stdin = Some(stdin);
+                    self.ffmpeg_stdout = Some(stdout);
                     return Ok(MediaFrame::Video {
                         keyframe,
                         data: nal_data,
@@ -289,10 +363,80 @@ impl Source for VideoCaptureSource {
                     .context("error reading ffmpeg stdout")?;
 
                 if n == 0 {
-                    anyhow::bail!(
-                        "ffmpeg stdout closed unexpectedly — \
-                         encoder may have crashed or exited"
+                    // ── ffmpeg stdout closed: attempt crash recovery ─────
+                    let start_time = self
+                        .ffmpeg_start_time
+                        .take()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("ffmpeg start time not tracked")
+                        })?;
+
+                    let delay = match check_ffmpeg_crash_restart(
+                        &mut self.crash_count,
+                        start_time,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::error!(
+                                device_index = self.device_index,
+                                "ffmpeg crash limit reached, giving up"
+                            );
+                            // Don't put handles back — stream is dead.
+                            return Err(e);
+                        }
+                    };
+
+                    tracing::warn!(
+                        device_index = self.device_index,
+                        attempt = self.crash_count,
+                        delay_secs = delay.as_secs(),
+                        "ffmpeg crashed, restarting with exponential backoff"
                     );
+
+                    // Drop old handles and kill the process.
+                    drop(stdin);
+                    drop(stdout);
+                    if let Some(mut child) = self.ffmpeg_child.take() {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                    self.buffer.clear();
+
+                    // Sleep with exponential backoff.
+                    tokio::time::sleep(delay).await;
+
+                    // Re-spawn ffmpeg with stored camera params.
+                    let (child, new_stdin, new_stdout) = spawn_ffmpeg_process(
+                        self.camera_width,
+                        self.camera_height,
+                        &self.camera_format,
+                    )
+                    .await?;
+
+                    self.ffmpeg_child = Some(child);
+                    self.ffmpeg_start_time = Some(Instant::now());
+                    stdin = new_stdin;
+                    stdout = new_stdout;
+
+                    // Rewrite current frame to the new ffmpeg stdin.
+                    stdin
+                        .write_all(&frame.data)
+                        .await
+                        .context(
+                            "failed to write frame to restarted ffmpeg stdin",
+                        )?;
+                    stdin
+                        .flush()
+                        .await
+                        .context("failed to flush restarted ffmpeg stdin")?;
+
+                    tracing::info!(
+                        device_index = self.device_index,
+                        attempt = self.crash_count,
+                        "ffmpeg restarted successfully"
+                    );
+
+                    continue;
                 }
 
                 self.buffer.extend_from_slice(&tmp[..n]);
@@ -317,6 +461,8 @@ impl Source for VideoCaptureSource {
             self.ffmpeg_stdout = None;
             self.buffer.clear();
             self.running = false;
+            self.crash_count = 0;
+            self.ffmpeg_start_time = None;
 
             tracing::info!("VideoCaptureSource stopped");
             Ok(())
@@ -1266,5 +1412,107 @@ mod tests {
     #[test]
     fn test_adts_extraction_no_valid_header() {
         assert!(extract_adts_frame(&[0x00; 7]).is_none());
+    }
+
+    // ── FFmpeg crash restart decision logic ──────────────────────────
+
+    #[test]
+    fn test_ffmpeg_crash_restart_first_crash() {
+        let mut count = 0;
+        let start = Instant::now();
+        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(delay, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_second_crash() {
+        let mut count = 1;
+        let start = Instant::now();
+        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(delay, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_third_crash() {
+        let mut count = 2;
+        let start = Instant::now();
+        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(delay, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_limit_reached() {
+        let mut count = 3;
+        let start = Instant::now();
+        let result = check_ffmpeg_crash_restart(&mut count, start);
+        assert!(result.is_err());
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_limit_beyond() {
+        let mut count = 5;
+        let start = Instant::now();
+        let result = check_ffmpeg_crash_restart(&mut count, start);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_uptime_reset() {
+        // Simulate ffmpeg running for 31 seconds — counter should reset.
+        let mut count = 2;
+        let start = Instant::now() - Duration::from_secs(31);
+        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(delay, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_uptime_exact_30s_no_reset() {
+        // Very recent Instant (elapsed ≈ 0, well below 30s).
+        let mut count = 2;
+        let start = Instant::now();
+        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(delay, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_sequence() {
+        // Full crash sequence: 3 crashes, then limit.
+        let mut count = 0;
+        let start = Instant::now();
+
+        let d1 = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!((count, d1), (1, Duration::from_secs(2)));
+
+        let d2 = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!((count, d2), (2, Duration::from_secs(4)));
+
+        let d3 = check_ffmpeg_crash_restart(&mut count, start).unwrap();
+        assert_eq!((count, d3), (3, Duration::from_secs(8)));
+
+        assert!(check_ffmpeg_crash_restart(&mut count, start).is_err());
+    }
+
+    #[test]
+    fn test_ffmpeg_crash_restart_uptime_resets_then_recrash() {
+        // Crash twice, then long uptime resets counter, then crash again.
+        let mut count = 0;
+        let recent = Instant::now();
+
+        let _ = check_ffmpeg_crash_restart(&mut count, recent).unwrap();
+        assert_eq!(count, 1);
+
+        let _ = check_ffmpeg_crash_restart(&mut count, recent).unwrap();
+        assert_eq!(count, 2);
+
+        // Long uptime resets counter.
+        let old_start = Instant::now() - Duration::from_secs(60);
+        let _ = check_ffmpeg_crash_restart(&mut count, old_start).unwrap();
+        assert_eq!(count, 1);
     }
 }
