@@ -91,9 +91,10 @@ impl AudioCapture {
     /// Validates the device and config but does **not** start streaming yet.
     /// Call [`start`](Self::start) to begin capturing.
     pub fn new(device: &Device, config: &SupportedStreamConfig) -> Result<Self> {
-        let device_name = device.description()
-.map(|d| d.name().to_string())
-.unwrap_or_else(|_| "<unknown>".into());
+        let device_name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "<unknown>".into());
         info!(
             device = %device_name,
             channels = config.channels(),
@@ -298,9 +299,10 @@ pub fn enumerate_devices() -> Result<Vec<AudioDeviceInfo>> {
 
     let mut result = Vec::new();
     for device in devices {
-        let name = device.description()
-.map(|d| d.name().to_string())
-.unwrap_or_else(|_| "<unknown>".into());
+        let name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "<unknown>".into());
         let supported = match device.supported_input_configs() {
             Ok(ranges) => ranges
                 .map(|r| AudioConfigInfo {

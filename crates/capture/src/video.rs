@@ -20,9 +20,9 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
+use nokhwa::Camera;
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType};
-use nokhwa::Camera;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
@@ -272,7 +272,8 @@ fn enumerate_device_formats(device_index: usize) -> Result<Vec<String>> {
         .context("failed to enumerate camera formats")?
         .into_iter()
         .map(|cf: CameraFormat| {
-            format!("{}x{} {:?} {}fps",
+            format!(
+                "{}x{} {:?} {}fps",
                 cf.width(),
                 cf.height(),
                 cf.format(),

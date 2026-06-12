@@ -12,10 +12,10 @@ use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 
+use crate::source::MediaFrame;
 use anyhow::Result;
 use protocols::h264;
 use protocols::rtmp::{RtmpPushClient, build_video_nalus, build_video_sequence_header};
-use crate::source::MediaFrame;
 
 // ── Output trait ───────────────────────────────────────────────────────────────
 
@@ -111,7 +111,9 @@ impl Output for RtspOutput {
                 anyhow::bail!("RtspOutput stream path must not be empty");
             }
             if self.frame_tx.is_none() {
-                anyhow::bail!("RtspOutput has no channel -- use with_channel() or register a live stream");
+                anyhow::bail!(
+                    "RtspOutput has no channel -- use with_channel() or register a live stream"
+                );
             }
             self.started = true;
             tracing::info!("RtspOutput started: /{}", self.stream_path);
@@ -132,7 +134,8 @@ impl Output for RtspOutput {
                     }
                     match &self.frame_tx {
                         Some(tx) => {
-                            tx.send(data).await
+                            tx.send(data)
+                                .await
                                 .map_err(|e| anyhow::anyhow!("RtspOutput send failed: {e}"))?;
                             Ok(())
                         }
@@ -172,7 +175,6 @@ impl Output for RtspOutput {
 /// external dependencies on ffmpeg.
 ///
 /// Audio frames are silently dropped for now.
-#[allow(dead_code)]
 pub struct RtmpOutput {
     /// RTMP URL (e.g. `rtmp://localhost:1935/live/stream`).
     url: String,
@@ -269,12 +271,8 @@ impl Output for RtmpOutput {
                 anyhow::bail!("RtmpOutput URL must not be empty");
             }
 
-            let mut client = RtmpPushClient::new(
-                &self.host,
-                self.port,
-                &self.app_name,
-                &self.stream_key,
-            );
+            let mut client =
+                RtmpPushClient::new(&self.host, self.port, &self.app_name, &self.stream_key);
             client.connect().await?;
 
             self.client = Some(client);
@@ -302,9 +300,10 @@ impl Output for RtmpOutput {
                     if !self.started {
                         anyhow::bail!("RtmpOutput not started");
                     }
-                    let client = self.client.as_mut().ok_or_else(|| {
-                        anyhow::anyhow!("RtmpOutput client not connected")
-                    })?;
+                    let client = self
+                        .client
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("RtmpOutput client not connected"))?;
 
                     // Parse NAL units from the frame data (handle Annex B or AVCC)
                     let nal_units = parse_h264_nal_units(&data);
@@ -534,12 +533,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_rtsp_output_send_video_frame() {
         let (tx, mut rx) = mpsc::channel(16);
-        let mut out = RtspOutput::with_channel(
-            "test".to_string(),
-            "s=Test".to_string(),
-            1,
-            tx,
-        );
+        let mut out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         out.start().await.unwrap();
 
         let frame = MediaFrame::Video {
@@ -559,12 +553,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_rtsp_output_ignore_audio() {
         let (tx, mut rx) = mpsc::channel(16);
-        let mut out = RtspOutput::with_channel(
-            "test".to_string(),
-            "s=Test".to_string(),
-            1,
-            tx,
-        );
+        let mut out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         out.start().await.unwrap();
 
         // Audio frames should be silently dropped (no error, no data)
@@ -612,11 +601,9 @@ pub(crate) mod tests {
             keyframe: true,
             data: vec![
                 // Annex B start code + SPS NAL
-                0x00, 0x00, 0x00, 0x01,
-                0x67, 0x42, 0x80, 0x1E,
+                0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80, 0x1E,
                 // Annex B start code + PPS NAL
-                0x00, 0x00, 0x00, 0x01,
-                0x68, 0xCE, 0x3C, 0x80,
+                0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C, 0x80,
             ],
             timestamp: 100,
         };

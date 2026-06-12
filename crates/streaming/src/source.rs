@@ -74,7 +74,6 @@ pub trait Source: Send + 'static {
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 }
 
-
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -219,5 +218,4 @@ pub(crate) mod tests {
         src.start().await.unwrap();
         assert!(src.next_frame().await.is_err());
     }
-
 }

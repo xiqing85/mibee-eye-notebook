@@ -438,10 +438,7 @@ mod tests {
             "/api/protocols/gb28181",
             "/api/protocols/rtmp",
         ] {
-            let req = Request::builder()
-                .uri(*path)
-                .body(Body::empty())
-                .unwrap();
+            let req = Request::builder().uri(*path).body(Body::empty()).unwrap();
             let res = app.clone().oneshot(req).await.unwrap();
             assert_eq!(
                 res.status(),

@@ -218,7 +218,6 @@ impl Default for RtmpPushConfig {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Capture
 // ---------------------------------------------------------------------------
@@ -373,7 +372,6 @@ mod tests {
         assert_eq!(cfg.server_port, 8554);
     }
 
-
     #[test]
     fn test_capture_config_default() {
         let cfg = CaptureConfig::default();
@@ -395,42 +393,42 @@ mod tests {
         assert_eq!(cfg.log_level, "info");
     }
 
-// --- New protocol config defaults ---
+    // --- New protocol config defaults ---
 
-#[test]
-fn test_onvif_config_default() {
-    let cfg = OnvifConfig::default();
-    assert!(!cfg.enabled, "ONVIF must default to disabled");
-    assert_eq!(cfg.device_name, "notebook-cam");
-    assert_eq!(cfg.manufacturer, "MiBee");
-    assert_eq!(cfg.model, "Rec-01");
-    assert_eq!(cfg.serial, "NC00000001");
-    assert_eq!(cfg.firmware_version, "1.0.0");
-}
+    #[test]
+    fn test_onvif_config_default() {
+        let cfg = OnvifConfig::default();
+        assert!(!cfg.enabled, "ONVIF must default to disabled");
+        assert_eq!(cfg.device_name, "notebook-cam");
+        assert_eq!(cfg.manufacturer, "MiBee");
+        assert_eq!(cfg.model, "Rec-01");
+        assert_eq!(cfg.serial, "NC00000001");
+        assert_eq!(cfg.firmware_version, "1.0.0");
+    }
 
-#[test]
-fn test_gb28181_config_default() {
-    let cfg = Gb28181Config::default();
-    assert!(!cfg.enabled, "GB28181 must default to disabled");
-    assert_eq!(cfg.platform_sip_address, "192.168.1.100");
-    assert_eq!(cfg.platform_sip_port, 5060);
-    assert_eq!(cfg.device_id, "34020000002000000001");
-    assert_eq!(cfg.username, "");
-    assert_eq!(cfg.password, "");
-    assert_eq!(cfg.sip_domain, "3402000000");
-    assert_eq!(cfg.register_interval_secs, 60);
-}
+    #[test]
+    fn test_gb28181_config_default() {
+        let cfg = Gb28181Config::default();
+        assert!(!cfg.enabled, "GB28181 must default to disabled");
+        assert_eq!(cfg.platform_sip_address, "192.168.1.100");
+        assert_eq!(cfg.platform_sip_port, 5060);
+        assert_eq!(cfg.device_id, "34020000002000000001");
+        assert_eq!(cfg.username, "");
+        assert_eq!(cfg.password, "");
+        assert_eq!(cfg.sip_domain, "3402000000");
+        assert_eq!(cfg.register_interval_secs, 60);
+    }
 
-#[test]
-fn test_rtmp_push_config_default() {
-    let cfg = RtmpPushConfig::default();
-    assert!(!cfg.enabled, "RTMP push must default to disabled");
-    assert_eq!(cfg.push_url, "rtmp://192.168.1.100:1935/live");
-    assert_eq!(cfg.app_name, "live");
-    assert_eq!(cfg.stream_name, "stream1");
-    assert_eq!(cfg.reconnect_interval_secs, 5);
-    assert_eq!(cfg.max_reconnect_attempts, 10);
-}
+    #[test]
+    fn test_rtmp_push_config_default() {
+        let cfg = RtmpPushConfig::default();
+        assert!(!cfg.enabled, "RTMP push must default to disabled");
+        assert_eq!(cfg.push_url, "rtmp://192.168.1.100:1935/live");
+        assert_eq!(cfg.app_name, "live");
+        assert_eq!(cfg.stream_name, "stream1");
+        assert_eq!(cfg.reconnect_interval_secs, 5);
+        assert_eq!(cfg.max_reconnect_attempts, 10);
+    }
 
     // --- AppConfig default ---
 
@@ -534,7 +532,7 @@ port = 9090
         let result = AppConfig::load(&path);
         assert!(result.is_err(), "Invalid TOML must fail");
         std::fs::remove_file(&path).ok();
-}
+    }
 
     // --- Edge case tests ---
     //
@@ -654,18 +652,36 @@ push_url = ""
         assert_eq!(cfg.web.port, 8443, "web.port");
         assert_eq!(cfg.web.host, "0.0.0.0", "web.host");
         assert_eq!(cfg.rtsp.server_port, 8554, "rtsp.server_port");
-        assert_eq!(cfg.capture.video_device, "/dev/video0", "capture.video_device");
+        assert_eq!(
+            cfg.capture.video_device, "/dev/video0",
+            "capture.video_device"
+        );
         assert_eq!(cfg.capture.audio_device, "default", "capture.audio_device");
         assert_eq!(cfg.security.rate_limit_max, 20, "security.rate_limit_max");
-        assert_eq!(cfg.security.rate_limit_window_secs, 60, "security.rate_limit_window_secs");
-        assert_eq!(cfg.observability.otel_endpoint, "http://localhost:4317", "observability.otel_endpoint");
-        assert_eq!(cfg.observability.log_level, "info", "observability.log_level");
+        assert_eq!(
+            cfg.security.rate_limit_window_secs, 60,
+            "security.rate_limit_window_secs"
+        );
+        assert_eq!(
+            cfg.observability.otel_endpoint, "http://localhost:4317",
+            "observability.otel_endpoint"
+        );
+        assert_eq!(
+            cfg.observability.log_level, "info",
+            "observability.log_level"
+        );
         assert!(!cfg.onvif.enabled);
         assert_eq!(cfg.onvif.device_name, "notebook-cam", "onvif.device_name");
         assert!(!cfg.gb28181.enabled);
-        assert_eq!(cfg.gb28181.device_id, "34020000002000000001", "gb28181.device_id");
+        assert_eq!(
+            cfg.gb28181.device_id, "34020000002000000001",
+            "gb28181.device_id"
+        );
         assert!(!cfg.rtmp_push.enabled);
-        assert_eq!(cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live", "rtmp_push.push_url");
+        assert_eq!(
+            cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live",
+            "rtmp_push.push_url"
+        );
     }
 
     #[test]
@@ -696,31 +712,55 @@ enabled = false
         // RTSP server uses config.server_port (default 8554)
         // Web UI uses config.port (default 8443)
         // GB28181 SIP uses config.platform_sip_port (default 5060)
-        assert_ne!(3702u16, cfg.rtsp.server_port, "ONVIF port 3702 conflicts with RTSP");
+        assert_ne!(
+            3702u16, cfg.rtsp.server_port,
+            "ONVIF port 3702 conflicts with RTSP"
+        );
         assert_ne!(3702u16, cfg.web.port, "ONVIF port 3702 conflicts with Web");
-        assert_ne!(cfg.rtsp.server_port, cfg.web.port, "RTSP port conflicts with Web");
+        assert_ne!(
+            cfg.rtsp.server_port, cfg.web.port,
+            "RTSP port conflicts with Web"
+        );
     }
 
     #[test]
     fn test_main_builds_with_all_protocols() {
         // Verify all protocol config types are constructable with enabled state
         // This ensures main.rs can build with protocol imports
-        let onvif = OnvifConfig { enabled: true, ..OnvifConfig::default() };
+        let onvif = OnvifConfig {
+            enabled: true,
+            ..OnvifConfig::default()
+        };
         assert!(onvif.enabled);
         assert_eq!(onvif.device_name, "notebook-cam");
 
-        let gb28181 = Gb28181Config { enabled: true, ..Gb28181Config::default() };
+        let gb28181 = Gb28181Config {
+            enabled: true,
+            ..Gb28181Config::default()
+        };
         assert!(gb28181.enabled);
         assert_eq!(gb28181.platform_sip_address, "192.168.1.100");
 
-        let rtmp_push = RtmpPushConfig { enabled: false, ..RtmpPushConfig::default() };
+        let rtmp_push = RtmpPushConfig {
+            enabled: false,
+            ..RtmpPushConfig::default()
+        };
         assert!(!rtmp_push.enabled);
 
         // Verify AppConfig can hold all protocol configs (compile check)
         let cfg = AppConfig {
-            onvif: OnvifConfig { enabled: true, ..OnvifConfig::default() },
-            gb28181: Gb28181Config { enabled: true, ..Gb28181Config::default() },
-            rtmp_push: RtmpPushConfig { enabled: false, ..RtmpPushConfig::default() },
+            onvif: OnvifConfig {
+                enabled: true,
+                ..OnvifConfig::default()
+            },
+            gb28181: Gb28181Config {
+                enabled: true,
+                ..Gb28181Config::default()
+            },
+            rtmp_push: RtmpPushConfig {
+                enabled: false,
+                ..RtmpPushConfig::default()
+            },
             ..AppConfig::default()
         };
         assert!(cfg.onvif.enabled);

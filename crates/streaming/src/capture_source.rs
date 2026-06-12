@@ -24,9 +24,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 
-use capture::video::{VideoCapture, VideoFrame};
 use crate::source::{MediaFrame, Source};
 use capture::audio::{AudioCapture, AudioFrame};
+use capture::video::{VideoCapture, VideoFrame};
 use cpal::traits::{DeviceTrait, HostTrait};
 
 // ---------------------------------------------------------------------------
@@ -106,8 +106,8 @@ impl Source for VideoCaptureSource {
 
         Box::pin(async move {
             // ── 1. Open camera and start streaming ──────────────────────
-            let mut capture = VideoCapture::new(index)
-                .context("failed to open video capture device")?;
+            let mut capture =
+                VideoCapture::new(index).context("failed to open video capture device")?;
 
             let mut rx = capture
                 .start_stream()
@@ -128,10 +128,7 @@ impl Source for VideoCaptureSource {
 
             if format.eq_ignore_ascii_case("MJPEG") {
                 // MJPEG: ffmpeg handles the JPEG decoding internally
-                cmd.arg("-f")
-                    .arg("mjpeg")
-                    .arg("-i")
-                    .arg("pipe:0");
+                cmd.arg("-f").arg("mjpeg").arg("-i").arg("pipe:0");
             } else {
                 // Raw video: specify pixel format and frame size
                 let pix_fmt = map_pixel_format(&format);
@@ -249,9 +246,7 @@ impl Source for VideoCaptureSource {
 
             loop {
                 // Try to extract a complete NAL unit from accumulated data.
-                if let Some((nal_data, keyframe, new_offset)) =
-                    extract_next_nal(&self.buffer, 0)
-                {
+                if let Some((nal_data, keyframe, new_offset)) = extract_next_nal(&self.buffer, 0) {
                     // Keep any remaining bytes for the next call.
                     self.buffer = self.buffer[new_offset..].to_vec();
                     return Ok(MediaFrame::Video {
@@ -412,38 +407,34 @@ impl Source for AudioCaptureSource {
             let device = if let Some(ref name) = target_device {
                 // Find device by name.
                 let devices = host
-.input_devices()
-.context("failed to enumerate audio input devices")?;
+                    .input_devices()
+                    .context("failed to enumerate audio input devices")?;
                 devices
-.into_iter()
+                    .into_iter()
                     .find(|d: &cpal::Device| {
                         d.description()
-.map(|desc| desc.name() == name.as_str())
-.unwrap_or(false)
+                            .map(|desc| desc.name() == name.as_str())
+                            .unwrap_or(false)
                     })
-.ok_or_else(|| {
-                        anyhow::anyhow!("audio device '{name}' not found")
-                    })?
+                    .ok_or_else(|| anyhow::anyhow!("audio device '{name}' not found"))?
             } else {
                 host.default_input_device()
-.ok_or_else(|| {
-                        anyhow::anyhow!("no default audio input device available")
-                    })?
+                    .ok_or_else(|| anyhow::anyhow!("no default audio input device available"))?
             };
 
             let config = device
-.default_input_config()
-.context("failed to get default audio input config")?;
+                .default_input_config()
+                .context("failed to get default audio input config")?;
 
             let sample_rate = config.sample_rate();
             let channels = config.channels();
 
             // -- 2. Create AudioCapture and start streaming -------------------
-            let mut capture = AudioCapture::new(&device, &config)
-.context("failed to create AudioCapture")?;
+            let mut capture =
+                AudioCapture::new(&device, &config).context("failed to create AudioCapture")?;
             let rx = capture
-.start(&device, &config)
-.context("failed to start audio capture")?;
+                .start(&device, &config)
+                .context("failed to start audio capture")?;
 
             self.sample_rate = sample_rate;
             self.channels = channels;
@@ -451,34 +442,34 @@ impl Source for AudioCaptureSource {
             // -- 3. Build ffmpeg command --------------------------------------
             let mut cmd = tokio::process::Command::new("ffmpeg");
             cmd.arg("-f")
-.arg("s16le")
-.arg("-ar")
-.arg(sample_rate.to_string())
-.arg("-ac")
-.arg(channels.to_string())
-.arg("-i")
-.arg("pipe:0")
-.arg("-c:a")
-.arg("aac")
-.arg("-f")
-.arg("adts")
-.arg("pipe:1")
-.stdin(std::process::Stdio::piped())
-.stdout(std::process::Stdio::piped())
-.stderr(std::process::Stdio::null());
+                .arg("s16le")
+                .arg("-ar")
+                .arg(sample_rate.to_string())
+                .arg("-ac")
+                .arg(channels.to_string())
+                .arg("-i")
+                .arg("pipe:0")
+                .arg("-c:a")
+                .arg("aac")
+                .arg("-f")
+                .arg("adts")
+                .arg("pipe:1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
 
             let mut child = cmd
-.spawn()
-.context("failed to spawn ffmpeg - is ffmpeg installed and in $PATH?")?;
+                .spawn()
+                .context("failed to spawn ffmpeg - is ffmpeg installed and in $PATH?")?;
 
             let stdin = child
-.stdin
-.take()
-.context("failed to capture ffmpeg stdin")?;
+                .stdin
+                .take()
+                .context("failed to capture ffmpeg stdin")?;
             let stdout = child
-.stdout
-.take()
-.context("failed to capture ffmpeg stdout")?;
+                .stdout
+                .take()
+                .context("failed to capture ffmpeg stdout")?;
 
             // -- 4. Store handles ---------------------------------------------
             self.capture = Some(capture);
@@ -488,11 +479,7 @@ impl Source for AudioCaptureSource {
             self.ffmpeg_stdout = Some(stdout);
             self.running = true;
 
-            tracing::info!(
-                sample_rate,
-                channels,
-                "AudioCaptureSource started"
-            );
+            tracing::info!(sample_rate, channels, "AudioCaptureSource started");
 
             Ok(())
         })
@@ -506,42 +493,38 @@ impl Source for AudioCaptureSource {
 
             // -- 1. Receive the next AudioFrame from the capture channel -------
             let frame: AudioFrame = self
-.frame_rx
-.as_mut()
-.ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
-.recv()
-.await
-.ok_or_else(|| anyhow::anyhow!("audio frame channel closed"))?;
+                .frame_rx
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("audio frame channel closed"))?;
 
             let timestamp = frame.timestamp.elapsed().as_millis() as u64;
 
             // -- 2. Convert i16 samples to raw PCM bytes ----------------------
-            let raw_bytes: Vec<u8> = frame
-.samples
-.iter()
-.flat_map(|s| s.to_le_bytes())
-.collect();
+            let raw_bytes: Vec<u8> = frame.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
 
             // -- 3. Write raw PCM bytes to ffmpeg stdin -----------------------
             let stdin = self
-.ffmpeg_stdin
-.as_mut()
-.ok_or_else(|| anyhow::anyhow!("ffmpeg stdin not available"))?;
+                .ffmpeg_stdin
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdin not available"))?;
 
             stdin
-.write_all(&raw_bytes)
-.await
-.context("failed to write audio data to ffmpeg stdin")?;
+                .write_all(&raw_bytes)
+                .await
+                .context("failed to write audio data to ffmpeg stdin")?;
             stdin
-.flush()
-.await
-.context("failed to flush ffmpeg stdin")?;
+                .flush()
+                .await
+                .context("failed to flush ffmpeg stdin")?;
 
             // -- 4. Read from ffmpeg stdout until a complete ADTS frame --------
             let stdout = self
-.ffmpeg_stdout
-.as_mut()
-.ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
+                .ffmpeg_stdout
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
 
             loop {
                 // Try to extract a complete ADTS frame from accumulated data.
@@ -557,9 +540,9 @@ impl Source for AudioCaptureSource {
                 // Need more data - read a chunk from ffmpeg stdout.
                 let mut tmp = vec![0u8; 65536];
                 let n = stdout
-.read(&mut tmp)
-.await
-.context("error reading ffmpeg stdout")?;
+                    .read(&mut tmp)
+                    .await
+                    .context("error reading ffmpeg stdout")?;
 
                 if n == 0 {
                     anyhow::bail!(
@@ -625,7 +608,10 @@ fn map_pixel_format(format: &str) -> &'static str {
         f if f.eq_ignore_ascii_case("GRAY")
             || f.eq_ignore_ascii_case("GRAY8")
             || f.eq_ignore_ascii_case("Y800")
-            || f.eq_ignore_ascii_case("Y16") => "gray",
+            || f.eq_ignore_ascii_case("Y16") =>
+        {
+            "gray"
+        }
         f if f.eq_ignore_ascii_case("BGR24") => "bgr24",
         f if f.eq_ignore_ascii_case("YV12") => "yuv420p",
         _ => {
@@ -831,8 +817,7 @@ mod tests {
     const ANNEX_B_STREAM: &[u8] = &[
         // SPS (NAL type 7)
         0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1e, 0xd9, 0x00, 0x78, 0x02, 0x27, 0xd5, 0x05,
-        0x71,
-        // PPS (NAL type 8) with 3-byte start code
+        0x71, // PPS (NAL type 8) with 3-byte start code
         0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
         // IDR slice (NAL type 5) with 4-byte start code
         0x00, 0x00, 0x00, 0x01, 0x65, 0xb8, 0x00, 0x04,
@@ -842,8 +827,7 @@ mod tests {
 
     #[test]
     fn test_extract_next_nal_sps() {
-        let (nal, keyframe, new_offset) =
-            extract_next_nal(ANNEX_B_STREAM, 0).unwrap();
+        let (nal, keyframe, new_offset) = extract_next_nal(ANNEX_B_STREAM, 0).unwrap();
 
         // SPS header byte: 0x67 → nal_unit_type = 7
         assert_eq!(nal[0], 0x67, "first NAL should be SPS");
@@ -855,8 +839,7 @@ mod tests {
     #[test]
     fn test_extract_next_nal_pps() {
         // Skip past SPS (start code at position 0, SPS ends before position 16)
-        let (nal, keyframe, new_offset) =
-            extract_next_nal(ANNEX_B_STREAM, 16).unwrap();
+        let (nal, keyframe, new_offset) = extract_next_nal(ANNEX_B_STREAM, 16).unwrap();
 
         // PPS header byte: 0x68 → nal_unit_type = 8
         assert_eq!(nal[0], 0x68, "second NAL should be PPS");
@@ -868,8 +851,7 @@ mod tests {
     #[test]
     fn test_extract_next_nal_idr() {
         // Skip past SPS and PPS
-        let (nal, keyframe, new_offset) =
-            extract_next_nal(ANNEX_B_STREAM, 23).unwrap();
+        let (nal, keyframe, new_offset) = extract_next_nal(ANNEX_B_STREAM, 23).unwrap();
 
         // IDR header byte: 0x65 → nal_unit_type = 5
         assert_eq!(nal[0], 0x65, "third NAL should be IDR");
@@ -975,55 +957,40 @@ mod tests {
     #[test]
     fn test_keyframe_detection_idr() {
         // NAL type 5 = IDR slice → keyframe
-        let (_, keyframe, _) = extract_next_nal(
-            &[0x00, 0x00, 0x00, 0x01, 0x65, 0x00, 0x00, 0x00, 0x01],
-            0,
-        )
-        .unwrap();
+        let (_, keyframe, _) =
+            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
         assert!(keyframe);
     }
 
     #[test]
     fn test_keyframe_detection_sps() {
         // NAL type 7 = SPS → keyframe
-        let (_, keyframe, _) = extract_next_nal(
-            &[0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x01],
-            0,
-        )
-        .unwrap();
+        let (_, keyframe, _) =
+            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
         assert!(keyframe);
     }
 
     #[test]
     fn test_keyframe_detection_pps() {
         // NAL type 8 = PPS → keyframe
-        let (_, keyframe, _) = extract_next_nal(
-            &[0x00, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x00, 0x01],
-            0,
-        )
-        .unwrap();
+        let (_, keyframe, _) =
+            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
         assert!(keyframe);
     }
 
     #[test]
     fn test_keyframe_detection_non_idr_slice() {
         // NAL type 1 = non-IDR slice → NOT a keyframe
-        let (_, keyframe, _) = extract_next_nal(
-            &[0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x00, 0x00, 0x01],
-            0,
-        )
-        .unwrap();
+        let (_, keyframe, _) =
+            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
         assert!(!keyframe, "non-IDR slice should not be keyframe");
     }
 
     #[test]
     fn test_keyframe_detection_sei() {
         // NAL type 6 = SEI → NOT a keyframe
-        let (_, keyframe, _) = extract_next_nal(
-            &[0x00, 0x00, 0x00, 0x01, 0x46, 0x00, 0x00, 0x00, 0x01],
-            0,
-        )
-        .unwrap();
+        let (_, keyframe, _) =
+            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x46, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
         assert!(!keyframe, "SEI should not be keyframe");
     }
 
@@ -1092,10 +1059,7 @@ mod tests {
         // The NAL data should be identical (modulo start code style).
         assert_eq!(rebuilt[4], 0x67);
         assert_eq!(rebuilt[4 + nal1.len() + 4], 0x68);
-        assert_eq!(
-            rebuilt[4 + nal1.len() + 4 + nal2.len() + 4],
-            0x65
-        );
+        assert_eq!(rebuilt[4 + nal1.len() + 4 + nal2.len() + 4], 0x65);
     }
 
     // ── no_ffmpeg_in_dependency test ───────────────────────────────────
@@ -1278,5 +1242,4 @@ mod tests {
     fn test_adts_extraction_no_valid_header() {
         assert!(extract_adts_frame(&[0x00; 7]).is_none());
     }
-
 }

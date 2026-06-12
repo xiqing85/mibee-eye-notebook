@@ -204,9 +204,9 @@ impl StreamManager {
                     .ok_or_else(|| {
                         anyhow::anyhow!("USB camera config must include 'device_index'")
                     })?;
-                Box::new(
-                    streaming::capture_source::VideoCaptureSource::new(device_index as usize),
-                )
+                Box::new(streaming::capture_source::VideoCaptureSource::new(
+                    device_index as usize,
+                ))
             }
             other => anyhow::bail!("unsupported camera type: {other}"),
         };
@@ -216,7 +216,7 @@ impl StreamManager {
         let rtsp_base = format!("rtsp://localhost:{}", RTSP_PORT);
 
         let (run_handle, rtsp_url) = {
-            let mut hub = StreamHub::new(source);
+            let mut hub = StreamHub::new(source, self.resource_controller.clone());
             let stream_url: Option<String>;
 
             // Register with RTSP server if provided.
@@ -224,11 +224,8 @@ impl StreamManager {
                 let stream_path = format!("live/{}", camera_id);
                 let ssrc = Uuid::new_v4().as_u128() as u32;
 
-                let frame_tx = server.register_live_stream(
-                    stream_path.clone(),
-                    SDP_BODY.to_string(),
-                    ssrc,
-                );
+                let frame_tx =
+                    server.register_live_stream(stream_path.clone(), SDP_BODY.to_string(), ssrc);
 
                 let output = RtspOutput::with_channel(
                     stream_path.clone(),
@@ -330,6 +327,19 @@ impl StreamManager {
         })
     }
 
+    /// Stop all active streams during graceful shutdown.
+    pub async fn shutdown_all(&self) {
+        let camera_ids: Vec<String> = {
+            let streams = self.streams.read().await;
+            streams.keys().cloned().collect()
+        };
+        for id in camera_ids {
+            if let Err(e) = self.stop_stream(&id).await {
+                warn!(%id, error = %e, "failed to stop stream during shutdown");
+            }
+        }
+    }
+
     /// Return information about all currently tracked streams.
     pub async fn list_active_streams(&self) -> Vec<StreamInfo> {
         let streams = self.streams.read().await;
@@ -407,12 +417,7 @@ mod tests {
     async fn test_create_stream_rejects_unsupported_type() {
         let manager = StreamManager::new();
         let err = manager
-            .create_stream(
-                "cam-1".into(),
-                "unknown-type",
-                &serde_json::json!({}),
-                None,
-            )
+            .create_stream("cam-1".into(), "unknown-type", &serde_json::json!({}), None)
             .await
             .unwrap_err();
         assert!(
@@ -425,12 +430,7 @@ mod tests {
     async fn test_create_stream_usb_missing_device_index() {
         let manager = StreamManager::new();
         let err = manager
-            .create_stream(
-                "cam-1".into(),
-                "usb",
-                &serde_json::json!({}),
-                None,
-            )
+            .create_stream("cam-1".into(), "usb", &serde_json::json!({}), None)
             .await
             .unwrap_err();
         assert!(
@@ -438,7 +438,6 @@ mod tests {
             "expected missing device_index error, got: {err}"
         );
     }
-
 
     #[tokio::test]
     async fn test_create_stream_rejects_duplicate() {

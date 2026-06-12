@@ -178,7 +178,7 @@ pub fn build_get_profiles_response() -> String {
   </trt:GetProfilesResponse>
  </soap:Body>
 </soap:Envelope>"#
-    .to_string()
+        .to_string()
 }
 
 /// Build a SOAP `GetStreamUri` response XML string.
@@ -384,11 +384,22 @@ fn generate_uuid() -> String {
     let bytes: [u8; 16] = rng.r#gen();
     format!(
         "uuid:{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     )
 }
 
@@ -459,7 +470,10 @@ mod tests {
         let response = handle_probe_message(xml, &config);
         assert!(response.is_some(), "should recognize Probe message");
         let resp = response.unwrap();
-        assert!(resp.contains("ProbeMatches"), "response should be ProbeMatch");
+        assert!(
+            resp.contains("ProbeMatches"),
+            "response should be ProbeMatch"
+        );
         assert!(resp.contains("uuid:abc-123"), "should include RelatesTo");
         assert!(
             resp.contains("http://10.0.0.1:8080/onvif/device_service"),
@@ -636,14 +650,15 @@ mod tests {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             client.recv_from(&mut buf),
-        ).await;
+        )
+        .await;
 
         // Stop the server loop
         handle.abort();
 
         let (len, _src) = result
-.expect("should receive response within timeout")
-.expect("recv should succeed");
+            .expect("should receive response within timeout")
+            .expect("recv should succeed");
         let response = String::from_utf8_lossy(&buf[..len]);
 
         assert!(response.contains("ProbeMatches"), "should get ProbeMatch");
