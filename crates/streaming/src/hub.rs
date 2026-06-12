@@ -23,7 +23,8 @@
 //! source or other outputs.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use anyhow::Result;
 use tokio::sync::{broadcast, watch};
@@ -129,7 +130,7 @@ impl StreamHub {
         let running: bool;
 
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().await;
             inner.outputs.insert(id, output);
             inner.output_stop.insert(id, stop_tx);
             running = inner.running;
@@ -157,7 +158,7 @@ impl StreamHub {
     /// - The resource controller has no available permits (all stream slots full).
     pub async fn try_add_output(&mut self, output: Box<dyn Output>) -> Result<OutputId> {
         {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock().await;
             if inner.outputs.len() >= self.max_outputs {
                 return Err(anyhow::anyhow!(
                     "503: Maximum outputs ({}) reached for this stream",
@@ -177,7 +178,7 @@ impl StreamHub {
     ///
     /// The output's task will be stopped gracefully.
     pub async fn remove_output(&mut self, id: OutputId) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().await;
         let removed = inner.outputs.remove(&id).is_some();
         // Signal the output task to stop.
         if let Some(tx) = inner.output_stop.remove(&id) {
@@ -212,14 +213,14 @@ impl StreamHub {
 
         // Mark as running so add_output knows to spawn tasks.
         {
-            let mut g = inner.lock().unwrap();
+            let mut g = inner.blocking_lock();
             g.running = true;
         }
 
         // Collect output IDs and spawn output tasks FIRST so they can subscribe
         // to the broadcast channel before the source starts sending frames.
         let ids: Vec<OutputId> = {
-            let guard = inner.lock().unwrap();
+            let guard = inner.blocking_lock();
             guard.outputs.keys().copied().collect()
         };
 
@@ -231,7 +232,7 @@ impl StreamHub {
 
             // Create a per-output stop receiver.
             let output_stop_rx: watch::Receiver<bool> = {
-                let guard = inner.lock().unwrap();
+                let guard = inner.blocking_lock();
                 guard
                     .output_stop
                     .get(&id)
@@ -245,7 +246,7 @@ impl StreamHub {
             tokio::spawn(async move {
                 // Remove the output from shared state and take ownership.
                 let output = {
-                    let mut guard = inner.lock().unwrap();
+                    let mut guard = inner.lock().await;
                     guard.outputs.remove(&id)
                 };
 
@@ -420,7 +421,7 @@ fn spawn_output_task(
     tokio::spawn(async move {
         // Remove the output from shared state.
         let output = {
-            let mut guard = inner.lock().unwrap();
+            let mut guard = inner.lock().await;
             guard.outputs.remove(&id)
         };
 
@@ -506,7 +507,7 @@ mod tests {
 
         // Output should be registered
         {
-            let inner = hub.inner.lock().unwrap();
+            let inner = hub.inner.lock().await;
             assert!(inner.outputs.contains_key(&id));
         }
 
@@ -514,7 +515,7 @@ mod tests {
         assert!(removed);
 
         {
-            let inner = hub.inner.lock().unwrap();
+            let inner = hub.inner.lock().await;
             assert!(!inner.outputs.contains_key(&id));
         }
     }
