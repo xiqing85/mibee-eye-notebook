@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -1189,12 +1190,14 @@ async fn handle_connection(
                         let mut frame_rx = entry.frame_rx;
                         info!("Starting live stream delivery for /{live_path}");
                         let mut seq_tracker = SequenceTracker::new();
+                        let mut last_activity = Instant::now();
 
                         loop {
                             tokio::select! {
                                 frame = frame_rx.recv() => {
                                     match frame {
                                         Some(data) => {
+                                            last_activity = Instant::now();
                                             // Check for RTP sequence number gaps
                                             if let Some(info) = parse_rtp_header_for_tracking(&data) {
                                                 let expected = seq_tracker.expected();
@@ -1231,6 +1234,7 @@ async fn handle_connection(
                                 cmd = read_rtsp_request(&mut buf_reader) => {
                                     match cmd {
                                         Ok(Some(req)) => {
+                                            last_activity = Instant::now();
                                             match req.method {
                                                 RtspMethod::Teardown => {
                                                     let resp = handle_teardown(req.cseq, &session_id, &mut session);
@@ -1249,6 +1253,14 @@ async fn handle_connection(
                                             }
                                         }
                                         Ok(None) | Err(_) => break,
+                                    }
+                                }
+                                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                                    if last_activity.elapsed() > Duration::from_secs(60) {
+                                        warn!("RTSP session timeout: {session_id}, idle for 60s");
+                                        let resp = handle_teardown(0, &session_id, &mut session);
+                                        let _ = writer.write_all(&resp).await;
+                                        break;
                                     }
                                 }
                             }
@@ -2648,5 +2660,75 @@ mod tests {
         // Version 0 (invalid)
         let data = [0x00u8; 12];
         assert!(parse_rtp_header_for_tracking(&data).is_none());
+    }
+
+    // ─── Idle Timeout Tests ────────────────────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn test_idle_session_timeout() {
+        let server = RtspServer::new(RtspServerConfig::default());
+        let sdp = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=LiveCam\r\nc=IN IP4 0.0.0.0\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n";
+        let tx = server.register_live_stream("livecam".to_string(), sdp.to_string(), 0xdeadbeef);
+        let (client, server_stream) = tokio::io::duplex(65536);
+        let inner = server.inner.clone();
+        tokio::spawn(async move {
+            handle_connection(server_stream, inner).await;
+        });
+        let (mut client_reader, mut client_writer) = tokio::io::split(client);
+
+        // Full handshake to reach PLAY state
+        let request = b"OPTIONS rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 1\r\n\r\n";
+        let _ = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
+
+        let request = b"DESCRIBE rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\n\r\n";
+        let _ = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
+
+        let request = b"SETUP rtsp://localhost:8554/livecam/track1 RTSP/1.0\r\nCSeq: 3\r\nTransport: RTP/AVP/TCP;interleaved=0-1\r\n\r\n";
+        let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
+        let resp_str = String::from_utf8_lossy(&resp);
+        assert!(resp_str.contains("200 OK"));
+        let session_id = resp_str.lines()
+            .find_map(|line| {
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("Session") {
+                        return Some(value.trim().to_string());
+                    }
+                }
+                None
+            })
+            .expect("SETUP response should have Session header");
+
+        // PLAY — enters streaming loop
+        let play_request = format!(
+            "PLAY rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 4\r\nSession: {session_id}\r\nRange: npt=0.000-\r\n\r\n"
+        );
+        let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, play_request.as_bytes()).await;
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+
+        // Send a frame — resets the idle timer
+        let nal_data = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80];
+        tx.send(nal_data.clone()).await.unwrap();
+
+        // Read the interleaved frame to confirm streaming is active
+        let mut magic = [0u8; 1];
+        client_reader.read_exact(&mut magic).await.unwrap();
+        assert_eq!(magic[0], 0x24, "Should receive RTP data");
+
+        // Advance time past the 60s idle timeout, then yield to let handler process
+        tokio::time::advance(Duration::from_secs(90)).await;
+        tokio::task::yield_now().await;
+
+        // After timeout, the connection should be closed.
+        // Try to read — should get EOF, error (closed), or TEARDOWN response.
+        // Any data received must NOT be interleaved RTP (0x24).
+        let mut buf = [0u8; 1];
+        match client_reader.read(&mut buf).await {
+            Ok(0) => {} // Clean EOF — expected
+            Ok(_n) => {
+                // If we got data, it should not be an interleaved RTP frame start
+                assert_ne!(buf[0], 0x24, "Interleaved RTP received after timeout");
+            }
+            Err(_) => {} // Connection reset — expected
+        }
     }
 }

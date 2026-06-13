@@ -12,3 +12,6 @@ anyhow.workspace = true
 hex = "0.4"
 sha2 = "0.10"
 rand.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
