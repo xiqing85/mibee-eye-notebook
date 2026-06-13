@@ -4,12 +4,16 @@
 
 use axum::Json;
 use axum::extract::{Extension, Path};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use protocols::rtsp_server::RtspServer;
 use rusqlite::Connection;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
 use crate::db;
 use crate::routes::error_response;
@@ -147,26 +151,166 @@ pub async fn stop_stream(
     }
 }
 
+/// Per-camera serialization lock to prevent concurrent ffmpeg for the same camera.
+static SNAPSHOT_LOCKS: OnceLock<Arc<Mutex<HashMap<String, ()>>>> = OnceLock::new();
+
 /// GET /api/cameras/{id}/snapshot — capture a single JPEG frame.
 ///
-/// **Note**: Snapshot capture is not yet implemented at the pipeline level.
-/// This endpoint returns 501 Not Implemented for now.
+/// Captures a JPEG snapshot from an active stream by using ffmpeg to pull
+/// a single frame from the RTSP stream and encode it as JPEG.
+///
+/// # Returns
+///
+/// - `200 OK` with JPEG body on success
+/// - `404 Not Found` if camera does not exist
+/// - `409 Conflict` if stream is not active
+/// - `504 Gateway Timeout` if capture takes longer than 30 seconds
+/// - `500 Internal Server Error` on ffmpeg or IO errors
 pub async fn snapshot(
-    Extension(_db): Extension<Arc<Mutex<Connection>>>,
-    Extension(_stream_manager): Extension<Arc<StreamManager>>,
+    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path(_id): Path<String>,
+    Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // TODO(T??): Implement actual frame capture from the stream pipeline.
-    // For now, return a placeholder error indicating the feature is coming.
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "snapshot capture not yet implemented",
-            "code": 501
-        })),
+    // Verify camera exists
+    let camera = {
+        let conn = db.lock().await;
+        match db::get_camera(&conn, &id) {
+            Ok(Some(cam)) => cam,
+            Ok(None) => return error_response(StatusCode::NOT_FOUND, "camera not found"),
+            Err(e) => {
+                tracing::error!(error = %e, camera_id = %id, "failed to get camera for snapshot");
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+            }
+        }
+    };
+    drop(camera);
+
+    // Check if stream is active
+    if !stream_manager.has_stream(&id).await {
+        return error_response(
+            StatusCode::CONFLICT,
+            "stream not active - start the stream first",
+        );
+    }
+
+    // Acquire per-camera serialization lock
+    let locks = SNAPSHOT_LOCKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
+    let _camera_lock = {
+        let mut lock_map = locks.lock().await;
+        if lock_map.contains_key(&id) {
+            drop(lock_map);
+            return error_response(
+                StatusCode::CONFLICT,
+                "snapshot already in progress for this camera",
+            );
+        }
+        lock_map.insert(id.clone(), ());
+        // Create a guard that removes the lock on drop
+        struct LockGuard {
+            locks: Arc<Mutex<HashMap<String, ()>>>,
+            camera_id: String,
+        }
+        impl Drop for LockGuard {
+            fn drop(&mut self) {
+                let locks = self.locks.clone();
+                let camera_id = self.camera_id.clone();
+                // Use spawn to avoid blocking in drop
+                tokio::spawn(async move {
+                    let mut lock_map = locks.lock().await;
+                    lock_map.remove(&camera_id);
+                });
+            }
+        }
+        LockGuard {
+            locks: locks.clone(),
+            camera_id: id.clone(),
+        }
+    };
+
+    // RTSP URL for the camera's stream
+    let rtsp_url = format!("rtsp://localhost:8554/live/{}", id);
+
+    // Use ffmpeg to capture a single JPEG frame
+    let capture_result = timeout(
+        Duration::from_secs(30),
+        async move {
+            let mut child = Command::new("ffmpeg")
+                .arg("-rtsp_transport")
+                .arg("tcp")
+                .arg("-i")
+                .arg(&rtsp_url)
+                .arg("-vframes")
+                .arg("1")
+                .arg("-f")
+                .arg("image2")
+                .arg("-c:v")
+                .arg("mjpeg")
+                .arg("-q:v")
+                .arg("2")
+                .arg("pipe:1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| anyhow::anyhow!("failed to spawn ffmpeg for snapshot: {}", e))?;
+
+            let mut stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("failed to capture ffmpeg stdout"))?;
+
+            // Read all output (JPEG data)
+            let mut buffer = Vec::new();
+            stdout
+                .read_to_end(&mut buffer)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to read ffmpeg output: {}", e))?;
+
+            // Wait for ffmpeg to complete
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to wait for ffmpeg: {}", e))?;
+
+            if !status.success() {
+                anyhow::bail!("ffmpeg exited with non-zero status: {:?}", status);
+            }
+
+            // Verify JPEG magic bytes
+            if buffer.len() < 3 || buffer[..2] != [0xFF, 0xD8] {
+                anyhow::bail!("output is not a valid JPEG");
+            }
+            if buffer.len() < 3 || buffer[..2] != [0xFF, 0xD8] {
+                anyhow::bail!("output is not a valid JPEG");
+            }
+
+            Ok::<Vec<u8>, anyhow::Error>(buffer)
+        },
     )
-        .into_response()
+    .await;
+
+    drop(_camera_lock);
+
+    match capture_result {
+        Ok(Ok(jpeg_data)) => {
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", "image/jpeg".parse().unwrap());
+            headers.insert(
+                "content-length",
+                jpeg_data.len().to_string().parse().unwrap(),
+            );
+            (StatusCode::OK, headers, jpeg_data).into_response()
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, camera_id = %id, "snapshot capture failed");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to capture snapshot")
+        }
+        Err(_) => {
+            tracing::warn!(camera_id = %id, "snapshot capture timed out after 30s");
+            error_response(StatusCode::GATEWAY_TIMEOUT, "snapshot capture timed out")
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,17 +494,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_snapshot_returns_not_implemented() {
+    async fn test_snapshot_nonexistent_camera() {
+        let (state, token, _) = setup_with_camera().await;
+        let app = crate::server::build_app_with_state(state);
+
+        let req = Request::builder()
+            .uri("/api/cameras/ghost/snapshot")
+            .method("GET")
+            .header("cookie", format!("session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_inactive_stream() {
         let (state, token, cam_id) = setup_with_camera().await;
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()
             .uri(format!("/api/cameras/{}/snapshot", cam_id))
+            .method("GET")
             .header("cookie", format!("session={token}"))
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(res.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

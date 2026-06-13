@@ -197,7 +197,7 @@ impl StreamHub {
     ///
     /// Returns a `JoinHandle` that resolves when the pipeline stops
     /// (either due to source exhaustion, an error, or [`stop`](Self::stop)).
-    pub fn run(&mut self) -> JoinHandle<()> {
+    pub async fn run(&mut self) -> JoinHandle<()> {
         let mut source = self
             .source
             .take()
@@ -213,14 +213,14 @@ impl StreamHub {
 
         // Mark as running so add_output knows to spawn tasks.
         {
-            let mut g = inner.blocking_lock();
+            let mut g = inner.lock().await;
             g.running = true;
         }
 
         // Collect output IDs and spawn output tasks FIRST so they can subscribe
         // to the broadcast channel before the source starts sending frames.
         let ids: Vec<OutputId> = {
-            let guard = inner.blocking_lock();
+            let guard = inner.lock().await;
             guard.outputs.keys().copied().collect()
         };
 
@@ -232,7 +232,7 @@ impl StreamHub {
 
             // Create a per-output stop receiver.
             let output_stop_rx: watch::Receiver<bool> = {
-                let guard = inner.blocking_lock();
+                let guard = inner.lock().await;
                 guard
                     .output_stop
                     .get(&id)
@@ -548,7 +548,7 @@ mod tests {
         let _id2 = hub.add_output(Box::new(out2)).await;
         let _id3 = hub.add_output(Box::new(out3)).await;
 
-        let _handle = hub.run();
+        let _handle = hub.run().await;
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         for (i, recv) in [&recv1, &recv2, &recv3].iter().enumerate() {
@@ -576,7 +576,7 @@ mod tests {
         let recv = out.receiver();
         let _id = hub.add_output(Box::new(out)).await;
 
-        let _handle = hub.run();
+        let _handle = hub.run().await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let frames = recv.lock().await;
@@ -598,7 +598,7 @@ mod tests {
 
         assert!(!hub.is_stopped());
 
-        let _handle = hub.run();
+        let _handle = hub.run().await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         hub.stop();
@@ -624,7 +624,7 @@ mod tests {
         let recv = out.receiver();
         let _id = hub.add_output(Box::new(out)).await;
 
-        let handle = hub.run();
+        let handle = hub.run().await;
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
 
         let frames = recv.lock().await;
@@ -672,7 +672,7 @@ mod tests {
         let rtsp_out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         let _id = hub.add_output(Box::new(rtsp_out)).await;
 
-        let _handle = hub.run();
+        let _handle = hub.run().await;
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Verify frames arrived via the channel
@@ -708,7 +708,7 @@ mod tests {
         let _rtsp_id = hub.add_output(Box::new(rtsp_out)).await;
         let _mock_id = hub.add_output(Box::new(mock_out)).await;
 
-        let _handle = hub.run();
+        let _handle = hub.run().await;
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Verify MockOutput received all frames through the hub

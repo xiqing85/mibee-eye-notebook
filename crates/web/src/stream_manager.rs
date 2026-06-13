@@ -242,7 +242,7 @@ impl StreamManager {
             }
 
             // Start the pipeline.
-            let handle = hub.run();
+            let handle = hub.run().await;
 
             // Spawn a monitor task that calls hub.stop() when the external
             // stop signal is received.

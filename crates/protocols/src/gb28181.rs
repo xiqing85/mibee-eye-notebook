@@ -622,6 +622,68 @@ pub fn build_bye_request(
     }
 }
 
+/// Build a SIP 200 OK response to an INVITE request.
+///
+/// # Arguments
+/// * `invite` - The received INVITE message to respond to
+/// * `local_id` - This device's ID (20-digit)
+/// * `local_sdp` - SDP body describing the media being sent (video stream)
+/// * `local_tag` - Tag to add to To header for dialog identification
+/// * `cseq` - CSeq number from INVITE
+pub fn build_invite_response(
+    invite: &SipMessage,
+    local_id: &str,
+    local_sdp: &str,
+    local_tag: u32,
+    cseq: u32,
+) -> SipMessage {
+    let mut headers = Vec::new();
+
+    // Copy Via from INVITE (add rport, received)
+    if let Some(via) = invite.get_header("Via") {
+        headers.push(("Via".to_string(), via.to_string()));
+    }
+
+    // From header from INVITE
+    if let Some(from) = invite.get_header("From") {
+        headers.push(("From".to_string(), from.to_string()));
+    }
+
+    // To header with our tag added
+    if let Some(to) = invite.get_header("To") {
+        // Parse and add tag
+        if to.contains("tag=") {
+            headers.push(("To".to_string(), to.to_string()));
+        } else {
+            headers.push(("To".to_string(), format!("{};tag={}", to, local_tag)));
+        }
+    }
+
+    // Call-ID from INVITE
+    if let Some(call_id) = invite.get_header("Call-ID") {
+        headers.push(("Call-ID".to_string(), call_id.to_string()));
+    }
+
+    // CSeq from INVITE (method stays as INVITE in response)
+    headers.push(("CSeq".to_string(), format!("{} INVITE", cseq)));
+    headers.push(("Contact".to_string(), format!("<sip:{}@{}:5060>", local_id, local_id)));
+    headers.push(("Content-Type".to_string(), "application/sdp".to_string()));
+    headers.push(("Content-Length".to_string(), local_sdp.len().to_string()));
+
+    // Extract URI from INVITE Request-Line
+    let request_uri = invite.uri.as_deref().unwrap_or("sip:unknown");
+
+    SipMessage {
+        start_line: "SIP/2.0 200 OK".to_string(),
+        method: None,
+        status_code: Some(SipStatusCode::Ok),
+        uri: Some(request_uri.to_string()),
+        version: "SIP/2.0".to_string(),
+        headers,
+        body: local_sdp.to_string(),
+    }
+}
+
 // ─── Digest Authentication ──────────────────────────────────────────────────
 
 /// RFC 7616 Digest Authentication parameters.
