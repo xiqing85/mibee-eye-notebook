@@ -46,6 +46,7 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 cpal = "0.18"
 rcgen = "0.14"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+libc = "0.2"
 
 [package]
 name = "mibee-rec"
@@ -71,3 +72,4 @@ web = { path = "crates/web" }
 security = { path = "crates/security" }
 
 dirs = "6"
+libc.workspace = true

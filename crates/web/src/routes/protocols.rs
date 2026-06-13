@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::routes::error_response;
+use crate::errors::ApiError;
 use security::middleware::AuthenticatedUser;
 
 type ConfigStore = Arc<Mutex<HashMap<String, serde_json::Value>>>;
@@ -28,7 +28,7 @@ pub async fn get_protocols_onvif(
 ) -> impl IntoResponse {
     match get_config(&configs, "onvif").await {
         Some(val) => (StatusCode::OK, Json(val)).into_response(),
-        None => error_response(StatusCode::NOT_FOUND, "onvif config not found"),
+        None => ApiError::not_found("onvif config not found").into_response(),
     }
 }
 
@@ -44,7 +44,7 @@ pub async fn update_protocols_onvif(
             merge_json(existing, &payload);
             (StatusCode::OK, Json(existing.clone())).into_response()
         }
-        None => error_response(StatusCode::NOT_FOUND, "onvif config not found"),
+        None => ApiError::not_found("onvif config not found").into_response(),
     }
 }
 
@@ -59,7 +59,7 @@ pub async fn get_protocols_gb28181(
 ) -> impl IntoResponse {
     match get_config(&configs, "gb28181").await {
         Some(val) => (StatusCode::OK, Json(val)).into_response(),
-        None => error_response(StatusCode::NOT_FOUND, "gb28181 config not found"),
+        None => ApiError::not_found("gb28181 config not found").into_response(),
     }
 }
 
@@ -75,7 +75,7 @@ pub async fn update_protocols_gb28181(
             merge_json(existing, &payload);
             (StatusCode::OK, Json(existing.clone())).into_response()
         }
-        None => error_response(StatusCode::NOT_FOUND, "gb28181 config not found"),
+        None => ApiError::not_found("gb28181 config not found").into_response(),
     }
 }
 
@@ -90,7 +90,7 @@ pub async fn get_protocols_rtmp(
 ) -> impl IntoResponse {
     match get_config(&configs, "rtmp_push").await {
         Some(val) => (StatusCode::OK, Json(val)).into_response(),
-        None => error_response(StatusCode::NOT_FOUND, "rtmp_push config not found"),
+        None => ApiError::not_found("rtmp_push config not found").into_response(),
     }
 }
 
@@ -106,7 +106,7 @@ pub async fn update_protocols_rtmp(
             merge_json(existing, &payload);
             (StatusCode::OK, Json(existing.clone())).into_response()
         }
-        None => error_response(StatusCode::NOT_FOUND, "rtmp_push config not found"),
+        None => ApiError::not_found("rtmp_push config not found").into_response(),
     }
 }
 

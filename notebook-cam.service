@@ -1,0 +1,18 @@
+[Unit]
+Description=Notebook-Cam (MiBee Rec) Camera Capture Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/notebook-cam --config /etc/notebook-cam/config.toml
+Restart=on-failure
+RestartSec=5
+User=notebook-cam
+SupplementaryGroups=video
+LimitNOFILE=65536
+StateDirectory=notebook-cam
+WorkingDirectory=/var/lib/notebook-cam
+
+[Install]
+WantedBy=multi-user.target
