@@ -71,5 +71,6 @@ observability = { path = "crates/observability" }
 web = { path = "crates/web" }
 security = { path = "crates/security" }
 
+streaming = { path = "crates/streaming" }
 dirs = "6"
 libc.workspace = true
