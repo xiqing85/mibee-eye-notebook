@@ -55,6 +55,7 @@ const SDP_BODY: &str = concat!(
     "m=video 0 RTP/AVP 96\r\n",
     "a=rtpmap:96 H264/90000\r\n",
     "a=fmtp:96 packetization-mode=1\r\n",
+    "a=control:track1\r\n",
 );
 
 /// Default RTSP port for stream URLs.
