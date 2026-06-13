@@ -7,6 +7,8 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use streaming::output::Gb28181Output;
+use streaming::output::Output;
 use tokio::sync::watch;
 
 #[derive(Parser, Debug)]
@@ -160,6 +162,8 @@ async fn main() -> anyhow::Result<()> {
             use tokio::sync::Mutex;
             let processed_invites: Arc<Mutex<HashSet<String>>> =
                 Arc::new(Mutex::new(HashSet::new()));
+            // Track active RTP push outputs by Call-ID for BYE cleanup
+            let mut gb28181_outputs: HashMap<String, Gb28181Output> = HashMap::new();
 
             // Registration state
             let mut registered = false;
@@ -338,13 +342,44 @@ async fn main() -> anyhow::Result<()> {
                                                         tracing::error!(error = %e, call_id = %call_id, "Failed to send 200 OK to INVITE");
                                                     } else {
                                                         tracing::info!(call_id = %call_id, "Sent 200 OK to INVITE");
-                                                        // TODO: Start RTP push to invite_info.media_address:invite_info.media_port
-                                                        // This would require integrating with the streaming hub to get frames
-                                                        tracing::warn!(
-                                                            "RTP push not yet implemented - frames would be sent to {}:{}",
-                                                            invite_info.media_address,
-                                                            invite_info.media_port
-                                                        );
+                                                        // Start RTP push to the platform's media receiver
+                                                        match invite_info
+                                                            .media_address
+                                                            .parse::<std::net::IpAddr>()
+                                                        {
+                                                            Ok(ip) => {
+                                                                let dest = SocketAddr::new(
+                                                                    ip,
+                                                                    invite_info.media_port,
+                                                                );
+                                                                let mut output = Gb28181Output::new(
+                                                                    dest,
+                                                                    invite_info.ssrc,
+                                                                    invite_info.payload_type,
+                                                                    &call_id,
+                                                                );
+                                                                match output.start().await {
+                                                                    Ok(()) => {
+                                                                        tracing::info!(
+                                                                            call_id = %call_id,
+                                                                            dest = %dest,
+                                                                            ssrc = %invite_info.ssrc,
+                                                                            "RTP push started for GB28181 session"
+                                                                        );
+                                                                        gb28181_outputs.insert(
+                                                                            call_id.clone(),
+                                                                            output,
+                                                                        );
+                                                                    }
+                                                                    Err(e) => {
+                                                                        tracing::error!(error = %e, call_id = %call_id, "Failed to start RTP push");
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                tracing::error!(error = %e, call_id = %call_id, media_address = %invite_info.media_address, "Invalid media IP in INVITE");
+                                                            }
+                                                        }
                                                     }
                                                 }
                                                 Err(e) => {
@@ -353,8 +388,20 @@ async fn main() -> anyhow::Result<()> {
                                             }
                                         }
                                         protocols::gb28181::SipMethod::Bye => {
-                                            tracing::info!("Received BYE, ending session");
-                                            // TODO: Stop RTP push for this session
+                                            let call_id =
+                                                msg.get_header("Call-ID").unwrap_or("").to_string();
+                                            tracing::info!(call_id = %call_id, "Received BYE, ending session");
+                                            if let Some(mut output) =
+                                                gb28181_outputs.remove(&call_id)
+                                            {
+                                                if let Err(e) = output.stop().await {
+                                                    tracing::error!(error = %e, call_id = %call_id, "Error stopping RTP push");
+                                                } else {
+                                                    tracing::info!(call_id = %call_id, "RTP push stopped for GB28181 session");
+                                                }
+                                            } else {
+                                                tracing::debug!(call_id = %call_id, "No active RTP push for this session");
+                                            }
                                         }
                                         _ => {
                                             tracing::debug!(method = %method, "Received unhandled SIP request");
