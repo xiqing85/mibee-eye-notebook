@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, watch, mpsc};
 use tower_http::cors::CorsLayer;
 
 use crate::assets;
@@ -209,6 +209,27 @@ pub async fn run(
     // Build TLS config from cert/key files; generates self-signed if missing
     let tls_conf = security::tls::build_tls_config("tls/cert.pem", "tls/key.pem")?;
     let tls_config = RustlsConfig::from_config(Arc::new(tls_conf));
+
+    // Clone so the reload task can update the shared ArcSwap inside RustlsConfig
+    let tls_config_for_reload = tls_config.clone();
+
+    // Set up certificate file watcher for hot-reload
+    let (reload_tx, mut reload_rx) = mpsc::channel::<Arc<rustls::ServerConfig>>(8);
+    tokio::spawn(security::tls::start_cert_watcher(
+        "tls/cert.pem".to_string(),
+        "tls/key.pem".to_string(),
+        reload_tx,
+        std::time::Duration::from_secs(2),
+    ));
+
+    // Apply TLS reloads as they arrive from the watcher
+    tokio::spawn(async move {
+        while let Some(new_config) = reload_rx.recv().await {
+            tls_config_for_reload.reload_from_config(new_config);
+            tracing::info!("TLS certs reloaded and applied to server");
+        }
+    });
+
     tracing::info!("notebook-cam server starting on https://{}", addr);
 
     axum_server::bind_rustls(addr, tls_config)
@@ -249,6 +270,26 @@ pub async fn run_with_shutdown(
     // Build TLS config from cert/key files; generates self-signed if missing
     let tls_conf = security::tls::build_tls_config("tls/cert.pem", "tls/key.pem")?;
     let tls_config = RustlsConfig::from_config(Arc::new(tls_conf));
+
+    // Clone so the reload task can update the shared ArcSwap inside RustlsConfig
+    let tls_config_for_reload = tls_config.clone();
+
+    // Set up certificate file watcher for hot-reload
+    let (reload_tx, mut reload_rx) = mpsc::channel::<Arc<rustls::ServerConfig>>(8);
+    tokio::spawn(security::tls::start_cert_watcher(
+        "tls/cert.pem".to_string(),
+        "tls/key.pem".to_string(),
+        reload_tx,
+        std::time::Duration::from_secs(2),
+    ));
+
+    // Apply TLS reloads as they arrive from the watcher
+    tokio::spawn(async move {
+        while let Some(new_config) = reload_rx.recv().await {
+            tls_config_for_reload.reload_from_config(new_config);
+        }
+    });
+
     tracing::info!("notebook-cam server starting on https://{}", addr);
 
     // Create a handle for graceful shutdown

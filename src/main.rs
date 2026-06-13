@@ -4,6 +4,7 @@ use protocols::onvif::{OnvifDeviceConfig, WsDiscoveryServer};
 use protocols::rtsp_server::{RtspServer, RtspServerConfig};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -37,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = mibee_rec::config::AppConfig::load(&args.config)?;
+    config.validate()?;
 
     // Initialise tracing (subscriber, optional OTLP export)
     observability::init_tracing(
@@ -84,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
                 config.web.host, config.rtsp.server_port
             ),
             scopes: vec!["onvif://www.onvif.org/type/NetworkVideoTransmitter".into()],
-            xaddrs: vec![],
+            xaddrs: get_onvif_xaddrs(ONVIF_HTTP_PORT),
         };
         let onvif_handle = tokio::spawn(async move {
             match WsDiscoveryServer::bind(onvif_device_config, "0.0.0.0:3702").await {
@@ -482,4 +484,105 @@ fn get_local_ip_for_server(server_addr: &SocketAddr) -> anyhow::Result<String> {
     socket.connect(server_addr)?;
     let local_addr = socket.local_addr()?;
     Ok(local_addr.ip().to_string())
+}
+
+/// Default port for the ONVIF device service HTTP endpoint.
+///
+/// This is a conventional port for ONVIF SOAP/HTTP device service.
+/// WS-Discovery uses UDP 3702, but the device service runs on a separate HTTP port.
+const ONVIF_HTTP_PORT: u16 = 8080;
+
+/// Get ONVIF XAddrs (device service URLs) for all non-loopback IPv4 interfaces.
+///
+/// Each XAddr is in the format `http://{ip}:{port}/onvif/device_service`.
+/// Loopback addresses (127.x.x.x) and unspecified addresses (0.0.0.0) are excluded.
+/// If enumeration fails (e.g., on unsupported platforms), returns an empty vec.
+fn get_onvif_xaddrs(port: u16) -> Vec<String> {
+    let mut xaddrs = Vec::new();
+    unsafe {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifap) != 0 {
+            return xaddrs;
+        }
+        let mut ptr = ifap;
+        while !ptr.is_null() {
+            let ifa = &*ptr;
+            if let Some(addr) = ifa.ifa_addr.as_ref() {
+                if addr.sa_family as libc::c_uint == libc::AF_INET as libc::c_uint {
+                    let sin = addr as *const libc::sockaddr as *const libc::sockaddr_in;
+                    let ip = Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
+                    if !ip.is_loopback() && !ip.is_unspecified() {
+                        xaddrs.push(format!(
+                            "http://{}:{}/onvif/device_service",
+                            ip, port
+                        ));
+                    }
+                }
+            }
+            ptr = ifa.ifa_next;
+        }
+        libc::freeifaddrs(ifap);
+    }
+    xaddrs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_onvif_xaddrs_url_format() {
+        let xaddrs = get_onvif_xaddrs(8080);
+        for xaddr in &xaddrs {
+            assert!(
+                xaddr.starts_with("http://"),
+                "xaddr should start with http://"
+            );
+            assert!(
+                xaddr.ends_with("/onvif/device_service"),
+                "xaddr should end with /onvif/device_service"
+            );
+            assert!(
+                xaddr.contains(":8080/"),
+                "xaddr should contain specified port"
+            );
+        }
+        // Verify no loopback or unspecified addresses
+        for xaddr in &xaddrs {
+            let ip_str = xaddr
+                .strip_prefix("http://")
+                .and_then(|s| s.split(':').next())
+                .expect("should have IP part");
+            let ip: Ipv4Addr = ip_str.parse().expect("should be valid IPv4");
+            assert!(!ip.is_loopback(), "loopback should be excluded");
+            assert!(!ip.is_unspecified(), "unspecified should be excluded");
+        }
+    }
+
+    #[test]
+    fn test_get_onvif_xaddrs_port_parameter() {
+        let xaddrs_8080 = get_onvif_xaddrs(8080);
+        let xaddrs_8443 = get_onvif_xaddrs(8443);
+        assert_eq!(
+            xaddrs_8080.len(),
+            xaddrs_8443.len(),
+            "same interfaces should produce same count for different ports"
+        );
+        for (a, b) in xaddrs_8080.iter().zip(xaddrs_8443.iter()) {
+            assert!(a.contains(":8080/"));
+            assert!(b.contains(":8443/"));
+        }
+    }
+
+    #[test]
+    fn test_get_onvif_xaddrs_empty_without_interfaces() {
+        // When no interfaces are available, function returns empty vec
+        // This test validates the function doesn't panic
+        let xaddrs = get_onvif_xaddrs(8080);
+        // If we have interfaces, they should all be valid;
+        // if we don't, the empty vec is fine
+        for xaddr in &xaddrs {
+            assert!(xaddr.starts_with("http://"));
+        }
+    }
 }

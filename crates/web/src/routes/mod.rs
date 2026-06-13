@@ -15,14 +15,8 @@ pub mod protocols;
 pub mod settings;
 pub mod streams;
 
-/// Helper: consistent error JSON response with code.
-pub fn error_response(status: StatusCode, msg: &str) -> axum::response::Response {
-    (
-        status,
-        Json(serde_json::json!({"error": msg, "code": status.as_u16()})),
-    )
-        .into_response()
-}
+use crate::errors::ApiError;
+
 
 /// Return a seconds-since-epoch timestamp string suitable for DB storage.
 pub fn chrono_now() -> String {
@@ -53,10 +47,7 @@ pub async fn metrics_handler() -> impl IntoResponse {
 
 /// Placeholder handler for not-yet-implemented routes (501).
 pub async fn not_implemented_handler() -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({"error": "not implemented"})),
-    )
+    ApiError::not_implemented("not implemented").into_response()
 }
 
 /// Request body for POST /api/auth/login
@@ -82,11 +73,11 @@ pub async fn login_handler(
     let stored_hash = match security::auth::get_user_password(&conn, &body.username) {
         Ok(Some(h)) => h,
         Ok(None) => {
-            return error_response(StatusCode::UNAUTHORIZED, "invalid credentials");
+            return ApiError::unauthorized("invalid credentials").into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "login_handler: failed to query user");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return ApiError::internal("internal error").into_response();
         }
     };
 
@@ -94,11 +85,11 @@ pub async fn login_handler(
     match security::password::verify_password(&body.password, &stored_hash) {
         Ok(true) => {}
         Ok(false) => {
-            return error_response(StatusCode::UNAUTHORIZED, "invalid credentials");
+            return ApiError::unauthorized("invalid credentials").into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "login_handler: password verification failed");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return ApiError::internal("internal error").into_response();
         }
     }
 
@@ -107,7 +98,7 @@ pub async fn login_handler(
         Ok(t) => t,
         Err(e) => {
             tracing::error!(error = %e, "login_handler: failed to create session");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return ApiError::internal("internal error").into_response();
         }
     };
 
@@ -186,13 +177,10 @@ pub async fn setup_handler(
 ) -> impl IntoResponse {
     // Validate
     if body.username.trim().is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "username cannot be empty");
+        return ApiError::bad_request("username cannot be empty").into_response();
     }
     if body.password.len() < 8 {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "password must be at least 8 characters",
-        );
+        return ApiError::bad_request("password must be at least 8 characters").into_response();
     }
 
     let conn = db.lock().await;
@@ -201,18 +189,18 @@ pub async fn setup_handler(
     match security::auth::is_first_run(&conn) {
         Ok(true) => {} // proceed
         Ok(false) => {
-            return error_response(StatusCode::BAD_REQUEST, "already configured");
+            return ApiError::bad_request("already configured").into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "setup_handler: failed to check first-run status");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return ApiError::internal("internal error").into_response();
         }
     }
 
     // Ensure users table exists
     if let Err(e) = security::auth::init_users_table(&conn) {
         tracing::error!(error = %e, "setup_handler: failed to init users table");
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return ApiError::internal("internal error").into_response();
     }
 
     // Hash the password
@@ -220,7 +208,7 @@ pub async fn setup_handler(
         Ok(h) => h,
         Err(e) => {
             tracing::error!(error = %e, "setup_handler: failed to hash password");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return ApiError::internal("internal error").into_response();
         }
     };
 
@@ -230,7 +218,7 @@ pub async fn setup_handler(
         rusqlite::params![body.username, hash],
     ) {
         tracing::error!(error = %e, "setup_handler: failed to insert admin user");
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            return ApiError::internal("internal error").into_response();
     }
 
     drop(conn);
@@ -272,18 +260,10 @@ pub async fn reset_password_handler(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("incorrect") || msg.contains("not found") {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({"error": msg})),
-                )
-                    .into_response()
+                ApiError::unauthorized(&msg).into_response()
             } else {
                 tracing::error!(error = %msg, "password reset failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "internal error"})),
-                )
-                    .into_response()
+                ApiError::internal("internal error").into_response()
             }
         }
     }

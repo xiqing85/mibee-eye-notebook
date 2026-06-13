@@ -23,3 +23,4 @@ uuid.workspace = true
 capture = { path = "../capture" }
 streaming = { path = "../streaming" }
 axum-server.workspace = true
+rustls.workspace = true

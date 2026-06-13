@@ -5,6 +5,9 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+use tokio::sync::mpsc;
 
 /// Generate a self-signed X.509 certificate and its corresponding private key.
 ///
@@ -128,6 +131,53 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+/// Returns the maximum of the modification times of the two TLS files.
+fn last_modified(cert_path: &str, key_path: &str) -> Option<SystemTime> {
+    let cert_mtime = fs::metadata(cert_path).ok()?.modified().ok()?;
+    let key_mtime = fs::metadata(key_path).ok()?.modified().ok()?;
+    Some(std::cmp::max(cert_mtime, key_mtime))
+}
+
+/// Start a background task that polls TLS certificate files for changes.
+///
+/// Checks `cert_path` and `key_path` every `poll_interval` for modification time changes.
+/// When a change is detected, tries to load the new certificate and key via [`build_tls_config`].
+/// On success, sends the new `ServerConfig` (wrapped in `Arc`) through `reload_tx`.
+/// On failure, logs "TLS reload failed, keeping old certs" and continues polling (fail-open).
+///
+/// This function runs until the channel is closed (e.g., server shutdown).
+pub async fn start_cert_watcher(
+    cert_path: String,
+    key_path: String,
+    reload_tx: mpsc::Sender<Arc<ServerConfig>>,
+    poll_interval: Duration,
+) {
+    let mut last = last_modified(&cert_path, &key_path);
+    let mut interval = tokio::time::interval(poll_interval);
+
+    loop {
+        interval.tick().await;
+        let current = last_modified(&cert_path, &key_path);
+        if current != last {
+            match build_tls_config(&cert_path, &key_path) {
+                Ok(config) => {
+                    tracing::info!("TLS certs reloaded");
+                    if reload_tx.send(Arc::new(config)).await.is_err() {
+                        // Receiver dropped (server shutting down)
+                        break;
+                    }
+                    last = current;
+                }
+                Err(e) => {
+                    tracing::error!("TLS reload failed, keeping old certs: {e}");
+                    // Update last to avoid retrying the same broken files
+                    last = current;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +262,55 @@ mod tests {
         assert!(cert_der.as_ref().len() > 200);
         // Verify key is at least 100 bytes
         assert!(key_der.secret_der().len() > 80);
+    }
+
+    #[tokio::test]
+    async fn test_cert_watcher_reloads_on_file_change() {
+        let dir = std::env::temp_dir().join("notebook-cam-watcher-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+
+        // Generate initial cert files
+        let _initial = build_tls_config(
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<Arc<ServerConfig>>(8);
+
+        // Start watcher with fast polling
+        let cert_str = cert_path.to_str().unwrap().to_string();
+        let key_str = key_path.to_str().unwrap().to_string();
+        tokio::spawn(start_cert_watcher(cert_str, key_str, tx, Duration::from_millis(50)));
+
+        // Give watcher time to record initial mtime
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // Generate a new certificate and overwrite files
+        let (new_cert_der, new_key_der) = generate_self_signed_cert().unwrap();
+        let cert_pem = pem_encode("CERTIFICATE", new_cert_der.as_ref());
+        let key_pem = pem_encode("PRIVATE KEY", key_bytes(&new_key_der));
+
+        // Write via temp files for atomic-ish update
+        let tmp_cert = dir.join("cert.pem.tmp");
+        let tmp_key = dir.join("key.pem.tmp");
+        fs::write(&tmp_cert, &cert_pem).unwrap();
+        fs::write(&tmp_key, &key_pem).unwrap();
+        fs::rename(&tmp_cert, &cert_path).unwrap();
+        fs::rename(&tmp_key, &key_path).unwrap();
+
+        // Wait for watcher to detect and reload
+        let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("Watcher should detect file change within timeout");
+
+        assert!(received.is_some(), "Should receive a reloaded ServerConfig");
+
+        // Cleanup
+        fs::remove_dir_all(&dir).ok();
     }
 }

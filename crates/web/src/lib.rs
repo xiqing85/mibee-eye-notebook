@@ -2,6 +2,7 @@
 
 pub mod assets;
 /// Axum REST API + static SPA
+pub mod errors;
 pub mod db;
 pub mod routes;
 pub mod server;

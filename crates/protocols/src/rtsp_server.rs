@@ -1188,12 +1188,27 @@ async fn handle_connection(
                     if let Some(entry) = live_entry {
                         let mut frame_rx = entry.frame_rx;
                         info!("Starting live stream delivery for /{live_path}");
+                        let mut seq_tracker = SequenceTracker::new();
 
                         loop {
                             tokio::select! {
                                 frame = frame_rx.recv() => {
                                     match frame {
                                         Some(data) => {
+                                            // Check for RTP sequence number gaps
+                                            if let Some(info) = parse_rtp_header_for_tracking(&data) {
+                                                let expected = seq_tracker.expected();
+                                                if let Some(gap) = seq_tracker.check(info.sequence_number) {
+                                                    warn!(
+                                                        ssrc = info.ssrc,
+                                                        expected = expected,
+                                                        got = info.sequence_number,
+                                                        gap = gap,
+                                                        "RTP sequence gap detected"
+                                                    );
+                                                }
+                                            }
+
                                             match build_interleaved_frame(interleave_channel, &data) {
                                                 Ok(interleaved) => {
                                                     if let Err(e) = writer.write_all(&interleaved).await {
@@ -1434,6 +1449,78 @@ pub fn build_interleaved_frame(channel: u8, rtp_data: &[u8]) -> Result<Vec<u8>> 
     frame.extend_from_slice(&(len as u16).to_be_bytes());
     frame.extend_from_slice(rtp_data);
     Ok(frame)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RTP Sequence Number Gap Detection
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Minimal RTP header info extracted for sequence tracking.
+struct RtpHeaderInfo {
+    sequence_number: u16,
+    ssrc: u32,
+}
+
+/// Parse just the RTP header fields needed for sequence gap tracking.
+fn parse_rtp_header_for_tracking(data: &[u8]) -> Option<RtpHeaderInfo> {
+    if data.len() < 12 {
+        return None;
+    }
+    let version = (data[0] >> 6) & 0x03;
+    if version != 2 {
+        return None;
+    }
+    Some(RtpHeaderInfo {
+        sequence_number: u16::from_be_bytes([data[2], data[3]]),
+        ssrc: u32::from_be_bytes([data[8], data[9], data[10], data[11]]),
+    })
+}
+
+/// Tracks RTP sequence numbers to detect packet loss gaps.
+#[derive(Debug, Clone)]
+struct SequenceTracker {
+    /// Sequence number of the last RTP packet seen, if any.
+    last_seq: Option<u16>,
+}
+
+impl SequenceTracker {
+    fn new() -> Self {
+        Self { last_seq: None }
+    }
+
+    #[allow(dead_code)]
+    /// Reset tracking state (used on stream restart).
+    fn reset(&mut self) {
+        self.last_seq = None;
+    }
+
+    /// The next expected sequence number, based on the last seen packet.
+    fn expected(&self) -> u16 {
+        self.last_seq.map(|s| s.wrapping_add(1)).unwrap_or(0)
+    }
+
+    /// Check a new sequence number.
+    ///
+    /// Returns `Some(gap)` where `gap` is the number of packets skipped
+    /// (gap > 1 indicates packet loss). Returns `None` if the sequence is
+    /// contiguous or this is the first packet.
+    fn check(&mut self, seq: u16) -> Option<u16> {
+        match self.last_seq {
+            Some(last) => {
+                self.last_seq = Some(seq);
+                let expected = last.wrapping_add(1);
+                if seq == expected {
+                    return None;
+                }
+                let gap = seq.wrapping_sub(expected);
+                if gap > 0 { Some(gap) } else { None }
+            }
+            None => {
+                self.last_seq = Some(seq);
+                None
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2466,5 +2553,100 @@ mod tests {
             .unwrap();
         // Give time for the handler to process
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // ─── RTP Sequence Gap Detection Tests ─────────────────────────────────
+
+    #[test]
+    fn test_seq_tracker_normal_sequence() {
+        let mut tracker = SequenceTracker::new();
+        // First packet — no gap
+        assert_eq!(tracker.check(100), None);
+        // Normal increment — no gap
+        assert_eq!(tracker.check(101), None);
+        assert_eq!(tracker.check(102), None);
+        assert_eq!(tracker.check(103), None);
+    }
+
+    #[test]
+    fn test_seq_tracker_gap_detected() {
+        let mut tracker = SequenceTracker::new();
+        tracker.check(100);
+        // Gap: last=100, expected=101, got=105, gap = |105-101| = 4
+        let gap = tracker.check(105);
+        assert_eq!(gap, Some(4));
+    }
+
+    #[test]
+    fn test_seq_tracker_large_gap() {
+        let mut tracker = SequenceTracker::new();
+        tracker.check(100);
+        // Large jump: last=100, expected=101, got=500, gap = |500-101| = 399
+        let gap = tracker.check(500);
+        assert_eq!(gap, Some(399));
+    }
+
+    #[test]
+    fn test_seq_tracker_reset() {
+        let mut tracker = SequenceTracker::new();
+        tracker.check(100);
+        assert_eq!(tracker.check(105), Some(4));
+        // Reset — like a stream restart
+        tracker.reset();
+        // First packet after reset — no gap
+        assert_eq!(tracker.check(200), None);
+        // Normal sequence after reset
+        assert_eq!(tracker.check(201), None);
+    }
+
+    #[test]
+    fn test_seq_tracker_wraparound() {
+        let mut tracker = SequenceTracker::new();
+        tracker.check(0xFFFE);
+        // Normal increment with wraparound
+        assert_eq!(tracker.check(0xFFFF), None);
+        // Wrap to 0 — no gap
+        assert_eq!(tracker.check(0x0000), None);
+        // Continue after wrap
+        assert_eq!(tracker.check(0x0001), None);
+    }
+
+    #[test]
+    fn test_seq_tracker_no_gap_on_first_packet() {
+        let mut tracker = SequenceTracker::new();
+        // First packet should always be accepted
+        assert_eq!(tracker.check(1000), None);
+        // Second call is not first anymore; verify it tracks correctly
+        let mut t2 = SequenceTracker::new();
+        assert_eq!(t2.check(0), None);
+        let mut t3 = SequenceTracker::new();
+        assert_eq!(t3.check(0xFFFF), None);
+    }
+
+    #[test]
+    fn test_parse_rtp_header_for_tracking() {
+        // Build a minimal valid RTP header (12 bytes)
+        let data = vec![
+            0x80, 0x60, // V=2, P=0, X=0, CC=0 | M=0, PT=96
+            0x00, 0x2A, // sequence_number = 42
+            0x00, 0x00, 0x00, 0x00, // timestamp = 0
+            0xDE, 0xAD, 0xBE, 0xEF, // ssrc = 0xDEADBEEF
+        ];
+        let info = parse_rtp_header_for_tracking(&data).unwrap();
+        assert_eq!(info.sequence_number, 42);
+        assert_eq!(info.ssrc, 0xDEADBEEF);
+    }
+
+    #[test]
+    fn test_parse_rtp_header_for_tracking_too_short() {
+        assert!(parse_rtp_header_for_tracking(&[0x80, 0x00, 0x00]).is_none());
+        assert!(parse_rtp_header_for_tracking(&[]).is_none());
+    }
+
+    #[test]
+    fn test_parse_rtp_header_for_tracking_invalid_version() {
+        // Version 0 (invalid)
+        let data = [0x00u8; 12];
+        assert!(parse_rtp_header_for_tracking(&data).is_none());
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db;
-use crate::routes::error_response;
+use crate::errors::ApiError;
 use security::middleware::AuthenticatedUser;
 
 // ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ pub async fn get_settings(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to list settings");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to list settings")
+            ApiError::internal("failed to list settings").into_response()
         }
     }
 }
@@ -58,10 +58,7 @@ pub async fn update_settings(
     for (key, value) in &body.settings {
         if let Err(e) = db::set_setting(&conn, key, value) {
             tracing::error!(error = %e, setting_key = %key, "failed to set setting");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to update settings",
-            );
+            return ApiError::internal("failed to update settings").into_response();
         }
     }
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()

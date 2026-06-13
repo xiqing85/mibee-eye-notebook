@@ -382,6 +382,51 @@ impl AppConfig {
         let config: AppConfig = toml::from_str(&contents)?;
         Ok(config)
     }
+
+    /// Validate the configuration at startup.
+    ///
+    /// Checks:
+    /// - Ports must be > 1024 (web.port, rtsp.server_port, gb28181.platform_sip_port)
+    /// - Port conflicts (web.port must not equal rtsp.server_port)
+    /// - security.rate_limit_max must be > 0
+    /// - gb28181.register_interval_secs must be > 0 (if enabled)
+    /// - rtmp_push.reconnect_interval_secs must be > 0 (if enabled)
+    /// - rtmp_push.max_reconnect_attempts must be > 0 (if enabled)
+    pub fn validate(&self) -> anyhow::Result<()> {
+        // Web port
+        if self.web.port <= 1024 {
+            anyhow::bail!("web.port: must be > 1024, got {}", self.web.port);
+        }
+        // RTSP port
+        if self.rtsp.server_port <= 1024 {
+            anyhow::bail!("rtsp.server_port: must be > 1024, got {}", self.rtsp.server_port);
+        }
+        // Port conflict
+        if self.web.port == self.rtsp.server_port {
+            anyhow::bail!("web.port ({}) must not equal rtsp.server_port ({})", self.web.port, self.rtsp.server_port);
+        }
+        // GB28181 SIP port (if enabled)
+        if self.gb28181.enabled && self.gb28181.platform_sip_port <= 1024 {
+            anyhow::bail!("gb28181.platform_sip_port: must be > 1024, got {}", self.gb28181.platform_sip_port);
+        }
+        // Rate limit
+        if self.security.rate_limit_max == 0 {
+            anyhow::bail!("security.rate_limit_max: must be > 0, got 0");
+        }
+        // GB28181 register interval
+        if self.gb28181.enabled && self.gb28181.register_interval_secs == 0 {
+            anyhow::bail!("gb28181.register_interval_secs: must be > 0, got 0");
+        }
+        // RTMP push reconnect interval
+        if self.rtmp_push.enabled && self.rtmp_push.reconnect_interval_secs == 0 {
+            anyhow::bail!("rtmp_push.reconnect_interval_secs: must be > 0, got 0");
+        }
+        // RTMP push max reconnect attempts
+        if self.rtmp_push.enabled && self.rtmp_push.max_reconnect_attempts == 0 {
+            anyhow::bail!("rtmp_push.max_reconnect_attempts: must be > 0, got 0");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -798,4 +843,111 @@ enabled = false
         assert!(cfg.gb28181.enabled);
         assert!(!cfg.rtmp_push.enabled);
     }
+
+    // --- Validation tests ---
+
+    #[test]
+    fn test_validate_valid_config_passes() {
+        let cfg = AppConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_web_port_low_rejected() {
+        let cfg = AppConfig {
+            web: WebConfig { port: 80, host: "0.0.0.0".into() },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("web.port"), "error should mention web.port, got: {err}");
+    }
+
+    #[test]
+    fn test_validate_rtsp_port_low_rejected() {
+        let cfg = AppConfig {
+            rtsp: RtspConfig { server_port: 554 },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("rtsp.server_port"), "error should mention rtsp.server_port, got: {err}");
+    }
+
+    #[test]
+    fn test_validate_port_conflict_rejected() {
+        let cfg = AppConfig {
+            web: WebConfig { port: 8554, host: "0.0.0.0".into() },
+            rtsp: RtspConfig { server_port: 8554 },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("web.port"), "error should mention port conflict, got: {err}");
+        assert!(err.contains("rtsp.server_port"), "error should mention rtsp.server_port, got: {err}");
+    }
+
+    #[test]
+    fn test_validate_rate_limit_zero_rejected() {
+        let cfg = AppConfig {
+            security: SecurityConfig { rate_limit_max: 0, rate_limit_window_secs: 60 },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("rate_limit_max"), "error should mention rate_limit_max, got: {err}");
+    }
+
+    #[test]
+    fn test_validate_gb28181_interval_zero_rejected() {
+        let cfg = AppConfig {
+            gb28181: Gb28181Config {
+                enabled: true,
+                register_interval_secs: 0,
+                ..Gb28181Config::default()
+            },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("register_interval_secs"), "error should mention register_interval_secs, got: {err}");
+    }
+
+    #[test]
+    fn test_validate_rtmp_reconnect_interval_zero_rejected() {
+        let cfg = AppConfig {
+            rtmp_push: RtmpPushConfig {
+                enabled: true,
+                reconnect_interval_secs: 0,
+                ..RtmpPushConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("reconnect_interval_secs"), "error should mention reconnect_interval_secs, got: {err}");
+    }
+
+    #[test]
+    fn test_validate_rtmp_max_reconnect_zero_rejected() {
+        let cfg = AppConfig {
+            rtmp_push: RtmpPushConfig {
+                enabled: true,
+                max_reconnect_attempts: 0,
+                ..RtmpPushConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_reconnect_attempts"), "error should mention max_reconnect_attempts, got: {err}");
+    }
+
+    #[test]
+    fn test_validate_gb28181_sip_port_low_rejected() {
+        let cfg = AppConfig {
+            gb28181: Gb28181Config {
+                enabled: true,
+                platform_sip_port: 506,
+                ..Gb28181Config::default()
+            },
+            ..AppConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("platform_sip_port"), "error should mention platform_sip_port, got: {err}");
+    }
+
 }
