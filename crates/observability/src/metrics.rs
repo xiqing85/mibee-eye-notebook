@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use prometheus::{Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{
+    Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry, TextEncoder,
+};
 use std::sync::OnceLock;
 
 /// Container for all custom Prometheus metrics.
@@ -122,7 +124,10 @@ pub fn set_audio_level(stream_id: &str, db_level: f64) {
     // SAFETY: Audio callbacks run on real-time threads; we must not panic.
     // Using GLOBAL_METRICS.get() avoids the `expect()` in global_metrics().
     if let Some(metrics) = GLOBAL_METRICS.get() {
-        metrics.audio_level_db.with_label_values(&[stream_id]).set(db_level);
+        metrics
+            .audio_level_db
+            .with_label_values(&[stream_id])
+            .set(db_level);
     }
 }
 
@@ -170,7 +175,7 @@ impl Metrics {
             ),
             &["camera_id"],
         )?;
-registry.register(Box::new(capture_errors.clone()))?;
+        registry.register(Box::new(capture_errors.clone()))?;
 
         // ─── Protocol-specific counters ───────────────────────────
         let rtsp_sessions = IntCounterVec::new(
@@ -266,7 +271,7 @@ mod tests {
 
         // Increment counters/gauges so they appear in output (Prometheus
         // omits zero-value counter vecs from rendered output)
-m.bytes_received.with_label_values(&["test"]).inc_by(1);
+        m.bytes_received.with_label_values(&["test"]).inc_by(1);
         m.capture_errors.with_label_values(&["test"]).inc();
         m.active_streams.set(0);
         // Activate protocol counters so they appear in output
@@ -275,19 +280,48 @@ m.bytes_received.with_label_values(&["test"]).inc_by(1);
         m.rtmp_push_bytes.inc_by(200);
         m.rtmp_push_errors.inc();
         m.onvif_discovery_requests.inc();
-        m.gb28181_register_status.with_label_values(&["registered"]).inc();
+        m.gb28181_register_status
+            .with_label_values(&["registered"])
+            .inc();
 
         let output = m.render();
         // All metrics should appear in the rendered text
-        assert!(output.contains("notebook_cam_streams_active"), "output should contain active_streams gauge");
-        assert!(output.contains("notebook_cam_bytes_received"), "output should contain bytes_received counter");
-        assert!(output.contains("notebook_cam_capture_errors"), "output should contain capture_errors counter");
-        assert!(output.contains("notebook_cam_rtsp_sessions_total"), "output should contain rtsp_sessions counter");
-        assert!(output.contains("notebook_cam_rtsp_bytes_sent_total"), "output should contain rtsp_bytes_sent counter");
-        assert!(output.contains("notebook_cam_rtmp_push_bytes_total"), "output should contain rtmp_push_bytes counter");
-        assert!(output.contains("notebook_cam_rtmp_push_errors_total"), "output should contain rtmp_push_errors counter");
-        assert!(output.contains("notebook_cam_onvif_discovery_requests_total"), "output should contain onvif_discovery_requests counter");
-        assert!(output.contains("notebook_cam_gb28181_register_status"), "output should contain gb28181_register_status counter");
+        assert!(
+            output.contains("notebook_cam_streams_active"),
+            "output should contain active_streams gauge"
+        );
+        assert!(
+            output.contains("notebook_cam_bytes_received"),
+            "output should contain bytes_received counter"
+        );
+        assert!(
+            output.contains("notebook_cam_capture_errors"),
+            "output should contain capture_errors counter"
+        );
+        assert!(
+            output.contains("notebook_cam_rtsp_sessions_total"),
+            "output should contain rtsp_sessions counter"
+        );
+        assert!(
+            output.contains("notebook_cam_rtsp_bytes_sent_total"),
+            "output should contain rtsp_bytes_sent counter"
+        );
+        assert!(
+            output.contains("notebook_cam_rtmp_push_bytes_total"),
+            "output should contain rtmp_push_bytes counter"
+        );
+        assert!(
+            output.contains("notebook_cam_rtmp_push_errors_total"),
+            "output should contain rtmp_push_errors counter"
+        );
+        assert!(
+            output.contains("notebook_cam_onvif_discovery_requests_total"),
+            "output should contain onvif_discovery_requests counter"
+        );
+        assert!(
+            output.contains("notebook_cam_gb28181_register_status"),
+            "output should contain gb28181_register_status counter"
+        );
     }
 
     #[test]
@@ -302,20 +336,58 @@ m.bytes_received.with_label_values(&["test"]).inc_by(1);
         m.rtmp_push_errors.inc();
         m.rtmp_push_errors.inc();
         m.onvif_discovery_requests.inc();
-        m.gb28181_register_status.with_label_values(&["registered"]).inc();
-        m.gb28181_register_status.with_label_values(&["failed"]).inc();
-        m.gb28181_register_status.with_label_values(&["failed"]).inc();
+        m.gb28181_register_status
+            .with_label_values(&["registered"])
+            .inc();
+        m.gb28181_register_status
+            .with_label_values(&["failed"])
+            .inc();
+        m.gb28181_register_status
+            .with_label_values(&["failed"])
+            .inc();
 
         let output = m.render();
 
-        assert!(output.contains("notebook_cam_rtsp_sessions_total{status=\"active\"} 2"), "active sessions should be 2\n=== output ===\n{}", output);
-        assert!(output.contains("notebook_cam_rtsp_sessions_total{status=\"closed\"} 1"), "closed sessions should be 1\n=== output ===\n{}", output);
-        assert!(output.contains("notebook_cam_rtsp_bytes_sent_total 1500"), "rtsp bytes should be 1500\n=== output ===\n{}", output);
-        assert!(output.contains("notebook_cam_rtmp_push_bytes_total 4096"), "rtmp bytes should be 4096\n=== output ===\n{}", output);
-        assert!(output.contains("notebook_cam_rtmp_push_errors_total 2"), "rtmp errors should be 2\n=== output ===\n{}", output);
-        assert!(output.contains("notebook_cam_onvif_discovery_requests_total 1"), "discovery requests should be 1\n=== output ===\n{}", output);
-        assert!(output.contains("notebook_cam_gb28181_register_status{status=\"registered\"} 1"), "registered should be 1\n=== output ===\n{}", output);
-        assert!(output.contains("notebook_cam_gb28181_register_status{status=\"failed\"} 2"), "failed should be 2\n=== output ===\n{}", output);
+        assert!(
+            output.contains("notebook_cam_rtsp_sessions_total{status=\"active\"} 2"),
+            "active sessions should be 2\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("notebook_cam_rtsp_sessions_total{status=\"closed\"} 1"),
+            "closed sessions should be 1\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("notebook_cam_rtsp_bytes_sent_total 1500"),
+            "rtsp bytes should be 1500\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("notebook_cam_rtmp_push_bytes_total 4096"),
+            "rtmp bytes should be 4096\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("notebook_cam_rtmp_push_errors_total 2"),
+            "rtmp errors should be 2\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("notebook_cam_onvif_discovery_requests_total 1"),
+            "discovery requests should be 1\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("notebook_cam_gb28181_register_status{status=\"registered\"} 1"),
+            "registered should be 1\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("notebook_cam_gb28181_register_status{status=\"failed\"} 2"),
+            "failed should be 2\n=== output ===\n{}",
+            output
+        );
     }
 
     #[test]

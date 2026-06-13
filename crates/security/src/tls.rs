@@ -274,18 +274,20 @@ mod tests {
         let key_path = dir.join("key.pem");
 
         // Generate initial cert files
-        let _initial = build_tls_config(
-            cert_path.to_str().unwrap(),
-            key_path.to_str().unwrap(),
-        )
-        .unwrap();
+        let _initial =
+            build_tls_config(cert_path.to_str().unwrap(), key_path.to_str().unwrap()).unwrap();
 
         let (tx, mut rx) = mpsc::channel::<Arc<ServerConfig>>(8);
 
         // Start watcher with fast polling
         let cert_str = cert_path.to_str().unwrap().to_string();
         let key_str = key_path.to_str().unwrap().to_string();
-        tokio::spawn(start_cert_watcher(cert_str, key_str, tx, Duration::from_millis(50)));
+        tokio::spawn(start_cert_watcher(
+            cert_str,
+            key_str,
+            tx,
+            Duration::from_millis(50),
+        ));
 
         // Give watcher time to record initial mtime
         tokio::time::sleep(Duration::from_millis(150)).await;

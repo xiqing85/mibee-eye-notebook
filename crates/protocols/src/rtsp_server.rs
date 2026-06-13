@@ -13,6 +13,7 @@
 #![cfg_attr(test, deny(warnings))]
 
 use anyhow::{Result, bail};
+use observability::metrics;
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
@@ -22,7 +23,26 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-use observability::metrics;
+
+/// Constant-time string comparison to prevent timing attacks on Digest auth.
+/// Returns true if both strings have the same length and all bytes match.
+/// The comparison always processes all bytes regardless of early mismatches.
+fn constant_time_str_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        // Still do a dummy comparison to avoid leaking length information
+        let _ = a
+            .as_bytes()
+            .iter()
+            .zip(b.as_bytes().iter())
+            .fold(0u8, |acc, (x, y)| acc ^ x ^ y);
+        return false;
+    }
+    a.as_bytes()
+        .iter()
+        .zip(b.as_bytes().iter())
+        .fold(0u8, |acc, (x, y)| acc ^ x ^ y)
+        == 0
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RTSP Methods (RFC 2326 section 10)
@@ -585,10 +605,9 @@ fn verify_digest_auth(
         None => md5_hex(format!("{ha1}:{client_nonce}:{ha2}").as_bytes()),
     };
 
-    // Constant-time comparison would be better, but for now:
-    client_response.as_str() == expected_response
-        && client_realm.as_str() == realm
-        && client_uri.as_str() == uri
+    constant_time_str_eq(client_response.as_str(), &expected_response)
+        && constant_time_str_eq(client_realm.as_str(), realm)
+        && constant_time_str_eq(client_uri.as_str(), uri)
 }
 
 /// Parse auth params from the Authorization or WWW-Authenticate header value.
@@ -2714,7 +2733,8 @@ mod tests {
         let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, request).await;
         let resp_str = String::from_utf8_lossy(&resp);
         assert!(resp_str.contains("200 OK"));
-        let session_id = resp_str.lines()
+        let session_id = resp_str
+            .lines()
             .find_map(|line| {
                 if let Some((name, value)) = line.split_once(':') {
                     if name.trim().eq_ignore_ascii_case("Session") {
@@ -2729,7 +2749,12 @@ mod tests {
         let play_request = format!(
             "PLAY rtsp://localhost:8554/livecam RTSP/1.0\r\nCSeq: 4\r\nSession: {session_id}\r\nRange: npt=0.000-\r\n\r\n"
         );
-        let resp = send_rtsp_and_recv(&mut client_writer, &mut client_reader, play_request.as_bytes()).await;
+        let resp = send_rtsp_and_recv(
+            &mut client_writer,
+            &mut client_reader,
+            play_request.as_bytes(),
+        )
+        .await;
         assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
 
         // Send a frame — resets the idle timer

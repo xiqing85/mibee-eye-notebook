@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use streaming::hub::StreamHub;
 use streaming::output::{Output, RtspOutput};
@@ -266,13 +266,21 @@ async fn test_pipeline_mock_source_to_mock_output_100_frames() {
     assert_eq!(
         frames.len(),
         frame_count,
-        "MockOutput should receive exactly {frame_count} frames"  
+        "MockOutput should receive exactly {frame_count} frames"
     );
 
     // Verify frame order and integrity.
     assert!(is_keyframe(&frames[0]), "First frame should be a keyframe");
-    assert_eq!(frames[0].timestamp(), 0, "First frame timestamp should be 0");
-    assert_eq!(frames[49].timestamp(), 49 * 33, "Frame 50 timestamp mismatch");
+    assert_eq!(
+        frames[0].timestamp(),
+        0,
+        "First frame timestamp should be 0"
+    );
+    assert_eq!(
+        frames[49].timestamp(),
+        49 * 33,
+        "Frame 50 timestamp mismatch"
+    );
     assert_eq!(
         frames[99].timestamp(),
         99 * 33,
@@ -424,7 +432,9 @@ async fn test_pipeline_graceful_shutdown() {
         assert!(
             frames[i].timestamp() >= frames[i - 1].timestamp(),
             "Frame timestamps should be monotonically non-decreasing (frame {}, ts {} < {})",
-            i, frames[i].timestamp(), frames[i - 1].timestamp()
+            i,
+            frames[i].timestamp(),
+            frames[i - 1].timestamp()
         );
     }
 }

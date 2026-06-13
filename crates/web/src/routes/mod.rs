@@ -17,7 +17,6 @@ pub mod streams;
 
 use crate::errors::ApiError;
 
-
 /// Return a seconds-since-epoch timestamp string suitable for DB storage.
 pub fn chrono_now() -> String {
     std::time::SystemTime::now()
@@ -200,7 +199,7 @@ pub async fn setup_handler(
     // Ensure users table exists
     if let Err(e) = security::auth::init_users_table(&conn) {
         tracing::error!(error = %e, "setup_handler: failed to init users table");
-            return ApiError::internal("internal error").into_response();
+        return ApiError::internal("internal error").into_response();
     }
 
     // Hash the password
@@ -218,7 +217,7 @@ pub async fn setup_handler(
         rusqlite::params![body.username, hash],
     ) {
         tracing::error!(error = %e, "setup_handler: failed to insert admin user");
-            return ApiError::internal("internal error").into_response();
+        return ApiError::internal("internal error").into_response();
     }
 
     drop(conn);
