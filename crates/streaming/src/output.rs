@@ -10,7 +10,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use crate::source::MediaFrame;
 use anyhow::Result;
@@ -67,10 +67,18 @@ pub struct RtspOutput {
     sdp_body: String,
     /// SSRC for RTP packets.
     ssrc: u32,
-    /// Channel sender for pushing H.264 NAL data to the RTSP server.
-    frame_tx: Option<mpsc::Sender<Vec<u8>>>,
+    /// Channel sender for pushing RTP packets to the RTSP server.
+    frame_tx: Option<broadcast::Sender<Vec<u8>>>,
     /// Whether the output has been started.
     started: bool,
+    /// RTP sequence number (incremented per packet).
+    rtp_seq: u16,
+    /// RTP timestamp in 90 kHz units (incremented per frame).
+    rtp_timestamp: u32,
+    /// Cached SPS NAL (type 7) — re-sent before P-frames so new clients can decode immediately.
+    cached_sps: Option<Vec<u8>>,
+    /// Cached PPS NAL (type 8) — re-sent alongside SPS.
+    cached_pps: Option<Vec<u8>>,
 }
 
 impl RtspOutput {
@@ -83,6 +91,10 @@ impl RtspOutput {
             ssrc,
             frame_tx: None,
             started: false,
+            rtp_seq: 0,
+            rtp_timestamp: 0,
+            cached_sps: None,
+            cached_pps: None,
         }
     }
 
@@ -94,7 +106,7 @@ impl RtspOutput {
         stream_path: String,
         sdp_body: String,
         ssrc: u32,
-        frame_tx: mpsc::Sender<Vec<u8>>,
+        frame_tx: broadcast::Sender<Vec<u8>>,
     ) -> Self {
         Self {
             stream_path,
@@ -102,6 +114,10 @@ impl RtspOutput {
             ssrc,
             frame_tx: Some(frame_tx),
             started: false,
+            rtp_seq: 0,
+            rtp_timestamp: 0,
+            cached_sps: None,
+            cached_pps: None,
         }
     }
 }
@@ -136,9 +152,44 @@ impl Output for RtspOutput {
                     }
                     match &self.frame_tx {
                         Some(tx) => {
-                            tx.send(data)
-                                .await
-                                .map_err(|e| anyhow::anyhow!("RtspOutput send failed: {e}"))?;
+                            let nal_type = data.first().map(|b| b & 0x1f).unwrap_or(0);
+
+                            // Cache SPS/PPS whenever they appear in the stream.
+                            if nal_type == 7 {
+                                self.cached_sps = Some(data.clone());
+                            } else if nal_type == 8 {
+                                self.cached_pps = Some(data.clone());
+                            }
+
+                            let ts = self.rtp_timestamp;
+
+                            // Before P-frames, re-send cached SPS/PPS so any client
+                            // that connected mid-GOP can decode immediately without
+                            // waiting for the next IDR keyframe.
+                            if nal_type == 1 {
+                                if let Some(sps) = &self.cached_sps {
+                                    let pkts =
+                                        build_rtp_packets(sps, &mut self.rtp_seq, ts, self.ssrc);
+                                    for p in pkts {
+                                        let _ = tx.send(p);
+                                    }
+                                }
+                                if let Some(pps) = &self.cached_pps {
+                                    let pkts =
+                                        build_rtp_packets(pps, &mut self.rtp_seq, ts, self.ssrc);
+                                    for p in pkts {
+                                        let _ = tx.send(p);
+                                    }
+                                }
+                            }
+
+                            // Send the actual NAL unit as RTP packets.
+                            let packets =
+                                build_rtp_packets(&data, &mut self.rtp_seq, ts, self.ssrc);
+                            self.rtp_timestamp = self.rtp_timestamp.wrapping_add(3000);
+                            for pkt in packets {
+                                let _ = tx.send(pkt);
+                            }
                             Ok(())
                         }
                         None => {
@@ -161,6 +212,78 @@ impl Output for RtspOutput {
             tracing::info!("RtspOutput stopped: /{}", self.stream_path);
             Ok(())
         })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RTP Packetization (RFC 6184)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// RTP payload type for H.264.
+const RTP_PT_H264: u8 = 96;
+
+/// Maximum NAL size before FU-A fragmentation kicks in.
+const RTP_MAX_PAYLOAD: usize = 1400;
+
+/// Build RTP packet(s) from a single H.264 NAL unit (start code already stripped).
+///
+/// Small NALs use Single NAL Unit Packet mode (§5.6).
+/// Large NALs use FU-A fragmentation (§5.8).
+fn build_rtp_packets(
+    nal_data: &[u8],
+    seq: &mut u16,
+    timestamp: u32,
+    ssrc: u32,
+) -> Vec<Vec<u8>> {
+    if nal_data.is_empty() {
+        return vec![];
+    }
+
+    let nal_header = nal_data[0];
+    let nal_type = nal_header & 0x1F;
+    let nri = nal_header & 0x60;
+    // Marker bit on last packet of access unit (IDR=5 or non-IDR slice=1).
+    let marker = nal_type == 5 || nal_type == 1;
+
+    if nal_data.len() <= RTP_MAX_PAYLOAD {
+        // Single NAL Unit Packet (RFC 6184 §5.6).
+        let mut pkt = Vec::with_capacity(12 + nal_data.len());
+        pkt.push(0x80); // V=2, P=0, X=0, CC=0
+        pkt.push((marker as u8) << 7 | RTP_PT_H264);
+        pkt.extend_from_slice(&seq.to_be_bytes());
+        pkt.extend_from_slice(&timestamp.to_be_bytes());
+        pkt.extend_from_slice(&ssrc.to_be_bytes());
+        pkt.extend_from_slice(nal_data);
+        *seq = seq.wrapping_add(1);
+        vec![pkt]
+    } else {
+        // FU-A Fragmentation (RFC 6184 §5.8).
+        let fu_indicator = 28 | nri;
+        let body = &nal_data[1..]; // strip original NAL header byte
+        let max_frag = RTP_MAX_PAYLOAD - 2;
+        let mut packets = Vec::new();
+        let mut offset = 0;
+
+        while offset < body.len() {
+            let chunk = std::cmp::min(max_frag, body.len() - offset);
+            let is_first = offset == 0;
+            let is_last = offset + chunk >= body.len();
+
+            let mut pkt = Vec::with_capacity(12 + 2 + chunk);
+            pkt.push(0x80);
+            let m = is_last && marker;
+            pkt.push((m as u8) << 7 | RTP_PT_H264);
+            pkt.extend_from_slice(&seq.to_be_bytes());
+            pkt.extend_from_slice(&timestamp.to_be_bytes());
+            pkt.extend_from_slice(&ssrc.to_be_bytes());
+            pkt.push(fu_indicator);
+            pkt.push((is_first as u8) << 7 | (is_last as u8) << 6 | nal_type);
+            pkt.extend_from_slice(&body[offset..offset + chunk]);
+            packets.push(pkt);
+            *seq = seq.wrapping_add(1);
+            offset += chunk;
+        }
+        packets
     }
 }
 
@@ -684,7 +807,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_rtsp_output_start_stop() {
-        let (tx, _rx) = mpsc::channel(16);
+        let (tx, _rx) = broadcast::channel(16);
         let mut out = RtspOutput::with_channel(
             "webcam".to_string(),
             "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Test\r\nt=0 0\r\n".to_string(),
@@ -712,7 +835,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_rtsp_output_send_video_frame() {
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = broadcast::channel(16);
         let mut out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         out.start().await.unwrap();
 
@@ -732,7 +855,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_rtsp_output_ignore_audio() {
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = broadcast::channel(16);
         let mut out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         out.start().await.unwrap();
 

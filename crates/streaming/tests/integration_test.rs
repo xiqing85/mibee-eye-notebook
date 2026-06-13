@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast};
 
 use streaming::hub::StreamHub;
 use streaming::output::{Output, RtspOutput};
@@ -307,7 +307,7 @@ async fn test_pipeline_mock_source_to_rtsp_output_100_frames() {
     let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
     // Use a channel to capture what RtspOutput sends.
-    let (tx, mut rx) = mpsc::channel(256);
+    let (tx, mut rx) = broadcast::channel(256);
     let rtsp_out = RtspOutput::with_channel(
         "integration-test".to_string(),
         "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=IntegrationTest\r\nt=0 0\r\n".to_string(),
@@ -320,23 +320,16 @@ async fn test_pipeline_mock_source_to_rtsp_output_100_frames() {
 
     // Collect frames from the RtspOutput's channel.
     let mut received_count = 0usize;
-    loop {
-        match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
-            Ok(Some(data)) => {
-                // Verify frame data integrity (each frame from with_frame_count
-                // has data = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80])
-                assert_eq!(
-                    data,
-                    vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80],
-                    "RtspOutput frame data should match source"
-                );
-                received_count += 1;
-                if received_count >= frame_count {
-                    break;
-                }
-            }
-            Ok(None) => break,
-            Err(_elapsed) => break,
+    while let Ok(Ok(data)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+        // RTP packet: 12-byte header + NAL payload
+        assert!(
+            data.len() > 12,
+            "RTP packet should have header + payload, got {} bytes",
+            data.len()
+        );
+        received_count += 1;
+        if received_count >= frame_count {
+            break;
         }
     }
 

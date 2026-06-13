@@ -477,7 +477,7 @@ mod tests {
     use crate::output::tests::MockOutput;
     use crate::source::tests::MockSource;
     use std::time::Duration;
-    use tokio::sync::mpsc;
+    use tokio::sync::broadcast;
 
     fn test_frame(ts: u64) -> MediaFrame {
         MediaFrame::Video {
@@ -668,7 +668,7 @@ mod tests {
         let source = MockSource::new(frames);
         let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
-        let (tx, mut rx) = mpsc::channel(64);
+        let (tx, mut rx) = broadcast::channel(64);
         let rtsp_out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         let _id = hub.add_output(Box::new(rtsp_out)).await;
 
@@ -677,15 +677,10 @@ mod tests {
 
         // Verify frames arrived via the channel
         let mut count = 0;
-        loop {
-            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
-                Ok(Some(data)) => {
-                    count += 1;
-                    assert_eq!(data, vec![0x67, 0x42, 0x80]);
-                }
-                Ok(None) => break,
-                Err(_) => break,
-            }
+        while let Ok(Ok(data)) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+            count += 1;
+            // Data is an RTP packet (12-byte header + NAL payload)
+            assert_eq!(&data[12..], &[0x67, 0x42, 0x80]);
         }
         // All 3 frames should arrive (same data since test_frame uses static data)
         assert_eq!(count, 3, "RtspOutput should receive all 3 frames");
@@ -700,7 +695,7 @@ mod tests {
         let mut hub = StreamHub::new(Box::new(source), ResourceController::new(16));
 
         // RtspOutput (verified via channel, but we only check MockOutput here)
-        let (tx, _rx) = mpsc::channel(64);
+        let (tx, _rx) = broadcast::channel(64);
         let rtsp_out = RtspOutput::with_channel("test".to_string(), "s=Test".to_string(), 1, tx);
         let mock_out = MockOutput::new();
         let mock_recv = mock_out.receiver();
