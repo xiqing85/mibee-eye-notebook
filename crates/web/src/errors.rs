@@ -9,9 +9,9 @@
 //!
 //! with the appropriate `Content-Type: application/json` header.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 /// Machine-readable error codes mapped to HTTP status codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,14 +298,32 @@ mod tests {
 
     #[test]
     fn test_kind_status_code_mapping() {
-        assert_eq!(ApiErrorKind::BadRequest.status_code(), StatusCode::BAD_REQUEST);
-        assert_eq!(ApiErrorKind::Unauthorized.status_code(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            ApiErrorKind::BadRequest.status_code(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            ApiErrorKind::Unauthorized.status_code(),
+            StatusCode::UNAUTHORIZED
+        );
         assert_eq!(ApiErrorKind::NotFound.status_code(), StatusCode::NOT_FOUND);
         assert_eq!(ApiErrorKind::Conflict.status_code(), StatusCode::CONFLICT);
-        assert_eq!(ApiErrorKind::TooManyRequests.status_code(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(ApiErrorKind::NotImplemented.status_code(), StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(ApiErrorKind::GatewayTimeout.status_code(), StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(ApiErrorKind::InternalServerError.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            ApiErrorKind::TooManyRequests.status_code(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            ApiErrorKind::NotImplemented.status_code(),
+            StatusCode::NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            ApiErrorKind::GatewayTimeout.status_code(),
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        assert_eq!(
+            ApiErrorKind::InternalServerError.status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
@@ -314,10 +332,16 @@ mod tests {
         assert_eq!(ApiErrorKind::Unauthorized.error_code(), "unauthorized");
         assert_eq!(ApiErrorKind::NotFound.error_code(), "not_found");
         assert_eq!(ApiErrorKind::Conflict.error_code(), "conflict");
-        assert_eq!(ApiErrorKind::TooManyRequests.error_code(), "too_many_requests");
+        assert_eq!(
+            ApiErrorKind::TooManyRequests.error_code(),
+            "too_many_requests"
+        );
         assert_eq!(ApiErrorKind::NotImplemented.error_code(), "not_implemented");
         assert_eq!(ApiErrorKind::GatewayTimeout.error_code(), "gateway_timeout");
-        assert_eq!(ApiErrorKind::InternalServerError.error_code(), "internal_error");
+        assert_eq!(
+            ApiErrorKind::InternalServerError.error_code(),
+            "internal_error"
+        );
     }
 
     #[tokio::test]

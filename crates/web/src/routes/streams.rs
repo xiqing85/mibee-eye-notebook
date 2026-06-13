@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use crate::db;
 use crate::errors::ApiError;
@@ -177,10 +177,10 @@ pub async fn snapshot(
         let conn = db.lock().await;
         match db::get_camera(&conn, &id) {
             Ok(Some(cam)) => cam,
-        Ok(None) => return ApiError::not_found("camera not found").into_response(),
+            Ok(None) => return ApiError::not_found("camera not found").into_response(),
             Err(e) => {
                 tracing::error!(error = %e, camera_id = %id, "failed to get camera for snapshot");
-            return ApiError::internal("database error").into_response();
+                return ApiError::internal("database error").into_response();
             }
         }
     };
@@ -197,7 +197,8 @@ pub async fn snapshot(
         let mut lock_map = locks.lock().await;
         if lock_map.contains_key(&id) {
             drop(lock_map);
-        return ApiError::conflict("snapshot already in progress for this camera").into_response();
+            return ApiError::conflict("snapshot already in progress for this camera")
+                .into_response();
         }
         lock_map.insert(id.clone(), ());
         // Create a guard that removes the lock on drop
@@ -226,62 +227,56 @@ pub async fn snapshot(
     let rtsp_url = format!("rtsp://localhost:8554/live/{}", id);
 
     // Use ffmpeg to capture a single JPEG frame
-    let capture_result = timeout(
-        Duration::from_secs(30),
-        async move {
-            let mut child = Command::new("ffmpeg")
-                .arg("-rtsp_transport")
-                .arg("tcp")
-                .arg("-i")
-                .arg(&rtsp_url)
-                .arg("-vframes")
-                .arg("1")
-                .arg("-f")
-                .arg("image2")
-                .arg("-c:v")
-                .arg("mjpeg")
-                .arg("-q:v")
-                .arg("2")
-                .arg("pipe:1")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|e| anyhow::anyhow!("failed to spawn ffmpeg for snapshot: {}", e))?;
+    let capture_result = timeout(Duration::from_secs(30), async move {
+        let mut child = Command::new("ffmpeg")
+            .arg("-rtsp_transport")
+            .arg("tcp")
+            .arg("-i")
+            .arg(&rtsp_url)
+            .arg("-vframes")
+            .arg("1")
+            .arg("-f")
+            .arg("image2")
+            .arg("-c:v")
+            .arg("mjpeg")
+            .arg("-q:v")
+            .arg("2")
+            .arg("pipe:1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to spawn ffmpeg for snapshot: {}", e))?;
 
-            let mut stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("failed to capture ffmpeg stdout"))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("failed to capture ffmpeg stdout"))?;
 
-            // Read all output (JPEG data)
-            let mut buffer = Vec::new();
-            stdout
-                .read_to_end(&mut buffer)
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to read ffmpeg output: {}", e))?;
+        // Read all output (JPEG data)
+        let mut buffer = Vec::new();
+        stdout
+            .read_to_end(&mut buffer)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read ffmpeg output: {}", e))?;
 
-            // Wait for ffmpeg to complete
-            let status = child
-                .wait()
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to wait for ffmpeg: {}", e))?;
+        // Wait for ffmpeg to complete
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to wait for ffmpeg: {}", e))?;
 
-            if !status.success() {
-                anyhow::bail!("ffmpeg exited with non-zero status: {:?}", status);
-            }
+        if !status.success() {
+            anyhow::bail!("ffmpeg exited with non-zero status: {:?}", status);
+        }
 
-            // Verify JPEG magic bytes
-            if buffer.len() < 3 || buffer[..2] != [0xFF, 0xD8] {
-                anyhow::bail!("output is not a valid JPEG");
-            }
-            if buffer.len() < 3 || buffer[..2] != [0xFF, 0xD8] {
-                anyhow::bail!("output is not a valid JPEG");
-            }
+        // Verify JPEG magic bytes
+        if buffer.len() < 3 || buffer[..2] != [0xFF, 0xD8] {
+            anyhow::bail!("output is not a valid JPEG");
+        }
 
-            Ok::<Vec<u8>, anyhow::Error>(buffer)
-        },
-    )
+        Ok::<Vec<u8>, anyhow::Error>(buffer)
+    })
     .await;
 
     drop(_camera_lock);

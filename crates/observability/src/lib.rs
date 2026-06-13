@@ -8,12 +8,9 @@ pub mod metrics;
 
 // Re-export the most commonly used functions for ergonomic access.
 pub use metrics::{
-    increment_bytes_received, increment_capture_errors,
-    increment_gb28181_register_status, increment_onvif_discovery_requests,
-    increment_rtmp_push_bytes, increment_rtmp_push_errors,
-    increment_rtsp_bytes_sent, increment_rtsp_sessions,
-    register_metrics, render_metrics,
-    set_active_streams,
-    set_audio_level,
+    increment_bytes_received, increment_capture_errors, increment_gb28181_register_status,
+    increment_onvif_discovery_requests, increment_rtmp_push_bytes, increment_rtmp_push_errors,
+    increment_rtsp_bytes_sent, increment_rtsp_sessions, register_metrics, render_metrics,
+    set_active_streams, set_audio_level,
 };
 pub use tracing_setup::init_tracing;

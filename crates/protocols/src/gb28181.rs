@@ -667,7 +667,10 @@ pub fn build_invite_response(
 
     // CSeq from INVITE (method stays as INVITE in response)
     headers.push(("CSeq".to_string(), format!("{} INVITE", cseq)));
-    headers.push(("Contact".to_string(), format!("<sip:{}@{}:5060>", local_id, local_id)));
+    headers.push((
+        "Contact".to_string(),
+        format!("<sip:{}@{}:5060>", local_id, local_id),
+    ));
     headers.push(("Content-Type".to_string(), "application/sdp".to_string()));
     headers.push(("Content-Length".to_string(), local_sdp.len().to_string()));
 
