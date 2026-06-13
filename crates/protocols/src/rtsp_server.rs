@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 /// Constant-time string comparison to prevent timing attacks on Digest auth.
@@ -869,8 +869,10 @@ fn handle_setup(
     session: &mut Session,
     _server_config: &RtspServerConfig,
 ) -> (Vec<u8>, Option<TransportInfo>) {
-    // Find the matching stream
-    let stream = match find_stream_by_uri(uri, streams) {
+    // Find the matching stream; fall back to the single stream in the
+    // map when the SETUP URI has no path (some RTSP clients send SETUP
+    // to the base URL when the SDP has no a=control attribute).
+    let stream = match find_stream_by_uri(uri, streams).or_else(|| streams.values().next().filter(|_| streams.len() == 1)) {
         Some(s) => s,
         None => return (build_not_found_response(cseq), None),
     };
@@ -1202,16 +1204,18 @@ async fn handle_connection(
                     let rtcp_channel = transport.interleaved.map(|(_, c)| c).unwrap_or(1);
 
                     // Scope the lock to avoid holding MutexGuard (not Send) across await
-                    let live_entry = {
-                        let mut live_map = server.live_streams.lock().unwrap();
-                        live_map.remove(&live_path)
+                    // Subscribe to the broadcast channel (supports multiple concurrent clients)
+                    let live_result = {
+                        let live_map = server.live_streams.lock().unwrap();
+                        live_map.get(&live_path).map(|entry| {
+                            (entry.frame_tx.subscribe(), entry.ssrc)
+                        })
                     };
 
-                    if let Some(entry) = live_entry {
+                    info!("delivery lookup: live_path={}, found={}", live_path, live_result.is_some());
+                    if let Some((mut frame_rx, ssrc)) = live_result {
                         metrics::increment_rtsp_sessions("active");
-                        let mut frame_rx = entry.frame_rx;
-                        let ssrc = entry.ssrc;
-                        info!("Starting live stream delivery for /{live_path}");
+                        info!("Starting live stream delivery for /{live_path} (ssrc={ssrc})");
                         let mut seq_tracker = SequenceTracker::new();
                         let mut last_activity = Instant::now();
                         let mut packet_count: u32 = 0;
@@ -1221,7 +1225,7 @@ async fn handle_connection(
                             tokio::select! {
                                 frame = frame_rx.recv() => {
                                     match frame {
-                                        Some(data) => {
+                                        Ok(data) => {
                                             last_activity = Instant::now();
                                             // Check for RTP sequence number gaps
                                             if let Some(info) = parse_rtp_header_for_tracking(&data) {
@@ -1254,9 +1258,13 @@ async fn handle_connection(
                                                 }
                                             }
                                         }
-                                        None => {
+                                        Err(broadcast::error::RecvError::Closed) => {
                                             debug!("Live stream /{live_path} ended");
                                             break;
+                                        }
+                                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                                            warn!("RTSP client lagged by {n} frames on /{live_path}");
+                                            continue;
                                         }
                                     }
                                 }
@@ -1366,8 +1374,9 @@ async fn handle_connection(
 
 /// Entry for a dynamically registered live stream.
 struct LiveStreamEntry {
-    /// Receiver for incoming H.264 NAL unit data from RtspOutput.
-    frame_rx: mpsc::Receiver<Vec<u8>>,
+    /// Broadcast sender for H.264 NAL unit data from RtspOutput.
+    /// Each RTSP client calls `subscribe()` to get its own receiver.
+    frame_tx: broadcast::Sender<Vec<u8>>,
     /// SDP body describing the stream (codec, payload type, etc.).
     sdp_body: String,
     /// SSRC for RTP packets.
@@ -1440,7 +1449,7 @@ impl RtspServer {
             .insert(stream.path.clone(), stream);
     }
 
-    /// Register a live stream that receives H.264 NAL data via an mpsc channel.
+    /// Register a live stream that receives H.264 NAL data via a broadcast channel.
     ///
     /// Returns a `Sender` that [`RtspOutput`] can use to push video frames.
     /// The server will deliver frames to any RTSP client that PLAYS this stream.
@@ -1449,10 +1458,10 @@ impl RtspServer {
         path: String,
         sdp_body: String,
         ssrc: u32,
-    ) -> mpsc::Sender<Vec<u8>> {
-        let (tx, rx) = mpsc::channel(64);
+    ) -> broadcast::Sender<Vec<u8>> {
+        let (tx, _rx) = broadcast::channel(64);
         let entry = LiveStreamEntry {
-            frame_rx: rx,
+            frame_tx: tx.clone(),
             sdp_body,
             ssrc,
         };
@@ -2471,7 +2480,7 @@ mod tests {
             0x12345678,
         );
         // Verify sender works by sending data
-        let result = tx.try_send(vec![0x00, 0x00, 0x00, 0x01, 0x67]);
+        let result = tx.send(vec![0x00, 0x00, 0x00, 0x01, 0x67]);
         assert!(
             result.is_ok(),
             "Should be able to send to live stream channel"
@@ -2490,7 +2499,7 @@ mod tests {
         live_map.insert(
             "livecam".to_string(),
             LiveStreamEntry {
-                frame_rx: mpsc::channel(64).1,
+                frame_tx: broadcast::channel(64).0,
                 sdp_body: "s=Live".to_string(),
                 ssrc: 1,
             },
@@ -2571,7 +2580,7 @@ mod tests {
 
         // 5. Send a video frame through the live stream, read interleaved RTP
         let nal_data = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80];
-        tx.send(nal_data.clone()).await.unwrap();
+        let _ = tx.send(nal_data.clone());
 
         // Read the interleaved RTP frame from the client side
         // Format: $<channel:1><len:2><data>
@@ -2759,7 +2768,7 @@ mod tests {
 
         // Send a frame — resets the idle timer
         let nal_data = vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80];
-        tx.send(nal_data.clone()).await.unwrap();
+        let _ = tx.send(nal_data.clone());
 
         // Read the interleaved frame to confirm streaming is active
         let mut magic = [0u8; 1];
