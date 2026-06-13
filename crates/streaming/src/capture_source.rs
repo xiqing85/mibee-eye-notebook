@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use crate::source::{MediaFrame, Source};
 use capture::audio::{AudioCapture, AudioFrame};
@@ -57,7 +57,7 @@ pub struct VideoCaptureSource {
     /// Video capture controller, populated after `start()`.
     capture: Option<VideoCapture>,
     /// Frame channel receiver, created by [`VideoCapture::start_stream()`].
-    frame_rx: Option<mpsc::Receiver<VideoFrame>>,
+    frame_rx: Option<broadcast::Receiver<VideoFrame>>,
     /// Running ffmpeg child process (MJPEG/raw → H.264 encoding).
     ffmpeg_child: Option<Child>,
     /// Piped stdin: raw frame data written here.
@@ -259,6 +259,19 @@ impl Source for VideoCaptureSource {
             self.camera_height = height;
             self.camera_format = format.clone();
 
+            // ── 2a. Create bounded broadcast channel for frame buffering ──
+            // Capacity 120 frames ≈ 4s at 30fps. When full, the oldest unread
+            // frame is automatically overwritten (drop-oldest semantics).
+            let (b_tx, b_rx) = broadcast::channel::<VideoFrame>(120);
+            tokio::spawn(async move {
+                while let Some(frame) = rx.recv().await {
+                    if b_tx.send(frame).is_err() {
+                        // No active receivers — source is shutting down
+                        break;
+                    }
+                }
+            });
+
             // ── 3. Spawn ffmpeg subprocess for H.264 encoding ──────────
             let (child, stdin, stdout) =
                 spawn_ffmpeg_process(width, height, &format).await?;
@@ -279,7 +292,7 @@ impl Source for VideoCaptureSource {
 
             // ── 5. Store handles ────────────────────────────────────────
             self.capture = Some(capture);
-            self.frame_rx = Some(rx);
+            self.frame_rx = Some(b_rx);
             self.ffmpeg_child = Some(child);
             self.ffmpeg_stdin = Some(stdin);
             self.ffmpeg_stdout = Some(stdout);
@@ -305,13 +318,28 @@ impl Source for VideoCaptureSource {
             }
 
             // ── 1. Receive the next raw frame from the camera ───────────
-            let frame: VideoFrame = self
-                .frame_rx
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
-                .recv()
-                .await
-                .ok_or_else(|| anyhow::anyhow!("camera frame channel closed"))?;
+            let frame: VideoFrame = loop {
+                match self
+                    .frame_rx
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
+                    .recv()
+                    .await
+                {
+                    Ok(frame) => break frame,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            device_index = self.device_index,
+                            skipped,
+                            "video frame buffer full, dropped oldest frame(s)"
+                        );
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        anyhow::bail!("camera frame channel closed");
+                    }
+                }
+            };
 
             let timestamp = frame.timestamp.elapsed().as_millis() as u64;
 
@@ -508,7 +536,7 @@ pub struct AudioCaptureSource {
     /// Audio capture controller, kept alive to hold the stream.
     capture: Option<AudioCapture>,
     /// Frame channel receiver, created by [`AudioCapture::start()`].
-    frame_rx: Option<mpsc::Receiver<AudioFrame>>,
+    frame_rx: Option<broadcast::Receiver<AudioFrame>>,
     /// Running ffmpeg child process (PCM i16 → AAC encoding).
     ffmpeg_child: Option<Child>,
     /// Piped stdin: raw PCM i16 bytes written here.
@@ -603,9 +631,19 @@ impl Source for AudioCaptureSource {
             // -- 2. Create AudioCapture and start streaming -------------------
             let mut capture =
                 AudioCapture::new(&device, &config).context("failed to create AudioCapture")?;
-            let rx = capture
+            let mut rx = capture
                 .start(&device, &config)
                 .context("failed to start audio capture")?;
+
+            // Create bounded broadcast channel with drop-oldest semantics
+            let (b_tx, b_rx) = broadcast::channel::<AudioFrame>(120);
+            tokio::spawn(async move {
+                while let Some(frame) = rx.recv().await {
+                    if b_tx.send(frame).is_err() {
+                        break;
+                    }
+                }
+            });
 
             self.sample_rate = sample_rate;
             self.channels = channels;
@@ -644,7 +682,7 @@ impl Source for AudioCaptureSource {
 
             // -- 4. Store handles ---------------------------------------------
             self.capture = Some(capture);
-            self.frame_rx = Some(rx);
+            self.frame_rx = Some(b_rx);
             self.ffmpeg_child = Some(child);
             self.ffmpeg_stdin = Some(stdin);
             self.ffmpeg_stdout = Some(stdout);
@@ -663,13 +701,27 @@ impl Source for AudioCaptureSource {
             }
 
             // -- 1. Receive the next AudioFrame from the capture channel -------
-            let frame: AudioFrame = self
-                .frame_rx
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
-                .recv()
-                .await
-                .ok_or_else(|| anyhow::anyhow!("audio frame channel closed"))?;
+            let frame: AudioFrame = loop {
+                match self
+                    .frame_rx
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
+                    .recv()
+                    .await
+                {
+                    Ok(frame) => break frame,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "audio frame buffer full, dropped oldest frame(s)"
+                        );
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        anyhow::bail!("audio frame channel closed");
+                    }
+                }
+            };
 
             let timestamp = frame.timestamp.elapsed().as_millis() as u64;
 
@@ -1515,4 +1567,31 @@ mod tests {
         let _ = check_ffmpeg_crash_restart(&mut count, old_start).unwrap();
         assert_eq!(count, 1);
     }
+
+    #[tokio::test]
+    async fn test_bounded_channel_drops_oldest() {
+        // Broadcast rounds capacity to next power of 2 (2 → 2).
+        // Sending 3 items to a channel(2) overflows oldest: 10 is overwritten.
+        let (tx, mut rx) = broadcast::channel::<u32>(2);
+
+        tx.send(10).unwrap();
+        tx.send(20).unwrap();
+        // Buffer now full (2 slots). Next send overwrites oldest (10).
+        tx.send(30).unwrap();
+
+        // Receiver detects 1 dropped message
+        match rx.recv().await {
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                assert_eq!(n, 1, "should lag by exactly 1 (oldest overwritten)");
+            }
+            Ok(val) => panic!("expected Lagged, got value {val}"),
+            Err(e) => panic!("unexpected error: {e:?}"),
+        }
+
+        // Remaining messages arrive in order (oldest 10 dropped)
+        assert_eq!(rx.recv().await.unwrap(), 20);
+        assert_eq!(rx.recv().await.unwrap(), 30);
+    }
+
+
 }
