@@ -1,4 +1,8 @@
-#![allow(clippy::useless_vec, clippy::expect_fun_call, clippy::needless_range_loop)]
+#![allow(
+    clippy::useless_vec,
+    clippy::expect_fun_call,
+    clippy::needless_range_loop
+)]
 //! E2E integration tests for GB/T 28181 device registration and RTP push.
 //!
 //! Tests the full mock path:
@@ -9,14 +13,13 @@
 //!
 //! All tests use in-memory UDP loopback — no real network dependency.
 
-use std::net::{SocketAddr, UdpSocket};
-use std::time::Duration;
 use protocols::gb28181::{
-    build_invite_response, build_register_request, parse_invite,
-    parse_401_challenge, RtpPusher, SdpMedia, SdpSession,
-    SipDeviceClient, SipMessage, SipMethod, SipStatusCode,
+    RtpPusher, SdpMedia, SdpSession, SipDeviceClient, SipMessage, SipMethod, SipStatusCode,
+    build_invite_response, build_register_request, parse_401_challenge, parse_invite,
 };
 use protocols::rtp::{H264_PAYLOAD_TYPE, RtpPacket};
+use std::net::{SocketAddr, UdpSocket};
+use std::time::Duration;
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// A mock SIP server running on a UDP loopback socket.
@@ -142,7 +145,16 @@ fn test_register_message_format() {
     let cseq = 1u32;
     let expires = 3600u32;
 
-    let msg = build_register_request(device_id, local_ip, remote_id, remote_domain, expires, None, call_id, cseq);
+    let msg = build_register_request(
+        device_id,
+        local_ip,
+        remote_id,
+        remote_domain,
+        expires,
+        None,
+        call_id,
+        cseq,
+    );
 
     // Verify request line
     assert!(
@@ -150,13 +162,17 @@ fn test_register_message_format() {
         "Start line should contain REGISTER"
     );
     assert!(
-        msg.start_line.contains(&format!("sip:{}@{}", remote_id, remote_domain)),
+        msg.start_line
+            .contains(&format!("sip:{}@{}", remote_id, remote_domain)),
         "Start line should contain SIP URI"
     );
 
     // Verify method
     assert_eq!(msg.method, Some(SipMethod::Register));
-    assert_eq!(msg.uri, Some(format!("sip:{}@{}", remote_id, remote_domain)));
+    assert_eq!(
+        msg.uri,
+        Some(format!("sip:{}@{}", remote_id, remote_domain))
+    );
 
     // Verify From header: contains local device ID
     let from = msg.get_header("From").expect("Missing From header");
@@ -248,10 +264,7 @@ Content-Length: 0\r\n\
     );
     let response_msg =
         SipMessage::parse(&challenge_response).expect("Failed to parse 401 response");
-    assert_eq!(
-        response_msg.status_code,
-        Some(SipStatusCode::Unauthorized)
-    );
+    assert_eq!(response_msg.status_code, Some(SipStatusCode::Unauthorized));
 
     // Step 3: Extract the Digest challenge
     let challenge = parse_401_challenge(&response_msg).expect("Failed to parse 401 challenge");
@@ -297,24 +310,17 @@ fn test_invite_sdp_parsing() {
     let call_id = "invite-e2e-test-001";
 
     let invite_raw = build_mock_invite(call_id, platform_ip, media_port, Some("87654321"));
-    let invite_msg =
-        SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
+    let invite_msg = SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
     assert_eq!(invite_msg.method, Some(SipMethod::Invite));
 
     // Parse the INVITE to extract stream info
     let info = parse_invite(&invite_msg).expect("Failed to parse INVITE");
-    assert_eq!(
-        info.call_id, call_id,
-        "Call-ID should match"
-    );
+    assert_eq!(info.call_id, call_id, "Call-ID should match");
     assert_eq!(
         info.media_address, platform_ip,
         "Media address should match platform IP"
     );
-    assert_eq!(
-        info.media_port, media_port,
-        "Media port should match"
-    );
+    assert_eq!(info.media_port, media_port, "Media port should match");
     assert_eq!(
         info.payload_type, 96,
         "Payload type should be 96 (PS/90000)"
@@ -345,8 +351,7 @@ fn test_invite_response_with_sdp() {
     let local_device_id = "34020000001320000001";
 
     let invite_raw = build_mock_invite(call_id, platform_ip, media_port, None);
-    let invite_msg =
-        SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
+    let invite_msg = SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
 
     // Build a local SDP response describing our video stream
     let local_sdp = SdpSession {
@@ -369,7 +374,13 @@ fn test_invite_response_with_sdp() {
 
     let cseq = 1u32;
     let local_tag = 42u32;
-    let response = build_invite_response(&invite_msg, local_device_id, &local_sdp_str, local_tag, cseq);
+    let response = build_invite_response(
+        &invite_msg,
+        local_device_id,
+        &local_sdp_str,
+        local_tag,
+        cseq,
+    );
 
     // Verify response status line
     assert_eq!(response.start_line, "SIP/2.0 200 OK");
@@ -438,8 +449,7 @@ fn test_invite_response_with_sdp() {
 
     // Round-trip: serialize and re-parse
     let serialized = response.serialize();
-    let reparsed =
-        SipMessage::parse(&serialized).expect("Failed to re-parse 200 OK response");
+    let reparsed = SipMessage::parse(&serialized).expect("Failed to re-parse 200 OK response");
     assert_eq!(reparsed.start_line, "SIP/2.0 200 OK");
     assert_header_exact(&reparsed, "Call-ID", call_id);
 }
@@ -453,10 +463,8 @@ fn test_rtp_packets_from_invite_destination() {
     let call_id = "rtp-dest-test-001";
 
     let invite_raw = build_mock_invite(call_id, platform_ip, media_port, Some("AABBCCDD"));
-    let invite_msg =
-        SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
-    let info =
-        parse_invite(&invite_msg).expect("Failed to parse INVITE for RTP test");
+    let invite_msg = SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
+    let info = parse_invite(&invite_msg).expect("Failed to parse INVITE for RTP test");
 
     // Create RtpPusher targeting the destination address from INVITE SDP
     let dest: SocketAddr = format!("{}:{}", info.media_address, info.media_port)
@@ -491,11 +499,14 @@ fn test_rtp_packets_from_invite_destination() {
         );
 
         // Parse and verify
-        let parsed =
-            RtpPacket::parse(bytes).expect(&format!("Failed to parse packet {}", i));
+        let parsed = RtpPacket::parse(bytes).expect(&format!("Failed to parse packet {}", i));
 
         // Version must be 2
-        assert_eq!(parsed.flags.version, 2, "Packet {} should have RTP version 2", i);
+        assert_eq!(
+            parsed.flags.version, 2,
+            "Packet {} should have RTP version 2",
+            i
+        );
 
         // Payload type must match INVITE SDP
         assert_eq!(
@@ -550,9 +561,7 @@ fn test_udp_register_roundtrip() {
     let server_port = server.local_addr().port();
 
     // Create device client targeting the mock server
-    let server_addr: SocketAddr = format!("127.0.0.1:{}", server_port)
-        .parse()
-        .unwrap();
+    let server_addr: SocketAddr = format!("127.0.0.1:{}", server_port).parse().unwrap();
     let client = SipDeviceClient::new(
         "34020000001320000001",
         server_addr,
@@ -567,16 +576,14 @@ fn test_udp_register_roundtrip() {
     let reg = client.build_register();
     let reg_data = reg.serialize();
 
-    let client_socket = UdpSocket::bind("127.0.0.1:0")
-        .expect("Failed to bind client UDP socket");
+    let client_socket = UdpSocket::bind("127.0.0.1:0").expect("Failed to bind client UDP socket");
     client_socket
         .send_to(reg_data.as_bytes(), server_addr)
         .expect("Failed to send REGISTER");
 
     // Mock server receives REGISTER
     let (received, sender) = server.recv_sip();
-    let parsed_reg =
-        SipMessage::parse(&received).expect("Mock server failed to parse REGISTER");
+    let parsed_reg = SipMessage::parse(&received).expect("Mock server failed to parse REGISTER");
 
     // Verify REGISTER contents
     assert_eq!(parsed_reg.method, Some(SipMethod::Register));
@@ -657,8 +664,7 @@ Content-Length: 0\r\n\
 #[test]
 fn test_udp_rtp_roundtrip() {
     // Create a receiver socket (simulating the NVR/platform receiving RTP)
-    let receiver = UdpSocket::bind("127.0.0.1:0")
-        .expect("Failed to bind RTP receiver");
+    let receiver = UdpSocket::bind("127.0.0.1:0").expect("Failed to bind RTP receiver");
     let receiver_addr = receiver.local_addr().unwrap();
     receiver
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -675,8 +681,7 @@ fn test_udp_rtp_roundtrip() {
         vec![0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00],
     ];
 
-    let client_socket = UdpSocket::bind("127.0.0.1:0")
-        .expect("Failed to bind RTP sender");
+    let client_socket = UdpSocket::bind("127.0.0.1:0").expect("Failed to bind RTP sender");
     client_socket
         .set_write_timeout(Some(Duration::from_millis(500)))
         .ok();
@@ -707,11 +712,7 @@ fn test_udp_rtp_roundtrip() {
             "Packet {} sequence number",
             i
         );
-        assert_eq!(
-            parsed.payload, test_payloads[i],
-            "Packet {} payload",
-            i
-        );
+        assert_eq!(parsed.payload, test_payloads[i], "Packet {} payload", i);
     }
 }
 
@@ -722,13 +723,10 @@ fn test_e2e_register_invite_rtp_flow() {
     // ── Phase 1: Mock SIP server setup ──
     let sip_server = MockSipServer::bind(0);
     let sip_server_port = sip_server.local_addr().port();
-    let sip_server_addr: SocketAddr = format!("127.0.0.1:{}", sip_server_port)
-        .parse()
-        .unwrap();
+    let sip_server_addr: SocketAddr = format!("127.0.0.1:{}", sip_server_port).parse().unwrap();
 
     // ── Phase 2: RTP receiver (simulates platform media receiver) ──
-    let rtp_receiver = UdpSocket::bind("127.0.0.1:0")
-        .expect("Failed to bind RTP receiver");
+    let rtp_receiver = UdpSocket::bind("127.0.0.1:0").expect("Failed to bind RTP receiver");
     let rtp_receiver_addr = rtp_receiver.local_addr().unwrap();
     rtp_receiver
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -746,8 +744,7 @@ fn test_e2e_register_invite_rtp_flow() {
         3600,
     );
 
-    let client_socket = UdpSocket::bind("127.0.0.1:0")
-        .expect("Failed to bind client UDP socket");
+    let client_socket = UdpSocket::bind("127.0.0.1:0").expect("Failed to bind client UDP socket");
     client_socket
         .set_read_timeout(Some(Duration::from_millis(200)))
         .ok();
@@ -761,8 +758,7 @@ fn test_e2e_register_invite_rtp_flow() {
 
     // ── Phase 5: Mock server receives REGISTER ──
     let (received, sender) = sip_server.recv_sip();
-    let parsed_reg =
-        SipMessage::parse(&received).expect("Server failed to parse REGISTER");
+    let parsed_reg = SipMessage::parse(&received).expect("Server failed to parse REGISTER");
 
     // Verify REGISTER format
     assert_eq!(parsed_reg.method, Some(SipMethod::Register));
@@ -805,8 +801,14 @@ m=video {} RTP/AVP 96\r\n\
 a=recvonly\r\n\
 a=rtpmap:96 PS/90000\r\n\
 a=ssrc:FEDCBA98\r\n",
-        device_id, platform_addr_str, device_id, call_id, platform_addr_str,
-        platform_addr_str, platform_addr_str, invite_media_port
+        device_id,
+        platform_addr_str,
+        device_id,
+        call_id,
+        platform_addr_str,
+        platform_addr_str,
+        platform_addr_str,
+        invite_media_port
     );
     sip_server.send_sip(&invite_raw, sender);
 
@@ -889,11 +891,7 @@ a=ssrc:FEDCBA98\r\n",
     for i in 0..3 {
         let (parsed, _sender) = recv_rtp(&rtp_receiver);
         assert_eq!(parsed.flags.version, 2, "Packet {} RTP version", i);
-        assert_eq!(
-            parsed.flags.payload_type, 96,
-            "Packet {} payload type",
-            i
-        );
+        assert_eq!(parsed.flags.payload_type, 96, "Packet {} payload type", i);
         assert_eq!(parsed.ssrc, 0xFEDCBA98, "Packet {} SSRC", i);
         assert_eq!(
             parsed.sequence_number, i as u16,
@@ -901,11 +899,7 @@ a=ssrc:FEDCBA98\r\n",
             i
         );
         let expected_ts = if i == 0 { 0u32 } else { 3000 * i as u32 };
-        assert_eq!(
-            parsed.timestamp, expected_ts,
-            "Packet {} timestamp",
-            i
-        );
+        assert_eq!(parsed.timestamp, expected_ts, "Packet {} timestamp", i);
         assert_eq!(parsed.payload, nals[i], "Packet {} payload", i);
     }
 }
@@ -962,10 +956,7 @@ fn test_sip_device_client_state() {
     assert_eq!(client.cseq, 1, "Initial CSeq should be 1");
 
     // Call-ID should be non-empty and contain device ID
-    assert!(
-        !client.call_id.is_empty(),
-        "Call-ID should not be empty"
-    );
+    assert!(!client.call_id.is_empty(), "Call-ID should not be empty");
     assert!(
         client.call_id.contains("34020000001320000001"),
         "Call-ID should contain device ID"

@@ -22,6 +22,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+use observability::metrics;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RTSP Methods (RFC 2326 section 10)
@@ -1179,6 +1180,7 @@ async fn handle_connection(
                 {
                     let live_path = stream_path.clone();
                     let interleave_channel = transport.interleaved.map(|(c, _)| c).unwrap_or(0);
+                    let rtcp_channel = transport.interleaved.map(|(_, c)| c).unwrap_or(1);
 
                     // Scope the lock to avoid holding MutexGuard (not Send) across await
                     let live_entry = {
@@ -1187,10 +1189,14 @@ async fn handle_connection(
                     };
 
                     if let Some(entry) = live_entry {
+                        metrics::increment_rtsp_sessions("active");
                         let mut frame_rx = entry.frame_rx;
+                        let ssrc = entry.ssrc;
                         info!("Starting live stream delivery for /{live_path}");
                         let mut seq_tracker = SequenceTracker::new();
                         let mut last_activity = Instant::now();
+                        let mut packet_count: u32 = 0;
+                        let mut octet_count: u32 = 0;
 
                         loop {
                             tokio::select! {
@@ -1211,13 +1217,17 @@ async fn handle_connection(
                                                     );
                                                 }
                                             }
+                                            // Track packet/octet counts for RTCP SR
+                                            packet_count = packet_count.wrapping_add(1);
+                                            let payload_size = if data.len() >= 12 { data.len() - 12 } else { 0 };
+                                            octet_count = octet_count.wrapping_add(payload_size as u32);
 
-                                            match build_interleaved_frame(interleave_channel, &data) {
+                                                match build_interleaved_frame(interleave_channel, &data) {
                                                 Ok(interleaved) => {
-                                                    if let Err(e) = writer.write_all(&interleaved).await {
-                                                        debug!("Error sending interleaved frame: {e}");
+                                                    if writer.write_all(&interleaved).await.is_err() {
                                                         break;
                                                     }
+                                                    metrics::increment_rtsp_bytes_sent(interleaved.len() as u64);
                                                 }
                                                 Err(e) => {
                                                     warn!("Failed to build interleaved frame: {e}");
@@ -1255,12 +1265,29 @@ async fn handle_connection(
                                         Ok(None) | Err(_) => break,
                                     }
                                 }
-                                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                                    // Check idle timeout (60s threshold)
                                     if last_activity.elapsed() > Duration::from_secs(60) {
                                         warn!("RTSP session timeout: {session_id}, idle for 60s");
                                         let resp = handle_teardown(0, &session_id, &mut session);
                                         let _ = writer.write_all(&resp).await;
                                         break;
+                                    }
+                                    // Send RTCP Sender Report every 5 seconds
+                                    let now = std::time::SystemTime::now();
+                                    let ntp_ts = crate::rtcp::system_time_to_ntp(now);
+                                    let rtp_ts = crate::rtcp::ntp_to_rtp(ntp_ts, 90000);
+                                    let sr = crate::rtcp::build_sender_report(ssrc, ntp_ts, rtp_ts, packet_count, octet_count);
+                                    match build_interleaved_frame(rtcp_channel, &sr) {
+                                        Ok(frame) => {
+                                            if let Err(e) = writer.write_all(&frame).await {
+                                                debug!("Error sending RTCP SR: {e}");
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            debug!("Error building RTCP SR frame: {e}");
+                                        }
                                     }
                                 }
                             }
@@ -1310,7 +1337,7 @@ async fn handle_connection(
             }
         }
     }
-
+    metrics::increment_rtsp_sessions("closed");
     debug!("RTSP connection closed");
 }
 

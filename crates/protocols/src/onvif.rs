@@ -24,9 +24,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use observability::metrics;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Device Configuration
 // ═══════════════════════════════════════════════════════════════════════════
@@ -231,6 +231,7 @@ pub fn handle_probe_message(body: &str, config: &OnvifDeviceConfig) -> Option<St
     if !body.contains("Probe") && !body.contains("wsdiscovery") {
         return None;
     }
+    metrics::increment_onvif_discovery_requests();
     let message_id = extract_message_id(body);
     Some(build_probe_match_xml(config, message_id.as_deref()))
 }

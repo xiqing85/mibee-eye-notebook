@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use prometheus::{Encoder, IntCounterVec, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry, TextEncoder};
 use std::sync::OnceLock;
 
 /// Container for all custom Prometheus metrics.
@@ -12,6 +12,14 @@ pub struct Metrics {
     active_streams: IntGauge,
     bytes_received: IntCounterVec,
     capture_errors: IntCounterVec,
+    // ─── Protocol-specific counters ───────────────────────────
+    rtsp_sessions: IntCounterVec,
+    rtsp_bytes_sent: IntCounter,
+    rtmp_push_bytes: IntCounter,
+    rtmp_push_errors: IntCounter,
+    onvif_discovery_requests: IntCounter,
+    gb28181_register_status: IntCounterVec,
+    audio_level_db: GaugeVec,
 }
 
 // ---------------------------------------------------------------------------
@@ -57,9 +65,65 @@ pub fn increment_capture_errors(camera_id: &str) {
         .inc();
 }
 
+// ─── Protocol-specific counter helpers ─────────────────────────────────
+
+/// Increment the `notebook_cam_rtsp_sessions_total` counter by status.
+pub fn increment_rtsp_sessions(status: &str) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.rtsp_sessions.with_label_values(&[status]).inc();
+    }
+}
+
+/// Increment the `notebook_cam_rtsp_bytes_sent_total` counter.
+pub fn increment_rtsp_bytes_sent(bytes: u64) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.rtsp_bytes_sent.inc_by(bytes);
+    }
+}
+
+/// Increment the `notebook_cam_rtmp_push_bytes_total` counter.
+pub fn increment_rtmp_push_bytes(bytes: u64) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.rtmp_push_bytes.inc_by(bytes);
+    }
+}
+
+/// Increment the `notebook_cam_rtmp_push_errors_total` counter.
+pub fn increment_rtmp_push_errors() {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.rtmp_push_errors.inc();
+    }
+}
+
+/// Increment the `notebook_cam_onvif_discovery_requests_total` counter.
+pub fn increment_onvif_discovery_requests() {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.onvif_discovery_requests.inc();
+    }
+}
+
+/// Increment the `notebook_cam_gb28181_register_status` counter by status.
+pub fn increment_gb28181_register_status(status: &str) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.gb28181_register_status.with_label_values(&[status]).inc();
+    }
+}
+
 /// Set the `notebook_cam_streams_active` gauge to an absolute value.
 pub fn set_active_streams(count: i64) {
     global_metrics().active_streams.set(count);
+}
+/// Set the `notebook_cam_audio_level_db` gauge for a stream.
+///
+/// Silently returns if metrics have not yet been registered — this allows
+/// audio capture callbacks to fire before `register_metrics()` is called
+/// during startup without panicking.
+pub fn set_audio_level(stream_id: &str, db_level: f64) {
+    // SAFETY: Audio callbacks run on real-time threads; we must not panic.
+    // Using GLOBAL_METRICS.get() avoids the `expect()` in global_metrics().
+    if let Some(metrics) = GLOBAL_METRICS.get() {
+        metrics.audio_level_db.with_label_values(&[stream_id]).set(db_level);
+    }
 }
 
 /// Render all registered metrics in Prometheus text-0.0.4 exposition format.
@@ -106,13 +170,73 @@ impl Metrics {
             ),
             &["camera_id"],
         )?;
-        registry.register(Box::new(capture_errors.clone()))?;
+registry.register(Box::new(capture_errors.clone()))?;
+
+        // ─── Protocol-specific counters ───────────────────────────
+        let rtsp_sessions = IntCounterVec::new(
+            Opts::new(
+                "notebook_cam_rtsp_sessions_total",
+                "Total number of RTSP sessions by status",
+            ),
+            &["status"],
+        )?;
+        registry.register(Box::new(rtsp_sessions.clone()))?;
+
+        let rtsp_bytes_sent = IntCounter::new(
+            "notebook_cam_rtsp_bytes_sent_total",
+            "Total RTSP/RTP bytes transmitted",
+        )?;
+        registry.register(Box::new(rtsp_bytes_sent.clone()))?;
+
+        let rtmp_push_bytes = IntCounter::new(
+            "notebook_cam_rtmp_push_bytes_total",
+            "Total bytes pushed via RTMP",
+        )?;
+        registry.register(Box::new(rtmp_push_bytes.clone()))?;
+
+        let rtmp_push_errors = IntCounter::new(
+            "notebook_cam_rtmp_push_errors_total",
+            "Total RTMP push errors",
+        )?;
+        registry.register(Box::new(rtmp_push_errors.clone()))?;
+
+        let onvif_discovery_requests = IntCounter::new(
+            "notebook_cam_onvif_discovery_requests_total",
+            "Total ONVIF WS-Discovery probe requests received",
+        )?;
+        registry.register(Box::new(onvif_discovery_requests.clone()))?;
+
+        let gb28181_register_status = IntCounterVec::new(
+            Opts::new(
+                "notebook_cam_gb28181_register_status",
+                "Total GB28181 registration attempts by status",
+            ),
+            &["status"],
+        )?;
+        registry.register(Box::new(gb28181_register_status.clone()))?;
+
+        // ─── Audio level gauge ───────────────────────────────────
+        let audio_level_db = GaugeVec::new(
+            Opts::new(
+                "notebook_cam_audio_level_db",
+                "Current audio input level in dBFS",
+            ),
+            &["stream_id"],
+        )?;
+        registry.register(Box::new(audio_level_db.clone()))?;
 
         Ok(Metrics {
             registry,
             active_streams,
             bytes_received,
             capture_errors,
+            rtsp_sessions,
+            rtsp_bytes_sent,
+            rtmp_push_bytes,
+            rtmp_push_errors,
+            onvif_discovery_requests,
+            gb28181_register_status,
+            audio_level_db,
         })
     }
 
@@ -142,24 +266,56 @@ mod tests {
 
         // Increment counters/gauges so they appear in output (Prometheus
         // omits zero-value counter vecs from rendered output)
-        m.bytes_received.with_label_values(&["test"]).inc_by(1);
+m.bytes_received.with_label_values(&["test"]).inc_by(1);
         m.capture_errors.with_label_values(&["test"]).inc();
         m.active_streams.set(0);
+        // Activate protocol counters so they appear in output
+        m.rtsp_sessions.with_label_values(&["active"]).inc();
+        m.rtsp_bytes_sent.inc_by(100);
+        m.rtmp_push_bytes.inc_by(200);
+        m.rtmp_push_errors.inc();
+        m.onvif_discovery_requests.inc();
+        m.gb28181_register_status.with_label_values(&["registered"]).inc();
 
         let output = m.render();
-        // All three metrics should appear in the rendered text
-        assert!(
-            output.contains("notebook_cam_streams_active"),
-            "output should contain active_streams gauge"
-        );
-        assert!(
-            output.contains("notebook_cam_bytes_received"),
-            "output should contain bytes_received counter"
-        );
-        assert!(
-            output.contains("notebook_cam_capture_errors"),
-            "output should contain capture_errors counter"
-        );
+        // All metrics should appear in the rendered text
+        assert!(output.contains("notebook_cam_streams_active"), "output should contain active_streams gauge");
+        assert!(output.contains("notebook_cam_bytes_received"), "output should contain bytes_received counter");
+        assert!(output.contains("notebook_cam_capture_errors"), "output should contain capture_errors counter");
+        assert!(output.contains("notebook_cam_rtsp_sessions_total"), "output should contain rtsp_sessions counter");
+        assert!(output.contains("notebook_cam_rtsp_bytes_sent_total"), "output should contain rtsp_bytes_sent counter");
+        assert!(output.contains("notebook_cam_rtmp_push_bytes_total"), "output should contain rtmp_push_bytes counter");
+        assert!(output.contains("notebook_cam_rtmp_push_errors_total"), "output should contain rtmp_push_errors counter");
+        assert!(output.contains("notebook_cam_onvif_discovery_requests_total"), "output should contain onvif_discovery_requests counter");
+        assert!(output.contains("notebook_cam_gb28181_register_status"), "output should contain gb28181_register_status counter");
+    }
+
+    #[test]
+    fn test_protocol_counters_increment() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+
+        m.rtsp_sessions.with_label_values(&["active"]).inc();
+        m.rtsp_sessions.with_label_values(&["active"]).inc();
+        m.rtsp_sessions.with_label_values(&["closed"]).inc();
+        m.rtsp_bytes_sent.inc_by(1500);
+        m.rtmp_push_bytes.inc_by(4096);
+        m.rtmp_push_errors.inc();
+        m.rtmp_push_errors.inc();
+        m.onvif_discovery_requests.inc();
+        m.gb28181_register_status.with_label_values(&["registered"]).inc();
+        m.gb28181_register_status.with_label_values(&["failed"]).inc();
+        m.gb28181_register_status.with_label_values(&["failed"]).inc();
+
+        let output = m.render();
+
+        assert!(output.contains("notebook_cam_rtsp_sessions_total{status=\"active\"} 2"), "active sessions should be 2\n=== output ===\n{}", output);
+        assert!(output.contains("notebook_cam_rtsp_sessions_total{status=\"closed\"} 1"), "closed sessions should be 1\n=== output ===\n{}", output);
+        assert!(output.contains("notebook_cam_rtsp_bytes_sent_total 1500"), "rtsp bytes should be 1500\n=== output ===\n{}", output);
+        assert!(output.contains("notebook_cam_rtmp_push_bytes_total 4096"), "rtmp bytes should be 4096\n=== output ===\n{}", output);
+        assert!(output.contains("notebook_cam_rtmp_push_errors_total 2"), "rtmp errors should be 2\n=== output ===\n{}", output);
+        assert!(output.contains("notebook_cam_onvif_discovery_requests_total 1"), "discovery requests should be 1\n=== output ===\n{}", output);
+        assert!(output.contains("notebook_cam_gb28181_register_status{status=\"registered\"} 1"), "registered should be 1\n=== output ===\n{}", output);
+        assert!(output.contains("notebook_cam_gb28181_register_status{status=\"failed\"} 2"), "failed should be 2\n=== output ===\n{}", output);
     }
 
     #[test]
@@ -251,6 +407,27 @@ mod tests {
             out2.contains("notebook_cam_streams_active 99"),
             "m2 should have 99\n=== out2 ===\n{}",
             out2
+        );
+    }
+
+    #[test]
+    fn test_audio_level_gauge() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+
+        m.audio_level_db.with_label_values(&["default"]).set(-12.5);
+        let output = m.render();
+        assert!(
+            output.contains(r#"notebook_cam_audio_level_db{stream_id="default"} -12.5"#),
+            "audio_level_db should show -12.5\n=== output ===\n{}",
+            output
+        );
+
+        m.audio_level_db.with_label_values(&["default"]).set(0.0);
+        let output = m.render();
+        assert!(
+            output.contains(r#"notebook_cam_audio_level_db{stream_id="default"} 0"#),
+            "audio_level_db should show 0\n=== output ===\n{}",
+            output
         );
     }
 }
