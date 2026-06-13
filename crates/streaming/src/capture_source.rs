@@ -19,6 +19,8 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -130,7 +132,7 @@ async fn spawn_ffmpeg_process(
     let mut cmd = tokio::process::Command::new("ffmpeg");
 
     if format.eq_ignore_ascii_case("MJPEG") {
-        cmd.arg("-f").arg("mjpeg").arg("-i").arg("pipe:0");
+        cmd.args(["-analyzeduration", "10000000", "-probesize", "50000000", "-f", "mjpeg", "-i", "pipe:0"]);
     } else {
         let pix_fmt = map_pixel_format(format);
         let size_str = format!("{}x{}", width, height);
@@ -151,13 +153,18 @@ async fn spawn_ffmpeg_process(
         "ultrafast",
         "-tune",
         "zerolatency",
+        "-g",
+        "30",
+        "-x264-params",
+        "repeat-headers=1",
         "-f",
         "h264",
         "pipe:1",
     ])
+
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::null());
+    .stderr(std::process::Stdio::piped());
 
     let mut child = cmd
         .spawn()
@@ -172,6 +179,27 @@ async fn spawn_ffmpeg_process(
         .take()
         .context("failed to capture ffmpeg stdout")?;
 
+    if let Some(stderr) = child.stderr.take() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim_end();
+                        if !trimmed.is_empty() {
+                            tracing::warn!("ffmpeg: {trimmed}");
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     Ok((child, stdin, stdout))
 }
 
@@ -181,11 +209,11 @@ async fn spawn_ffmpeg_process(
 
 /// Decide whether to restart ffmpeg after a crash.
 ///
-/// If the ffmpeg process ran for more than 30 seconds, the crash counter
-/// is reset to zero (the process was stable before crashing). If the crash
-/// count reaches 3, returns an error (too many consecutive crashes).
+// Kept for future crash-recovery reimplementation. Currently unused because
+// next_frame() returns an error on stdout EOF instead of attempting restart.
 /// Otherwise, increments the counter and returns the exponential backoff
 /// delay (2s, 4s, 8s for attempts 1, 2, 3).
+#[allow(dead_code)]
 fn check_ffmpeg_crash_restart(
     crash_count: &mut u32,
     ffmpeg_start_time: Instant,
@@ -242,15 +270,15 @@ impl Source for VideoCaptureSource {
                     device_path
                 ));
             }
-            if !std::fs::metadata(&device_path)
+            let meta = std::fs::metadata(&device_path)
                 .context(format!(
                     "Failed to read metadata for camera device {}",
                     device_path
-                ))?
-                .is_file()
-            {
+                ))?;
+            // V4L2 devices (/dev/videoN) are character devices, not regular files.
+            if !meta.file_type().is_char_device() && !meta.is_file() {
                 return Err(anyhow::anyhow!(
-                    "Camera device {} is not a file: {}",
+                    "Camera device {} is not a valid device node: {}",
                     index,
                     device_path
                 ));
@@ -312,11 +340,45 @@ impl Source for VideoCaptureSource {
                 .await
                 .context("failed to flush ffmpeg stdin")?;
 
-            // ── 5. Store handles ────────────────────────────────────────
+            // ── 5. Spawn stdin writer task and store handles ───────────
+            //
+            // CRITICAL: stdin writes MUST be decoupled from stdout reads.
+            // ffmpeg needs multiple frames to complete its probe phase before
+            // producing H.264 output. If we write-then-read sequentially in
+            // next_frame(), ffmpeg blocks waiting for more input while we
+            // block waiting for output — classic pipe deadlock.
+            //
+            // The writer task continuously feeds camera frames to ffmpeg,
+            // while next_frame() only reads encoded output from stdout.
+            let device_idx = self.device_index;
+            tokio::spawn(async move {
+                let mut b_rx = b_rx;
+                let mut stdin = stdin;
+                loop {
+                    match b_rx.recv().await {
+                        Ok(frame) => {
+                            if let Err(e) = stdin.write_all(&frame.data).await {
+                                tracing::warn!(device_index = device_idx, "ffmpeg stdin write failed: {e}");
+                                break;
+                            }
+                            if let Err(e) = stdin.flush().await {
+                                tracing::warn!(device_index = device_idx, "ffmpeg stdin flush failed: {e}");
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::debug!(device_index = device_idx, "camera broadcast closed, stdin writer exiting");
+                            break;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(device_index = device_idx, skipped = n, "stdin writer lagged, dropped frames");
+                            continue;
+                        }
+                    }
+                }
+            });
             self.capture = Some(capture);
-            self.frame_rx = Some(b_rx);
             self.ffmpeg_child = Some(child);
-            self.ffmpeg_stdin = Some(stdin);
             self.ffmpeg_stdout = Some(stdout);
             self.running = true;
             self.ffmpeg_start_time = Some(Instant::now());
@@ -339,65 +401,25 @@ impl Source for VideoCaptureSource {
                 anyhow::bail!("VideoCaptureSource not started");
             }
 
-            // ── 1. Receive the next raw frame from the camera ───────────
-            let frame: VideoFrame = loop {
-                match self
-                    .frame_rx
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
-                    .recv()
-                    .await
-                {
-                    Ok(frame) => break frame,
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(
-                            device_index = self.device_index,
-                            skipped,
-                            "video frame buffer full, dropped oldest frame(s)"
-                        );
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        anyhow::bail!("camera frame channel closed");
-                    }
-                }
-            };
+            let timestamp = self
+                .ffmpeg_start_time
+                .map(|t| t.elapsed().as_millis() as u64)
+                .unwrap_or(0);
 
-            let timestamp = frame.timestamp.elapsed().as_millis() as u64;
-
-            // ── 2. Take ownership of handles to allow re-spawn on crash ─
-            //
-            // .take() removes the Option values so that self is not
-            // borrowed during the crash recovery logic (which needs to
-            // mutate self.crash_count, self.ffmpeg_child, etc.).
-            let mut stdin = self
-                .ffmpeg_stdin
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdin not available"))?;
-            let mut stdout = self
+            let stdout = self
                 .ffmpeg_stdout
-                .take()
+                .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
 
-            // ── 3. Write raw frame data to ffmpeg stdin ─────────────────
-            stdin
-                .write_all(&frame.data)
-                .await
-                .context("failed to write frame to ffmpeg stdin")?;
-            stdin
-                .flush()
-                .await
-                .context("failed to flush ffmpeg stdin")?;
-
-            // ── 4. Read from ffmpeg stdout until a complete NAL unit ────
+            // Read from ffmpeg stdout until a complete NAL unit is available.
+            // stdin writes are handled by a separate task spawned in start(),
+            // which continuously feeds camera frames to ffmpeg. This decouples
+            // input from output and prevents pipe deadlock during ffmpeg's
+            // initial probe phase.
             loop {
                 // Try to extract a complete NAL unit from accumulated data.
                 if let Some((nal_data, keyframe, new_offset)) = extract_next_nal(&self.buffer, 0) {
-                    // Keep any remaining bytes for the next call.
                     self.buffer = self.buffer[new_offset..].to_vec();
-                    // Put handles back before returning.
-                    self.ffmpeg_stdin = Some(stdin);
-                    self.ffmpeg_stdout = Some(stdout);
                     return Ok(MediaFrame::Video {
                         keyframe,
                         data: nal_data,
@@ -413,74 +435,11 @@ impl Source for VideoCaptureSource {
                     .context("error reading ffmpeg stdout")?;
 
                 if n == 0 {
-                    // ── ffmpeg stdout closed: attempt crash recovery ─────
-                    let start_time = self
-                        .ffmpeg_start_time
-                        .take()
-                        .ok_or_else(|| anyhow::anyhow!("ffmpeg start time not tracked"))?;
-
-                    let delay = match check_ffmpeg_crash_restart(&mut self.crash_count, start_time)
-                    {
-                        Ok(d) => d,
-                        Err(e) => {
-                            tracing::error!(
-                                device_index = self.device_index,
-                                "ffmpeg crash limit reached, giving up"
-                            );
-                            // Don't put handles back — stream is dead.
-                            return Err(e);
-                        }
-                    };
-
-                    tracing::warn!(
-                        device_index = self.device_index,
-                        attempt = self.crash_count,
-                        delay_secs = delay.as_secs(),
-                        "ffmpeg crashed, restarting with exponential backoff"
+                    // ffmpeg stdout closed — encoder exited or crashed.
+                    self.running = false;
+                    anyhow::bail!(
+                        "ffmpeg process exited unexpectedly (stdout closed)"
                     );
-
-                    // Drop old handles and kill the process.
-                    drop(stdin);
-                    drop(stdout);
-                    if let Some(mut child) = self.ffmpeg_child.take() {
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
-                    }
-                    self.buffer.clear();
-
-                    // Sleep with exponential backoff.
-                    tokio::time::sleep(delay).await;
-
-                    // Re-spawn ffmpeg with stored camera params.
-                    let (child, new_stdin, new_stdout) = spawn_ffmpeg_process(
-                        self.camera_width,
-                        self.camera_height,
-                        &self.camera_format,
-                    )
-                    .await?;
-
-                    self.ffmpeg_child = Some(child);
-                    self.ffmpeg_start_time = Some(Instant::now());
-                    stdin = new_stdin;
-                    stdout = new_stdout;
-
-                    // Rewrite current frame to the new ffmpeg stdin.
-                    stdin
-                        .write_all(&frame.data)
-                        .await
-                        .context("failed to write frame to restarted ffmpeg stdin")?;
-                    stdin
-                        .flush()
-                        .await
-                        .context("failed to flush restarted ffmpeg stdin")?;
-
-                    tracing::info!(
-                        device_index = self.device_index,
-                        attempt = self.crash_count,
-                        "ffmpeg restarted successfully"
-                    );
-
-                    continue;
                 }
 
                 self.buffer.extend_from_slice(&tmp[..n]);
@@ -490,8 +449,9 @@ impl Source for VideoCaptureSource {
 
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // 1. Drop stdin — closes the pipe, sending EOF to ffmpeg.
-            drop(self.ffmpeg_stdin.take());
+            // 1. stdin is owned by the spawned writer task. Dropping capture
+            //    (step 3) closes the broadcast channel, causing the writer
+            //    task to exit and drop stdin (sends EOF to ffmpeg).
 
             // 2. Kill the ffmpeg process if it's still running.
             if let Some(mut child) = self.ffmpeg_child.take() {
