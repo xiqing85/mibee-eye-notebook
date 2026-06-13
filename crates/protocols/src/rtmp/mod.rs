@@ -407,6 +407,19 @@ impl RtmpPushClient {
                         buf.drain(..consumed);
                         cursor = Cursor::new(&buf[..]);
 
+                        // Send Acknowledgement when window threshold is reached
+                        if let Some(ack_seq) = parser.take_ack_if_needed() {
+                            if let Err(e) = Self::write_protocol_message(
+                                stream,
+                                MessageType::Acknowledgement,
+                                &ack_seq.to_be_bytes(),
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %e, "Failed to send RTMP Acknowledgement");
+                            }
+                        }
+
                         // Check for SetChunkSize message
                         if msg.len() == 4 {
                             let maybe_size = u32::from_be_bytes([msg[0], msg[1], msg[2], msg[3]]);
