@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db::{self, CameraRow};
-use crate::routes::error_response;
+use crate::errors::ApiError;
 use security::middleware::AuthenticatedUser;
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ pub async fn list_cameras(
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to list cameras");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to list cameras")
+            ApiError::internal("failed to list cameras").into_response()
         }
     }
 }
@@ -102,10 +102,10 @@ pub async fn get_camera(
             Json(serde_json::to_value(CameraResponse::from(row)).unwrap()),
         )
             .into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "camera not found"),
+        Ok(None) => ApiError::not_found("camera not found").into_response(),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to get camera");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to get camera")
+            ApiError::internal("failed to get camera").into_response()
         }
     }
 }
@@ -138,7 +138,7 @@ pub async fn create_camera(
             .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to create camera");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to create camera")
+            ApiError::internal("failed to create camera").into_response()
         }
     }
 }
@@ -155,10 +155,10 @@ pub async fn update_camera(
     // Fetch existing camera, or return 404.
     let existing = match db::get_camera(&conn, &id) {
         Ok(Some(row)) => row,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "camera not found"),
+        Ok(None) => return ApiError::not_found("camera not found").into_response(),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to fetch camera for update");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to update camera");
+            return ApiError::internal("failed to update camera").into_response();
         }
     };
 
@@ -181,7 +181,7 @@ pub async fn update_camera(
             .into_response(),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to update camera");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to update camera")
+            ApiError::internal("failed to update camera").into_response()
         }
     }
 }
@@ -198,10 +198,10 @@ pub async fn delete_camera(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("not found") {
-                error_response(StatusCode::NOT_FOUND, "camera not found")
+                ApiError::not_found("camera not found").into_response()
             } else {
                 tracing::error!(error = %e, camera_id = %id, "failed to delete camera");
-                error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to delete camera")
+                ApiError::internal("failed to delete camera").into_response()
             }
         }
     }

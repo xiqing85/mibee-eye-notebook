@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Serialize;
 
-use crate::routes::error_response;
+use crate::errors::ApiError;
 use security::middleware::AuthenticatedUser;
 
 // ---------------------------------------------------------------------------
@@ -62,17 +62,11 @@ pub async fn list_video_devices(
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
             tracing::error!(error = %e, "failed to enumerate video devices");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to enumerate video devices",
-            );
+            return ApiError::internal("failed to enumerate video devices").into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "spawn_blocking join error for video enumeration");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to enumerate video devices",
-            );
+            return ApiError::internal("failed to enumerate video devices").into_response();
         }
     };
 
@@ -102,17 +96,11 @@ pub async fn list_audio_devices(
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
             tracing::error!(error = %e, "failed to enumerate audio devices");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to enumerate audio devices",
-            );
+            return ApiError::internal("failed to enumerate audio devices").into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "spawn_blocking join error for audio enumeration");
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to enumerate audio devices",
-            );
+            return ApiError::internal("failed to enumerate audio devices").into_response();
         }
     };
 

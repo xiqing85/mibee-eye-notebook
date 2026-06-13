@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 use crate::db;
-use crate::routes::error_response;
+use crate::errors::ApiError;
 use crate::stream_manager::StreamManager;
 use security::middleware::AuthenticatedUser;
 
@@ -36,10 +36,10 @@ pub async fn start_stream(
     let conn = db.lock().await;
     let camera = match db::get_camera(&conn, &id) {
         Ok(Some(cam)) => cam,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "camera not found"),
+        Ok(None) => return ApiError::not_found("camera not found").into_response(),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to get camera for start");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to start stream");
+            return ApiError::internal("failed to start stream").into_response();
         }
     };
     let camera_type = camera.camera_type.clone();
@@ -76,13 +76,13 @@ pub async fn start_stream(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("already exists") {
-                return error_response(StatusCode::CONFLICT, "stream already running");
+                return ApiError::conflict("stream already running").into_response();
             }
             if msg.contains("exhausted") {
-                return error_response(StatusCode::SERVICE_UNAVAILABLE, "resource limit reached");
+                return ApiError::internal("resource limit reached").into_response();
             }
             tracing::error!(error = %e, camera_id = %id, "failed to start stream");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to start stream")
+            ApiError::internal("failed to start stream").into_response()
         }
     }
 }
@@ -98,10 +98,10 @@ pub async fn stop_stream(
     let conn = db.lock().await;
     let camera = match db::get_camera(&conn, &id) {
         Ok(Some(cam)) => cam,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "camera not found"),
+        Ok(None) => return ApiError::not_found("camera not found").into_response(),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to get camera for stop");
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to stop stream");
+            return ApiError::internal("failed to stop stream").into_response();
         }
     };
     drop(conn);
@@ -146,7 +146,7 @@ pub async fn stop_stream(
                     .into_response();
             }
             tracing::error!(error = %e, camera_id = %id, "failed to stop stream");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to stop stream")
+            ApiError::internal("failed to stop stream").into_response()
         }
     }
 }
@@ -177,10 +177,10 @@ pub async fn snapshot(
         let conn = db.lock().await;
         match db::get_camera(&conn, &id) {
             Ok(Some(cam)) => cam,
-            Ok(None) => return error_response(StatusCode::NOT_FOUND, "camera not found"),
+        Ok(None) => return ApiError::not_found("camera not found").into_response(),
             Err(e) => {
                 tracing::error!(error = %e, camera_id = %id, "failed to get camera for snapshot");
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+            return ApiError::internal("database error").into_response();
             }
         }
     };
@@ -188,10 +188,7 @@ pub async fn snapshot(
 
     // Check if stream is active
     if !stream_manager.has_stream(&id).await {
-        return error_response(
-            StatusCode::CONFLICT,
-            "stream not active - start the stream first",
-        );
+        return ApiError::conflict("stream not active - start the stream first").into_response();
     }
 
     // Acquire per-camera serialization lock
@@ -200,10 +197,7 @@ pub async fn snapshot(
         let mut lock_map = locks.lock().await;
         if lock_map.contains_key(&id) {
             drop(lock_map);
-            return error_response(
-                StatusCode::CONFLICT,
-                "snapshot already in progress for this camera",
-            );
+        return ApiError::conflict("snapshot already in progress for this camera").into_response();
         }
         lock_map.insert(id.clone(), ());
         // Create a guard that removes the lock on drop
@@ -304,11 +298,11 @@ pub async fn snapshot(
         }
         Ok(Err(e)) => {
             tracing::error!(error = %e, camera_id = %id, "snapshot capture failed");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to capture snapshot")
+            ApiError::internal("failed to capture snapshot").into_response()
         }
         Err(_) => {
             tracing::warn!(camera_id = %id, "snapshot capture timed out after 30s");
-            error_response(StatusCode::GATEWAY_TIMEOUT, "snapshot capture timed out")
+            ApiError::gateway_timeout("snapshot capture timed out").into_response()
         }
     }
 }
