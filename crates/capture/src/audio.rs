@@ -189,12 +189,14 @@ fn build_f32_stream(
                         (clamped * i16::MAX as f32) as i16
                     })
                     .collect();
+                let db_level = compute_rms_db(&samples);
                 let frame = AudioFrame {
                     timestamp: std::time::Instant::now(),
                     sample_rate,
                     channels,
                     samples,
                 };
+                observability::metrics::set_audio_level("default", db_level);
                 if let Err(e) = tx_clone.try_send(frame) {
                     if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
                         warn!("Audio channel full, dropping f32 frame");
@@ -223,12 +225,14 @@ fn build_i16_stream(
         .build_input_stream(
             config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let db_level = compute_rms_db(data);
                 let frame = AudioFrame {
                     timestamp: std::time::Instant::now(),
                     sample_rate,
                     channels,
                     samples: data.to_vec(),
                 };
+                observability::metrics::set_audio_level("default", db_level);
                 if let Err(e) = tx_clone.try_send(frame) {
                     if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
                         warn!("Audio channel full, dropping i16 frame");
@@ -265,12 +269,14 @@ fn build_u16_stream(
                         s.wrapping_sub(32768) as i16
                     })
                     .collect();
+                let db_level = compute_rms_db(&samples);
                 let frame = AudioFrame {
                     timestamp: std::time::Instant::now(),
                     sample_rate,
                     channels,
                     samples,
                 };
+                observability::metrics::set_audio_level("default", db_level);
                 if let Err(e) = tx_clone.try_send(frame) {
                     if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
                         warn!("Audio channel full, dropping u16 frame");
@@ -284,6 +290,39 @@ fn build_u16_stream(
         )
         .context("failed to build u16 input stream")?;
     Ok(stream)
+}
+
+// ---------------------------------------------------------------------------
+// Audio level metering
+// ---------------------------------------------------------------------------
+
+/// Compute the RMS level in dBFS from a slice of i16 PCM samples.
+///
+/// Returns a value in the range [-96.0, 0.0] where 0.0 dBFS is maximum
+/// amplitude. Values below -96.0 dBFS are clamped to -96.0 (effective
+/// silence).
+pub fn compute_rms_db(samples: &[i16]) -> f64 {
+    if samples.is_empty() {
+        return -96.0;
+    }
+
+    let sum_sq: f64 = samples
+        .iter()
+        .map(|&s| {
+            let f = s as f64;
+            f * f
+        })
+        .sum();
+
+    let rms = (sum_sq / samples.len() as f64).sqrt();
+    let max_amplitude = i16::MAX as f64;
+
+    if rms <= 0.0 {
+        return -96.0;
+    }
+
+    let db = 20.0 * (rms / max_amplitude).log10();
+    db.max(-96.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +447,69 @@ mod tests {
         assert!(
             remaining.is_none(),
             "channel should be closed after AudioCapture is dropped"
+        );
+    }
+
+    #[test]
+    fn test_compute_rms_db_silence() {
+        // All-zero samples should give -96.0 dBFS (silence floor).
+        let samples = vec![0i16; 480];
+        let db = compute_rms_db(&samples);
+        assert!(
+            (db - (-96.0)).abs() < 0.01,
+            "silence should be -96.0 dBFS, got {}",
+            db
+        );
+    }
+
+    #[test]
+    fn test_compute_rms_db_full_scale_sine() {
+        // A full-scale sine wave at amplitude 32767 has RMS = 32767/sqrt(2),
+        // giving approximately -3.01 dBFS.
+        let n = 480;
+        let amplitude: i16 = 32767;
+        let samples: Vec<i16> = (0..n)
+            .map(|i| {
+                let phase = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+                (amplitude as f64 * phase.sin()) as i16
+            })
+            .collect();
+        let db = compute_rms_db(&samples);
+        // Full-scale sine ≈ -3.01 dBFS, allow small rounding tolerance.
+        let expected = -3.01;
+        assert!(
+            (db - expected).abs() < 0.1,
+            "full-scale sine should be approx {expected} dBFS, got {db}",
+        );
+    }
+
+    #[test]
+    fn test_compute_rms_db_half_scale_sine() {
+        // A half-scale sine wave at amplitude 16384 has RMS ≈ -9.03 dBFS.
+        let n = 480;
+        let amplitude: i16 = 16384;
+        let samples: Vec<i16> = (0..n)
+            .map(|i| {
+                let phase = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+                (amplitude as f64 * phase.sin()) as i16
+            })
+            .collect();
+        let db = compute_rms_db(&samples);
+        // Half-scale sine ≈ -9.03 dBFS, allow small rounding tolerance.
+        let expected = -9.03;
+        assert!(
+            (db - expected).abs() < 0.1,
+            "half-scale sine should be approx {expected} dBFS, got {db}",
+        );
+    }
+
+    #[test]
+    fn test_compute_rms_db_empty() {
+        let db = compute_rms_db(&[]);
+        assert!(
+            (db - (-96.0)).abs() < 0.01,
+            "empty slice should return -96.0, got {}",
+            db
         );
     }
 }

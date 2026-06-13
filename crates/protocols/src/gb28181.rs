@@ -19,6 +19,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
+use observability::metrics;
 
 use crate::rtp::{H264_PAYLOAD_TYPE, RtpHeaderFlags, RtpPacket};
 use sha2::{Digest, Sha256};
@@ -1216,6 +1217,7 @@ impl SipDeviceClient {
 
     /// Build an initial (unauthenticated) SIP REGISTER request.
     pub fn build_register(&self) -> SipMessage {
+        metrics::increment_gb28181_register_status("registered");
         build_register_request(
             &self.device_id,
             &self.local_ip,
@@ -1230,6 +1232,7 @@ impl SipDeviceClient {
 
     /// Build a SIP REGISTER request with Digest authentication.
     pub fn build_register_with_auth(&self, auth: &DigestAuthParams) -> SipMessage {
+        metrics::increment_gb28181_register_status("registered");
         let uri = format!("sip:{}@{}", self.device_id, self.domain);
         let auth_header = build_digest_auth(
             &self.username,
