@@ -400,6 +400,31 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("RTMP Push enabled (per-stream via streaming crate)");
     }
 
+    // Periodic session cleanup — runs every 5 minutes to purge expired auth sessions
+    let cleanup_db_path = db_path.clone();
+    let cleanup_handle = tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(300);
+        loop {
+            tokio::time::sleep(interval).await;
+            let path = cleanup_db_path.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                let conn = web::db::init_db(&path)?;
+                let removed = security::auth::cleanup_expired_sessions(&conn)?;
+                if removed > 0 {
+                    tracing::info!(expired_sessions = removed, "Cleaned up expired sessions");
+                } else {
+                    tracing::debug!("Session cleanup: no expired sessions");
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            {
+                tracing::warn!(error = %e, "Session cleanup task failed");
+            }
+        }
+    });
+    protocol_handles.push(cleanup_handle);
+
     // Shutdown coordination signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
