@@ -7,9 +7,8 @@
 //! - Chunk data
 
 use anyhow::{Context, Result, bail};
+use observability::metrics;
 use std::io::Read;
-
-/// Chunk type (fmt field in basic header)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkType {
     /// Type 0: 11-byte header (absolute timestamp, full message info)
@@ -420,7 +419,20 @@ impl ChunkStreamParser {
 
     /// Parse a chunk from reader
     pub fn parse_chunk<R: Read>(&mut self, reader: &mut R) -> Result<Option<Vec<u8>>> {
-        // Parse basic header
+        let result = self.parse_chunk_inner(reader);
+        match &result {
+            Ok(Some(data)) => {
+                metrics::increment_rtmp_push_bytes(data.len() as u64);
+            }
+            Err(_) => {
+                metrics::increment_rtmp_push_errors();
+            }
+            _ => {}
+        }
+        result
+    }
+
+    fn parse_chunk_inner<R: Read>(&mut self, reader: &mut R) -> Result<Option<Vec<u8>>> {
         let basic_header = ChunkBasicHeader::parse(reader)?;
         tracing::trace!(
             "Chunk: type={:?}, cs_id={}",

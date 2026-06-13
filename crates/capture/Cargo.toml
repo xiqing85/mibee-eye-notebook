@@ -11,3 +11,4 @@ tracing.workspace = true
 anyhow.workspace = true
 nokhwa = { workspace = true, features = ["input-native", "camera-sync-impl"] }
 cpal.workspace = true
+observability = { path = "../observability" }
