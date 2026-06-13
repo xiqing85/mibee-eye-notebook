@@ -404,6 +404,13 @@ pub struct ChunkStreamParser {
     pub chunk_size: u32,
     /// Accumulated message for current chunk
     pub current_message: Vec<u8>,
+    /// Window acknowledgement size in bytes (0 = ack disabled).
+    /// Set by the WindowAckSize protocol control message.
+    ack_window_size: u32,
+    /// Total bytes received since the connection started (Ack sequence number).
+    total_bytes_received: u64,
+    /// Bytes received since the last Acknowledgement was sent.
+    bytes_since_last_ack: u64,
 }
 
 impl ChunkStreamParser {
@@ -479,6 +486,10 @@ impl ChunkStreamParser {
         state.received_bytes += chunk_data_size;
         self.current_message.extend_from_slice(&chunk_data);
 
+        // Track received bytes for Acknowledgement flow
+        self.total_bytes_received += chunk_data_size as u64;
+        self.bytes_since_last_ack += chunk_data_size as u64;
+
         // Check if extended timestamp is present
         if header.extended {
             let mut ext_ts = [0u8; 4];
@@ -491,6 +502,10 @@ impl ChunkStreamParser {
         if state.received_bytes >= header.message_length as usize {
             let message = std::mem::take(&mut self.current_message);
             state.received_bytes = 0;
+            // Auto-handle WindowAckSize so callers don't need to detect it
+            if header.message_type == MessageType::WindowAckSize {
+                self.handle_window_ack_size(&message)?;
+            }
             tracing::debug!(
                 "Complete message: type={:?}, length={}, cs_id={}",
                 header.message_type,
@@ -521,16 +536,37 @@ impl ChunkStreamParser {
         Ok(())
     }
 
-    /// Handle WindowAckSize control message
+    /// Handle WindowAckSize control message.
+    ///
+    /// Stores the window size for the Acknowledgement flow. After receiving bytes
+    /// equal to half this window, [`take_ack_if_needed`](Self::take_ack_if_needed)
+    /// will return a sequence number that the caller should send back as an
+    /// Acknowledgement control message.
     pub fn handle_window_ack_size(&mut self, data: &[u8]) -> Result<()> {
         if data.len() < 4 {
             bail!("WindowAckSize data too short: {}", data.len());
         }
 
         let window_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        tracing::info!("Window acknowledgement size: {}", window_size);
-        // TODO: Implement acknowledgment logic
+        self.ack_window_size = window_size;
+        tracing::info!(window_size, "Window acknowledgement size set");
         Ok(())
+    }
+
+    /// Check if an Acknowledgement message should be sent.
+    ///
+    /// Returns the total-bytes-received sequence number when the byte count since
+    /// the last Ack reaches half the window size. The counter is reset when
+    /// `Some` is returned. Returns `None` when no ack is needed.
+    pub fn take_ack_if_needed(&mut self) -> Option<u32> {
+        if self.ack_window_size > 0
+            && self.bytes_since_last_ack >= (self.ack_window_size / 2) as u64
+        {
+            self.bytes_since_last_ack = 0;
+            Some(self.total_bytes_received as u32)
+        } else {
+            None
+        }
     }
 }
 
@@ -755,6 +791,33 @@ mod tests {
         // Set window ack size to 2500000
         let data = 2500000u32.to_be_bytes();
         parser.handle_window_ack_size(&data).unwrap();
-        // Just verify it doesn't error
+        assert_eq!(parser.ack_window_size, 2500000);
+    }
+
+    #[test]
+    fn test_acknowledgement_threshold() {
+        let mut parser = ChunkStreamParser::new();
+
+        // No window set — never needs ack
+        assert!(parser.take_ack_if_needed().is_none());
+
+        // Set window ack size to 100 (threshold = 50)
+        let data = 100u32.to_be_bytes();
+        parser.handle_window_ack_size(&data).unwrap();
+
+        // 49 bytes — below threshold
+        parser.total_bytes_received = 49;
+        parser.bytes_since_last_ack = 49;
+        assert!(parser.take_ack_if_needed().is_none());
+
+        // 50 bytes — at threshold
+        parser.bytes_since_last_ack = 50;
+        let ack = parser.take_ack_if_needed();
+        assert!(ack.is_some());
+        assert_eq!(ack.unwrap(), 49); // total bytes received
+        assert_eq!(parser.bytes_since_last_ack, 0); // counter reset
+
+        // After ack, need another 50 bytes
+        assert!(parser.take_ack_if_needed().is_none());
     }
 }
