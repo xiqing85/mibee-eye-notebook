@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{Mutex, watch, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tower_http::cors::CorsLayer;
 
 use crate::assets;

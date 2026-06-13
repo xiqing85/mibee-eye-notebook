@@ -322,7 +322,11 @@ pub struct DatabaseConfig {
 fn default_database_path() -> String {
     // XDG default: ~/.local/share/notebook-cam/mibee_rec.db
     if let Some(data_dir) = dirs::data_dir() {
-        data_dir.join("notebook-cam").join("mibee_rec.db").to_string_lossy().to_string()
+        data_dir
+            .join("notebook-cam")
+            .join("mibee_rec.db")
+            .to_string_lossy()
+            .to_string()
     } else {
         // Fallback to /tmp if XDG data dir is not available
         "/tmp/notebook-cam/mibee_rec.db".to_string()
@@ -399,15 +403,25 @@ impl AppConfig {
         }
         // RTSP port
         if self.rtsp.server_port <= 1024 {
-            anyhow::bail!("rtsp.server_port: must be > 1024, got {}", self.rtsp.server_port);
+            anyhow::bail!(
+                "rtsp.server_port: must be > 1024, got {}",
+                self.rtsp.server_port
+            );
         }
         // Port conflict
         if self.web.port == self.rtsp.server_port {
-            anyhow::bail!("web.port ({}) must not equal rtsp.server_port ({})", self.web.port, self.rtsp.server_port);
+            anyhow::bail!(
+                "web.port ({}) must not equal rtsp.server_port ({})",
+                self.web.port,
+                self.rtsp.server_port
+            );
         }
         // GB28181 SIP port (if enabled)
         if self.gb28181.enabled && self.gb28181.platform_sip_port <= 1024 {
-            anyhow::bail!("gb28181.platform_sip_port: must be > 1024, got {}", self.gb28181.platform_sip_port);
+            anyhow::bail!(
+                "gb28181.platform_sip_port: must be > 1024, got {}",
+                self.gb28181.platform_sip_port
+            );
         }
         // Rate limit
         if self.security.rate_limit_max == 0 {
@@ -855,11 +869,17 @@ enabled = false
     #[test]
     fn test_validate_web_port_low_rejected() {
         let cfg = AppConfig {
-            web: WebConfig { port: 80, host: "0.0.0.0".into() },
+            web: WebConfig {
+                port: 80,
+                host: "0.0.0.0".into(),
+            },
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("web.port"), "error should mention web.port, got: {err}");
+        assert!(
+            err.contains("web.port"),
+            "error should mention web.port, got: {err}"
+        );
     }
 
     #[test]
@@ -869,29 +889,47 @@ enabled = false
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("rtsp.server_port"), "error should mention rtsp.server_port, got: {err}");
+        assert!(
+            err.contains("rtsp.server_port"),
+            "error should mention rtsp.server_port, got: {err}"
+        );
     }
 
     #[test]
     fn test_validate_port_conflict_rejected() {
         let cfg = AppConfig {
-            web: WebConfig { port: 8554, host: "0.0.0.0".into() },
+            web: WebConfig {
+                port: 8554,
+                host: "0.0.0.0".into(),
+            },
             rtsp: RtspConfig { server_port: 8554 },
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("web.port"), "error should mention port conflict, got: {err}");
-        assert!(err.contains("rtsp.server_port"), "error should mention rtsp.server_port, got: {err}");
+        assert!(
+            err.contains("web.port"),
+            "error should mention port conflict, got: {err}"
+        );
+        assert!(
+            err.contains("rtsp.server_port"),
+            "error should mention rtsp.server_port, got: {err}"
+        );
     }
 
     #[test]
     fn test_validate_rate_limit_zero_rejected() {
         let cfg = AppConfig {
-            security: SecurityConfig { rate_limit_max: 0, rate_limit_window_secs: 60 },
+            security: SecurityConfig {
+                rate_limit_max: 0,
+                rate_limit_window_secs: 60,
+            },
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("rate_limit_max"), "error should mention rate_limit_max, got: {err}");
+        assert!(
+            err.contains("rate_limit_max"),
+            "error should mention rate_limit_max, got: {err}"
+        );
     }
 
     #[test]
@@ -905,7 +943,10 @@ enabled = false
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("register_interval_secs"), "error should mention register_interval_secs, got: {err}");
+        assert!(
+            err.contains("register_interval_secs"),
+            "error should mention register_interval_secs, got: {err}"
+        );
     }
 
     #[test]
@@ -919,7 +960,10 @@ enabled = false
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("reconnect_interval_secs"), "error should mention reconnect_interval_secs, got: {err}");
+        assert!(
+            err.contains("reconnect_interval_secs"),
+            "error should mention reconnect_interval_secs, got: {err}"
+        );
     }
 
     #[test]
@@ -933,7 +977,10 @@ enabled = false
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("max_reconnect_attempts"), "error should mention max_reconnect_attempts, got: {err}");
+        assert!(
+            err.contains("max_reconnect_attempts"),
+            "error should mention max_reconnect_attempts, got: {err}"
+        );
     }
 
     #[test]
@@ -947,7 +994,9 @@ enabled = false
             ..AppConfig::default()
         };
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("platform_sip_port"), "error should mention platform_sip_port, got: {err}");
+        assert!(
+            err.contains("platform_sip_port"),
+            "error should mention platform_sip_port, got: {err}"
+        );
     }
-
 }

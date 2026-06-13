@@ -3,8 +3,8 @@ use clap::Parser;
 use protocols::onvif::{OnvifDeviceConfig, WsDiscoveryServer};
 use protocols::rtsp_server::{RtspServer, RtspServerConfig};
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::net::Ipv4Addr;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         let password = config.gb28181.password.clone();
         let sip_domain = config.gb28181.sip_domain.clone();
         let register_interval = config.gb28181.register_interval_secs;
-        
+
         let gb28181_handle = tokio::spawn(async move {
             // Parse SIP server address
             let sip_server_addr: SocketAddr = match format!("{}:{}", sip_addr, sip_port).parse() {
@@ -122,17 +122,18 @@ async fn main() -> anyhow::Result<()> {
                     return;
                 }
             };
-            
+
             // Get local IP address for SIP messages
-            let local_ip = get_local_ip_for_server(&sip_server_addr).unwrap_or_else(|_| "127.0.0.1".to_string());
-            
+            let local_ip = get_local_ip_for_server(&sip_server_addr)
+                .unwrap_or_else(|_| "127.0.0.1".to_string());
+
             tracing::info!(
                 device_id = %device_id,
                 sip_server = %sip_server_addr,
                 local_ip = %local_ip,
                 "GB28181 Device SIP registration starting"
             );
-            
+
             // Bind UDP socket for SIP communication
             let sip_socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
                 Ok(socket) => socket,
@@ -141,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
                     return;
                 }
             };
-            
+
             // Create SIP device client
             let mut sip_client = protocols::gb28181::SipDeviceClient::new(
                 &device_id,
@@ -152,29 +153,33 @@ async fn main() -> anyhow::Result<()> {
                 &password,
                 register_interval as u32,
             );
-            
+
             // Track processed INVITEs by Call-ID for deduplication
             use std::collections::HashSet;
             use std::sync::Arc;
             use tokio::sync::Mutex;
-            let processed_invites: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-            
+            let processed_invites: Arc<Mutex<HashSet<String>>> =
+                Arc::new(Mutex::new(HashSet::new()));
+
             // Registration state
             let mut registered = false;
             let mut retry_count = 0u32;
             let mut backoff_secs = 1u64;
             const MAX_RETRIES: u32 = 5;
-            
+
             // SIP message buffer
             let mut recv_buf = [0u8; 8192];
-            
+
             loop {
                 // Initial registration or re-registration
                 if !registered {
                     let register = sip_client.build_register();
                     let serialized = register.serialize();
-                    
-                    if let Err(e) = sip_socket.send_to(serialized.as_bytes(), sip_server_addr).await {
+
+                    if let Err(e) = sip_socket
+                        .send_to(serialized.as_bytes(), sip_server_addr)
+                        .await
+                    {
                         tracing::warn!(error = %e, "Failed to send REGISTER");
                         retry_count += 1;
                         if retry_count >= MAX_RETRIES {
@@ -186,21 +191,27 @@ async fn main() -> anyhow::Result<()> {
                         tokio::time::sleep(tokio::time::Duration::from_secs(backoff_secs)).await;
                         continue;
                     }
-                    
+
                     tracing::info!("REGISTER sent to {}", sip_server_addr);
                 }
-                
+
                 // Wait for response with timeout
                 match tokio::time::timeout(
                     tokio::time::Duration::from_secs(5),
                     sip_socket.recv_from(&mut recv_buf),
-                ).await {
+                )
+                .await
+                {
                     Ok(Ok((len, from))) => {
                         if from != sip_server_addr {
-                            tracing::debug!("Ignoring SIP message from {} (expected {})", from, sip_server_addr);
+                            tracing::debug!(
+                                "Ignoring SIP message from {} (expected {})",
+                                from,
+                                sip_server_addr
+                            );
                             continue;
                         }
-                        
+
                         let data = &recv_buf[..len];
                         let msg_str = match std::str::from_utf8(data) {
                             Ok(s) => s,
@@ -209,14 +220,18 @@ async fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                         };
-                        
+
                         match protocols::gb28181::SipMessage::parse(msg_str) {
                             Ok(msg) => {
                                 if let Some(status_code) = msg.status_code {
                                     // Response to our request
                                     match status_code {
                                         protocols::gb28181::SipStatusCode::Ok => {
-                                            tracing::debug!("SIP response: {} {}", status_code.code(), status_code.reason());
+                                            tracing::debug!(
+                                                "SIP response: {} {}",
+                                                status_code.code(),
+                                                status_code.reason()
+                                            );
                                             if !registered {
                                                 registered = true;
                                                 retry_count = 0;
@@ -225,16 +240,27 @@ async fn main() -> anyhow::Result<()> {
                                             }
                                         }
                                         protocols::gb28181::SipStatusCode::Unauthorized => {
-                                            tracing::info!("Received 401 Unauthorized, sending authenticated REGISTER");
+                                            tracing::info!(
+                                                "Received 401 Unauthorized, sending authenticated REGISTER"
+                                            );
                                             match protocols::gb28181::parse_401_challenge(&msg) {
                                                 Ok(auth_params) => {
                                                     sip_client.inc_cseq();
-                                                    let auth_register = sip_client.build_register_with_auth(&auth_params);
+                                                    let auth_register = sip_client
+                                                        .build_register_with_auth(&auth_params);
                                                     let serialized = auth_register.serialize();
-                                                    if let Err(e) = sip_socket.send_to(serialized.as_bytes(), sip_server_addr).await {
+                                                    if let Err(e) = sip_socket
+                                                        .send_to(
+                                                            serialized.as_bytes(),
+                                                            sip_server_addr,
+                                                        )
+                                                        .await
+                                                    {
                                                         tracing::warn!(error = %e, "Failed to send authenticated REGISTER");
                                                     } else {
-                                                        tracing::info!("Authenticated REGISTER sent");
+                                                        tracing::info!(
+                                                            "Authenticated REGISTER sent"
+                                                        );
                                                     }
                                                 }
                                                 Err(e) => {
@@ -243,7 +269,11 @@ async fn main() -> anyhow::Result<()> {
                                             }
                                         }
                                         _ => {
-                                            tracing::debug!("SIP response: {} {}", status_code.code(), status_code.reason());
+                                            tracing::debug!(
+                                                "SIP response: {} {}",
+                                                status_code.code(),
+                                                status_code.reason()
+                                            );
                                         }
                                     }
                                 } else if let Some(method) = msg.method {
@@ -251,8 +281,9 @@ async fn main() -> anyhow::Result<()> {
                                     match method {
                                         protocols::gb28181::SipMethod::Invite => {
                                             // Extract Call-ID for deduplication
-                                            let call_id = msg.get_header("Call-ID").unwrap_or("").to_string();
-                                            
+                                            let call_id =
+                                                msg.get_header("Call-ID").unwrap_or("").to_string();
+
                                             let mut invites = processed_invites.lock().await;
                                             if invites.contains(&call_id) {
                                                 tracing::debug!(call_id = %call_id, "Duplicate INVITE, ignoring");
@@ -261,9 +292,9 @@ async fn main() -> anyhow::Result<()> {
                                             }
                                             invites.insert(call_id.clone());
                                             drop(invites);
-                                            
+
                                             tracing::info!(call_id = %call_id, "Received INVITE");
-                                            
+
                                             // Parse INVITE to get stream info
                                             match protocols::gb28181::parse_invite(&msg) {
                                                 Ok(invite_info) => {
@@ -273,35 +304,47 @@ async fn main() -> anyhow::Result<()> {
                                                         media_port = %invite_info.media_port,
                                                         "INVITE parsed successfully"
                                                     );
-                                                    
+
                                                     // Build SDP response (we're sending, so 'sendonly')
                                                     let local_sdp = format!(
                                                         "v=0\r\no={} 0 0 IN IP4 {}\r\ns=Play\r\nc=IN IP4 {}\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\na=ssrc:{}\r\n",
-                                                        device_id, local_ip, local_ip, invite_info.ssrc
+                                                        device_id,
+                                                        local_ip,
+                                                        local_ip,
+                                                        invite_info.ssrc
                                                     );
-                                                    
+
                                                     // Build and send 200 OK response
                                                     let local_tag = sip_client.cseq;
                                                     sip_client.inc_cseq();
-                                                    let cseq = msg.get_header("CSeq")
+                                                    let cseq = msg
+                                                        .get_header("CSeq")
                                                         .and_then(|s| s.split_whitespace().next())
                                                         .and_then(|s| s.parse::<u32>().ok())
                                                         .unwrap_or(sip_client.cseq);
-                                                    let response = protocols::gb28181::build_invite_response(
-                                                        &msg,
-                                                        &device_id,
-                                                        &local_sdp,
-                                                        local_tag,
-                                                        cseq,
-                                                    );
+                                                    let response =
+                                                        protocols::gb28181::build_invite_response(
+                                                            &msg, &device_id, &local_sdp,
+                                                            local_tag, cseq,
+                                                        );
                                                     let serialized = response.serialize();
-                                                    if let Err(e) = sip_socket.send_to(serialized.as_bytes(), sip_server_addr).await {
+                                                    if let Err(e) = sip_socket
+                                                        .send_to(
+                                                            serialized.as_bytes(),
+                                                            sip_server_addr,
+                                                        )
+                                                        .await
+                                                    {
                                                         tracing::error!(error = %e, call_id = %call_id, "Failed to send 200 OK to INVITE");
                                                     } else {
                                                         tracing::info!(call_id = %call_id, "Sent 200 OK to INVITE");
                                                         // TODO: Start RTP push to invite_info.media_address:invite_info.media_port
                                                         // This would require integrating with the streaming hub to get frames
-                                                        tracing::warn!("RTP push not yet implemented - frames would be sent to {}:{}", invite_info.media_address, invite_info.media_port);
+                                                        tracing::warn!(
+                                                            "RTP push not yet implemented - frames would be sent to {}:{}",
+                                                            invite_info.media_address,
+                                                            invite_info.media_port
+                                                        );
                                                     }
                                                 }
                                                 Err(e) => {
@@ -333,7 +376,10 @@ async fn main() -> anyhow::Result<()> {
                             sip_client.inc_cseq();
                             let register = sip_client.build_register();
                             let serialized = register.serialize();
-                            if let Err(e) = sip_socket.send_to(serialized.as_bytes(), sip_server_addr).await {
+                            if let Err(e) = sip_socket
+                                .send_to(serialized.as_bytes(), sip_server_addr)
+                                .await
+                            {
                                 tracing::warn!(error = %e, "Failed to send re-registration");
                                 registered = false;
                                 retry_count = 1;
@@ -479,7 +525,7 @@ async fn reset_password_cli(args: &Args) -> anyhow::Result<()> {
 /// then reading the local address. This works for both IPv4 and IPv6.
 fn get_local_ip_for_server(server_addr: &SocketAddr) -> anyhow::Result<String> {
     use std::net::UdpSocket;
-    
+
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.connect(server_addr)?;
     let local_addr = socket.local_addr()?;
@@ -512,10 +558,7 @@ fn get_onvif_xaddrs(port: u16) -> Vec<String> {
                     let sin = addr as *const libc::sockaddr as *const libc::sockaddr_in;
                     let ip = Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
                     if !ip.is_loopback() && !ip.is_unspecified() {
-                        xaddrs.push(format!(
-                            "http://{}:{}/onvif/device_service",
-                            ip, port
-                        ));
+                        xaddrs.push(format!("http://{}:{}/onvif/device_service", ip, port));
                     }
                 }
             }

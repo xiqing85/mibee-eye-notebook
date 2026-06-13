@@ -135,7 +135,10 @@ mod tests {
         let ntp = system_time_to_ntp(std::time::SystemTime::UNIX_EPOCH);
         // At Unix epoch, NTP timestamp should be exactly NTP_EPOCH_OFFSET seconds
         let expected_secs = NTP_EPOCH_OFFSET << 32;
-        assert_eq!(ntp, expected_secs, "NTP at Unix epoch should be {NTP_EPOCH_OFFSET}s");
+        assert_eq!(
+            ntp, expected_secs,
+            "NTP at Unix epoch should be {NTP_EPOCH_OFFSET}s"
+        );
 
         let sr = build_sender_report(0x12345678, ntp, 12345, 100, 50000);
 
@@ -167,7 +170,10 @@ mod tests {
         // At the Unix epoch (1970-01-01 00:00:00 UTC), NTP seconds = NTP_EPOCH_OFFSET
         let ntp = system_time_to_ntp(std::time::UNIX_EPOCH);
         let expected_secs = NTP_EPOCH_OFFSET << 32;
-        assert_eq!(ntp, expected_secs, "NTP at Unix epoch should be {NTP_EPOCH_OFFSET}s");
+        assert_eq!(
+            ntp, expected_secs,
+            "NTP at Unix epoch should be {NTP_EPOCH_OFFSET}s"
+        );
     }
 
     #[test]
@@ -214,9 +220,9 @@ mod tests {
         );
 
         let expected: Vec<u8> = vec![
-            0x80,          // V=2, P=0, RC=0
-            200,           // PT=200 (SR)
-            0x00, 0x06,    // length=6
+            0x80, // V=2, P=0, RC=0
+            200,  // PT=200 (SR)
+            0x00, 0x06, // length=6
             0x01, 0x02, 0x03, 0x04, // SSRC
             0x00, 0x00, 0x00, 0x01, // NTP seconds=1
             0x00, 0x00, 0x00, 0x02, // NTP fraction=2
