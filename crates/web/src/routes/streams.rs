@@ -14,6 +14,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, timeout};
+use uuid::Uuid;
 
 use crate::db;
 use crate::errors::ApiError;
@@ -51,6 +52,13 @@ pub async fn start_stream(
         .await
     {
         Ok(info) => {
+            // Log stream session start (best-effort).
+            let session_id = Uuid::new_v4().to_string();
+            {
+                let conn = db.lock().await;
+                let _ = db::insert_stream_session(&conn, &session_id, &id);
+            }
+
             // Update camera status to "running".
             let conn = db.lock().await;
             let now = crate::routes::chrono_now();
@@ -108,6 +116,13 @@ pub async fn stop_stream(
 
     match stream_manager.stop_stream(&id).await {
         Ok(_info) => {
+            // Log stream session end (best-effort).
+            // TODO: wire actual stats (bytes/frames/errors) from StreamManager when available.
+            {
+                let conn = db.lock().await;
+                let _ = db::finalize_stream_session(&conn, &id, 0, 0, 0);
+            }
+
             // Update DB status.
             let conn = db.lock().await;
             let now = crate::routes::chrono_now();
@@ -130,6 +145,12 @@ pub async fn stop_stream(
             let msg = e.to_string();
             // Idempotent stop: if no active stream, still mark DB as stopped.
             if msg.contains("no active stream") {
+                // Still try to finalize any open session (may be a no-op).
+                {
+                    let conn = db.lock().await;
+                    let _ = db::finalize_stream_session(&conn, &id, 0, 0, 0);
+                }
+
                 let conn = db.lock().await;
                 let now = crate::routes::chrono_now();
                 let updated = db::CameraRow {

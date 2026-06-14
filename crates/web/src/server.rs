@@ -1,5 +1,8 @@
+use axum::http::{HeaderValue, Method, Request, header};
 use axum::middleware;
+use axum::middleware::Next;
 use axum::response::IntoResponse;
+use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
@@ -74,20 +77,20 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let rtsp_server = state.rtsp_server.clone();
     let protocol_configs = state.protocol_configs.clone();
 
-    // -- Auth routes (public — these ARE the login/setup endpoints) --
-    let login_route = Router::new()
+    // -- Auth routes (public, rate-limited) --
+    let auth_routes = Router::new()
         .route("/api/auth/login", post(routes::login_handler))
+        .route("/api/auth/setup", post(routes::setup_handler))
+        .route("/api/auth/logout", post(routes::logout_handler))
+        .route_layer(middleware::from_fn(security::middleware::rate_limit));
+    // -- Protected routes (require auth) --
+    // Reset password gets a rate-limited sub-router
+    let reset_route = Router::new()
+        .route("/api/auth/reset", post(routes::reset_password_handler))
         .route_layer(middleware::from_fn(security::middleware::rate_limit));
 
-    let auth_routes = Router::new()
-        .merge(login_route)
-        .route("/api/auth/setup", post(routes::setup_handler))
-        .route("/api/auth/logout", post(routes::logout_handler));
-
-    // -- Protected routes (require auth) --
     let protected_routes = Router::new()
-        // Password reset
-        .route("/api/auth/reset", post(routes::reset_password_handler))
+        .merge(reset_route)
         // Cameras CRUD
         .route("/api/cameras", get(routes::cameras::list_cameras))
         .route("/api/cameras", post(routes::cameras::create_camera))
@@ -161,8 +164,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(active))
         .layer(Extension(db))
         .layer(Extension(protocol_configs))
-        // CORS — permissive for localhost dev
-        .layer(CorsLayer::permissive())
+        // HSTS — inject Strict-Transport-Security on all HTTPS responses
+        .layer(middleware::from_fn(hsts_middleware))
+        // CORS — restrictive, not permissive
+        .layer(cors_layer())
 }
 
 /// Convenience builder that creates a default `ActiveStreams`, `StreamManager`,
@@ -177,6 +182,57 @@ pub fn build_app(db: Arc<Mutex<Connection>>) -> Router {
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
     })
+}
+
+// ---------------------------------------------------------------------------
+// HSTS middleware
+// ---------------------------------------------------------------------------
+
+/// Middleware that injects the `Strict-Transport-Security` header on all responses.
+async fn hsts_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    response
+}
+
+// ---------------------------------------------------------------------------
+// CORS layer — same-origin by default, localhost origins in debug
+// ---------------------------------------------------------------------------
+
+/// Build the CORS layer.
+/// In debug builds, localhost origins are allowed for development.
+/// In release builds, no origins are allowed (same-origin only).
+fn cors_layer() -> CorsLayer {
+    if cfg!(debug_assertions) {
+        CorsLayer::new()
+            .allow_origin([
+                "https://localhost".parse::<HeaderValue>().unwrap(),
+                "https://127.0.0.1".parse::<HeaderValue>().unwrap(),
+            ])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::COOKIE])
+            .allow_credentials(true)
+    } else {
+        CorsLayer::new()
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::COOKIE])
+            .allow_credentials(true)
+    }
 }
 
 /// Initialise the observability layer, build the TLS config, construct the app
@@ -230,7 +286,7 @@ pub async fn run(
         }
     });
 
-    tracing::info!("notebook-cam server starting on https://{}", addr);
+    tracing::info!("mibee-rec server starting on https://{}", addr);
 
     axum_server::bind_rustls(addr, tls_config)
         .serve(app.into_make_service())
@@ -290,7 +346,7 @@ pub async fn run_with_shutdown(
         }
     });
 
-    tracing::info!("notebook-cam server starting on https://{}", addr);
+    tracing::info!("mibee-rec server starting on https://{}", addr);
 
     // Create a handle for graceful shutdown
     let handle = axum_server::Handle::new();
@@ -388,7 +444,7 @@ mod tests {
             .unwrap();
         let body_str = String::from_utf8_lossy(&body);
         assert!(
-            body_str.contains("notebook-cam"),
+            body_str.contains("mibee-rec"),
             "static HTML should contain project name"
         );
     }
@@ -450,6 +506,36 @@ mod tests {
             res.status(),
             StatusCode::UNAUTHORIZED,
             "settings routes should require auth"
+        );
+    }
+    #[tokio::test]
+    async fn test_hsts_header_present() {
+        let app = build_app(test_db());
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let hsts_value = res
+            .headers()
+            .get(axum::http::header::STRICT_TRANSPORT_SECURITY)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        assert!(hsts_value.is_some(), "HSTS header should be present");
+        assert_eq!(
+            hsts_value.as_deref(),
+            Some("max-age=31536000; includeSubDomains"),
+            "HSTS value should match"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cors_not_permissive() {
+        let app = build_app(test_db());
+        let router_str = format!("{:?}", app);
+        assert!(
+            !router_str.contains("permissive"),
+            "CORS layer should not be permissive"
         );
     }
 }

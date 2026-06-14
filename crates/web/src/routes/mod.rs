@@ -256,14 +256,15 @@ pub async fn reset_password_handler(
     let conn = db.lock().await;
     match security::auth::reset_password(&conn, &user.0, &body.old_password, &body.new_password) {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response(),
+        Err(security::auth::AuthError::WrongPassword) => {
+            ApiError::unauthorized("Old password is incorrect").into_response()
+        }
+        Err(security::auth::AuthError::UserNotFound(u)) => {
+            ApiError::not_found(format!("User '{}' not found", u)).into_response()
+        }
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("incorrect") || msg.contains("not found") {
-                ApiError::unauthorized(&msg).into_response()
-            } else {
-                tracing::error!(error = %msg, "password reset failed");
-                ApiError::internal("internal error").into_response()
-            }
+            tracing::error!(error = %e, "password reset failed");
+            ApiError::internal("internal error").into_response()
         }
     }
 }

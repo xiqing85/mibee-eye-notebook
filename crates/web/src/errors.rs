@@ -161,6 +161,20 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+impl From<serde_json::Error> for ApiError {
+    fn from(e: serde_json::Error) -> Self {
+        ApiError::bad_request(format!("invalid JSON: {}", e))
+    }
+}
+
+impl From<rusqlite::Error> for ApiError {
+    fn from(e: rusqlite::Error) -> Self {
+        match e {
+            rusqlite::Error::QueryReturnedNoRows => ApiError::not_found("resource not found"),
+            _ => ApiError::internal(format!("database error: {}", e)),
+        }
+    }
+}
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.kind.error_code(), self.message)

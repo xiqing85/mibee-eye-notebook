@@ -2,7 +2,7 @@
 
 ## Overview
 
-notebook-cam is a professional laptop surveillance agent built in Rust, designed to capture local webcam and microphone audio while connecting to IP cameras and NVRs via multiple streaming protocols. The architecture prioritizes security, low resource usage, minimal dependencies, Linux-first development, and local-first deployment.
+mibee-rec is a professional laptop surveillance agent built in Rust, designed to capture local webcam and microphone audio while connecting to IP cameras and NVRs via multiple streaming protocols. The architecture prioritizes security, low resource usage, minimal dependencies, Linux-first development, and local-first deployment.
 
 ### Design Goals
 
@@ -17,7 +17,7 @@ notebook-cam is a professional laptop surveillance agent built in Rust, designed
 The project uses a Rust workspace with 6 specialized crates, totaling ~22k lines of code:
 
 ```
-notebook-cam/
+mibee-rec/
 ├─ src/                # Binary entry (main.rs), config, types, error (945 LOC)
 ├─ crates/
 │  ├─ capture/         # Video (nokhwa) + Audio (cpal) device wrappers (800 LOC)
