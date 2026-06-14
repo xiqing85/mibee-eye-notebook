@@ -1,6 +1,6 @@
 # Installation Guide
 
-This guide covers installation and deployment for notebook-cam (MiBee Rec), a professional laptop surveillance agent built in Rust.
+This guide covers installation and deployment for mibee-rec (MiBee Rec), a professional laptop surveillance agent built in Rust.
 
 ## System Requirements
 
@@ -42,7 +42,7 @@ sudo usermod -aG video $USER
 
 ### Privileged Ports
 
-By default, notebook-cam uses:
+By default, mibee-rec uses:
 - Web UI: 8443 (TLS)
 - RTSP: 8554  
 - RTMP: 1935
@@ -192,7 +192,7 @@ log_level = "info"
 
 ### Development Setup
 
-For development, notebook-cam automatically generates self-signed TLS certificates on first run:
+For development, mibee-rec automatically generates self-signed TLS certificates on first run:
 
 ```bash
 # First run generates certificates
@@ -204,8 +204,8 @@ For development, notebook-cam automatically generates self-signed TLS certificat
 ```
 
 The certificates use:
-- Subject: CN=notebook-cam
-- SAN: notebook-cam.local
+- Subject: CN=mibee-rec
+- SAN: mibee-rec.local
 - Validity: ~30 days
 
 ### Production Setup
@@ -319,7 +319,7 @@ server {
     add_header X-XSS-Protection "1; mode=block";
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # Proxy to notebook-cam
+    # Proxy to mibee-rec
     location / {
         proxy_pass https://localhost:8443;
         proxy_set_header Host $host;
@@ -520,3 +520,5 @@ If you continue to have issues:
    - Configuration files (redact sensitive data)
    - Steps to reproduce
    - Expected vs actual behavior
+
+> **Migration Note (Rebrand)**: The dev TLS certificate's CommonName and SubjectAltName have changed from `notebook-cam`/`notebook-cam.local` to `mibee-rec`/`mibee-rec.local`. Delete the old `tls/cert.pem` and `tls/key.pem` files before starting the server so a new self-signed certificate is generated with the correct identity.

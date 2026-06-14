@@ -78,7 +78,7 @@ pub struct OnvifConfig {
 }
 
 fn default_onvif_device_name() -> String {
-    "notebook-cam".into()
+    "mibee-rec".into()
 }
 fn default_onvif_manufacturer() -> String {
     "MiBee".into()
@@ -97,7 +97,7 @@ impl Default for OnvifConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            device_name: "notebook-cam".into(),
+            device_name: "mibee-rec".into(),
             manufacturer: "MiBee".into(),
             model: "Rec-01".into(),
             serial: "NC00000001".into(),
@@ -320,16 +320,16 @@ pub struct DatabaseConfig {
 }
 
 fn default_database_path() -> String {
-    // XDG default: ~/.local/share/notebook-cam/mibee_rec.db
+    // XDG default: ~/.local/share/mibee-rec/mibee_rec.db
     if let Some(data_dir) = dirs::data_dir() {
         data_dir
-            .join("notebook-cam")
+            .join("mibee-rec")
             .join("mibee_rec.db")
             .to_string_lossy()
             .to_string()
     } else {
         // Fallback to /tmp if XDG data dir is not available
-        "/tmp/notebook-cam/mibee_rec.db".to_string()
+        "/tmp/mibee-rec/mibee_rec.db".to_string()
     }
 }
 
@@ -489,7 +489,7 @@ mod tests {
     fn test_onvif_config_default() {
         let cfg = OnvifConfig::default();
         assert!(!cfg.enabled, "ONVIF must default to disabled");
-        assert_eq!(cfg.device_name, "notebook-cam");
+        assert_eq!(cfg.device_name, "mibee-rec");
         assert_eq!(cfg.manufacturer, "MiBee");
         assert_eq!(cfg.model, "Rec-01");
         assert_eq!(cfg.serial, "NC00000001");
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(cfg.observability.otel_endpoint, "http://localhost:4317");
         assert_eq!(cfg.observability.log_level, "info");
         assert!(!cfg.onvif.enabled);
-        assert_eq!(cfg.onvif.device_name, "notebook-cam");
+        assert_eq!(cfg.onvif.device_name, "mibee-rec");
         assert!(!cfg.gb28181.enabled);
         assert_eq!(cfg.gb28181.platform_sip_address, "192.168.1.100");
         assert!(!cfg.rtmp_push.enabled);
@@ -646,7 +646,7 @@ port = 9090
         let toml_str = "[onvif]\n";
         let cfg: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(!cfg.onvif.enabled);
-        assert_eq!(cfg.onvif.device_name, "notebook-cam");
+        assert_eq!(cfg.onvif.device_name, "mibee-rec");
         assert_eq!(cfg.onvif.manufacturer, "MiBee");
         assert_eq!(cfg.onvif.model, "Rec-01");
         assert_eq!(cfg.onvif.firmware_version, "1.0.0");
@@ -761,7 +761,7 @@ push_url = ""
             "observability.log_level"
         );
         assert!(!cfg.onvif.enabled);
-        assert_eq!(cfg.onvif.device_name, "notebook-cam", "onvif.device_name");
+        assert_eq!(cfg.onvif.device_name, "mibee-rec", "onvif.device_name");
         assert!(!cfg.gb28181.enabled);
         assert_eq!(
             cfg.gb28181.device_id, "34020000002000000001",
@@ -792,7 +792,7 @@ enabled = false
         assert!(!cfg.rtmp_push.enabled, "RTMP push must be disabled");
 
         // Verify other fields load with defaults
-        assert_eq!(cfg.onvif.device_name, "notebook-cam");
+        assert_eq!(cfg.onvif.device_name, "mibee-rec");
         assert_eq!(cfg.gb28181.platform_sip_address, "192.168.1.100");
         assert_eq!(cfg.gb28181.platform_sip_port, 5060);
         assert_eq!(cfg.rtmp_push.push_url, "rtmp://192.168.1.100:1935/live");
@@ -822,7 +822,7 @@ enabled = false
             ..OnvifConfig::default()
         };
         assert!(onvif.enabled);
-        assert_eq!(onvif.device_name, "notebook-cam");
+        assert_eq!(onvif.device_name, "mibee-rec");
 
         let gb28181 = Gb28181Config {
             enabled: true,

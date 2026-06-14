@@ -154,7 +154,7 @@ mod tests {
             "onvif".into(),
             serde_json::json!({
                 "enabled": false,
-                "device_name": "notebook-cam",
+                "device_name": "mibee-rec",
                 "manufacturer": "MiBee",
                 "model": "Rec-01",
                 "serial": "NC00000001",
@@ -229,7 +229,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body["enabled"], false);
-        assert_eq!(body["device_name"], "notebook-cam");
+        assert_eq!(body["device_name"], "mibee-rec");
     }
 
     #[tokio::test]

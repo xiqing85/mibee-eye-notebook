@@ -20,7 +20,7 @@ log_level = "info"
 
 [onvif]
 enabled = false
-device_name = "notebook-cam"
+device_name = "mibee-rec"
 manufacturer = "MiBee"
 model = "Rec-01"
 serial = "NC00000001"

@@ -274,6 +274,49 @@ pub fn list_settings(conn: &Connection) -> Result<Vec<(String, String)>> {
 }
 
 // ---------------------------------------------------------------------------
+// Stream Session logging
+// ---------------------------------------------------------------------------
+
+/// Insert a new stream session row for audit purposes.
+/// The session starts now with default zero counters.
+pub fn insert_stream_session(conn: &Connection, session_id: &str, camera_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO stream_sessions (id, camera_id) VALUES (?1, ?2)",
+        rusqlite::params![session_id, camera_id],
+    )
+    .context("Failed to insert stream session")?;
+    Ok(())
+}
+
+/// Finalize (end) the most recent open session for a camera.
+/// Updates stats if provided, otherwise records 0s.
+/// Returns the number of rows updated (0 or 1).
+pub fn finalize_stream_session(
+    conn: &Connection,
+    camera_id: &str,
+    bytes_received: i64,
+    frames_received: i64,
+    error_count: i64,
+) -> Result<usize> {
+    let affected = conn
+        .execute(
+            "UPDATE stream_sessions
+             SET ended_at = datetime('now'),
+                 bytes_received = ?1,
+                 frames_received = ?2,
+                 error_count = ?3
+             WHERE id = (
+                 SELECT id FROM stream_sessions
+                 WHERE camera_id = ?4 AND ended_at IS NULL
+                 ORDER BY started_at DESC LIMIT 1
+             )",
+            rusqlite::params![bytes_received, frames_received, error_count, camera_id],
+        )
+        .context("Failed to finalize stream session")?;
+    Ok(affected)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -442,5 +485,146 @@ mod tests {
             indexes.contains(&"idx_cameras_type".to_string()),
             "idx_cameras_type index should exist"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Stream Session tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_insert_and_finalize_stream_session() {
+        let conn = test_db();
+
+        // Create a camera first (FK constraint)
+        conn.execute(
+            concat!(
+            "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at) ",
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            ),
+            rusqlite::params!["cam-001", "Front Door", "usb", "{}", "stopped", "now", "now"],
+        )
+        .unwrap();
+
+        // Insert a stream session
+        insert_stream_session(&conn, "sess-001", "cam-001").unwrap();
+
+        // Verify the row exists with ended_at IS NULL
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stream_sessions
+                 WHERE camera_id = ?1 AND ended_at IS NULL",
+                rusqlite::params!["cam-001"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "should have one open session");
+
+        // Finalize the session with stats
+        let updated = finalize_stream_session(&conn, "cam-001", 1024, 30, 0).unwrap();
+        assert_eq!(updated, 1, "should update exactly one row");
+
+        // Verify the row now has ended_at NOT NULL and stats recorded
+        let (ended_count, bytes, frames, errors): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), bytes_received, frames_received, error_count
+                 FROM stream_sessions
+                 WHERE camera_id = ?1 AND ended_at IS NOT NULL",
+                rusqlite::params!["cam-001"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(ended_count, 1, "should have one ended session");
+        assert_eq!(bytes, 1024);
+        assert_eq!(frames, 30);
+        assert_eq!(errors, 0);
+    }
+
+    #[test]
+    fn test_insert_stream_session_uses_defaults() {
+        let conn = test_db();
+
+        // Create a camera first (FK constraint)
+        conn.execute_batch(concat!(
+            "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at) ",
+            "VALUES ('cam-002', 'Test', 'usb', '{}', 'stopped', datetime('now'), datetime('now'));",
+        ))
+        .unwrap();
+
+        insert_stream_session(&conn, "sess-002", "cam-002").unwrap();
+
+        // Verify default values for numeric columns
+        let (bytes, frames, errors): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT bytes_received, frames_received, error_count
+                 FROM stream_sessions WHERE id = ?1",
+                rusqlite::params!["sess-002"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(bytes, 0, "bytes_received should default to 0");
+        assert_eq!(frames, 0, "frames_received should default to 0");
+        assert_eq!(errors, 0, "error_count should default to 0");
+    }
+
+    #[test]
+    fn test_finalize_only_latest_open_session() {
+        let conn = test_db();
+
+        // Create a camera first (FK constraint)
+        conn.execute(
+            concat!(
+            "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at) ",
+            "VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
+            ),
+            rusqlite::params!["cam-001", "Front Door", "usb", "{}", "stopped"],
+        )
+        .unwrap();
+
+        // Insert two open sessions with explicit timestamps to ensure ordering
+        conn.execute(
+            concat!(
+                "INSERT INTO stream_sessions (id, camera_id, started_at) ",
+                "VALUES (?1, ?2, ?3)",
+            ),
+            rusqlite::params!["sess-a", "cam-001", "2025-01-01T00:00:00"],
+        )
+        .unwrap();
+        conn.execute(
+            concat!(
+                "INSERT INTO stream_sessions (id, camera_id, started_at) ",
+                "VALUES (?1, ?2, ?3)",
+            ),
+            rusqlite::params!["sess-b", "cam-001", "2025-01-02T00:00:00"],
+        )
+        .unwrap();
+
+        // Finalize — should only affect the latest (sess-b)
+        let updated = finalize_stream_session(&conn, "cam-001", 500, 10, 1).unwrap();
+        assert_eq!(updated, 1, "should update exactly one row");
+
+        // sess-a should still be open
+        let open_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stream_sessions
+                 WHERE camera_id = ?1 AND ended_at IS NULL",
+                rusqlite::params!["cam-001"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(open_count, 1, "sess-a should still be open");
+
+        // The finalized one should have the stats
+        let (sess_b_ended, bytes, frames, errors): (bool, i64, i64, i64) = conn
+            .query_row(
+                "SELECT ended_at IS NOT NULL, bytes_received, frames_received, error_count
+                 FROM stream_sessions WHERE id = ?1",
+                rusqlite::params!["sess-b"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert!(sess_b_ended, "sess-b should be ended");
+        assert_eq!(bytes, 500);
+        assert_eq!(frames, 10);
+        assert_eq!(errors, 1);
     }
 }

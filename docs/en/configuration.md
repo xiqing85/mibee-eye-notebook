@@ -1,10 +1,10 @@
 # Configuration Reference
 
-This document provides a complete reference for the notebook-cam configuration system.
+This document provides a complete reference for the mibee-rec configuration system.
 
 ## Overview
 
-Configuration files control all aspects of notebook-cam behavior. The configuration system supports hierarchical precedence, allowing different settings for development, testing, and production environments.
+Configuration files control all aspects of mibee-rec behavior. The configuration system supports hierarchical precedence, allowing different settings for development, testing, and production environments.
 
 ### Configuration File Locations
 

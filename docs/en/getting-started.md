@@ -1,6 +1,6 @@
 # Getting Started
 
-Quick start guide for notebook-cam (MiBee Rec) — laptop surveillance agent built in Rust.
+Quick start guide for mibee-rec (MiBee Rec) — laptop surveillance agent built in Rust.
 
 ## Prerequisites
 
@@ -124,4 +124,4 @@ For development and testing:
 Happy monitoring!
 
 ---
-*Notebook-cam (MiBee Rec) — Professional laptop surveillance agent built in Rust.*
+*MiBee-Rec (MiBee Rec) — Professional laptop surveillance agent built in Rust.*

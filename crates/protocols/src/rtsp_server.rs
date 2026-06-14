@@ -412,7 +412,7 @@ impl Default for RtspServerConfig {
         Self {
             port: 8554,
             auth_required: false,
-            realm: "notebook-cam RTSP Server".to_string(),
+            realm: "mibee-rec RTSP Server".to_string(),
             username: String::new(),
             password: String::new(),
         }
@@ -872,7 +872,9 @@ fn handle_setup(
     // Find the matching stream; fall back to the single stream in the
     // map when the SETUP URI has no path (some RTSP clients send SETUP
     // to the base URL when the SDP has no a=control attribute).
-    let stream = match find_stream_by_uri(uri, streams).or_else(|| streams.values().next().filter(|_| streams.len() == 1)) {
+    let stream = match find_stream_by_uri(uri, streams)
+        .or_else(|| streams.values().next().filter(|_| streams.len() == 1))
+    {
         Some(s) => s,
         None => return (build_not_found_response(cseq), None),
     };
@@ -1207,12 +1209,16 @@ async fn handle_connection(
                     // Subscribe to the broadcast channel (supports multiple concurrent clients)
                     let live_result = {
                         let live_map = server.live_streams.lock().unwrap();
-                        live_map.get(&live_path).map(|entry| {
-                            (entry.frame_tx.subscribe(), entry.ssrc)
-                        })
+                        live_map
+                            .get(&live_path)
+                            .map(|entry| (entry.frame_tx.subscribe(), entry.ssrc))
                     };
 
-                    info!("delivery lookup: live_path={}, found={}", live_path, live_result.is_some());
+                    info!(
+                        "delivery lookup: live_path={}, found={}",
+                        live_path,
+                        live_result.is_some()
+                    );
                     if let Some((mut frame_rx, ssrc)) = live_result {
                         metrics::increment_rtsp_sessions("active");
                         info!("Starting live stream delivery for /{live_path} (ssrc={ssrc})");
@@ -1779,11 +1785,11 @@ mod tests {
 
     #[test]
     fn test_build_response_basic() {
-        let resp = build_response(1, 200, "OK", &[("Server", "notebook-cam")], b"");
+        let resp = build_response(1, 200, "OK", &[("Server", "mibee-rec")], b"");
         let s = String::from_utf8(resp).unwrap();
         assert!(s.starts_with("RTSP/1.0 200 OK\r\n"));
         assert!(s.contains("CSeq: 1\r\n"));
-        assert!(s.contains("Server: notebook-cam\r\n"));
+        assert!(s.contains("Server: mibee-rec\r\n"));
         assert!(s.ends_with("\r\n\r\n"));
     }
 

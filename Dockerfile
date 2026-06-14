@@ -1,12 +1,12 @@
 # =============================================================================
-# Dockerfile — notebook-cam (MiBee Rec)
+# Dockerfile — mibee-rec (MiBee Rec)
 # Multi-stage build: builder (rust:1.85-slim) → runtime (debian:bookworm-slim)
 # =============================================================================
 
 # ---------- Builder Stage ----------
 FROM rust:1.85-slim AS builder
 
-WORKDIR /usr/src/notebook-cam
+WORKDIR /usr/src/mibee-rec
 
 # Install build-time system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,15 +38,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary (renamed from mibee-rec to notebook-cam for consistency)
-COPY --from=builder /usr/src/notebook-cam/target/release/mibee-rec /usr/local/bin/notebook-cam
+# Copy binary (renamed from mibee-rec to mibee-rec for consistency)
+COPY --from=builder /usr/src/mibee-rec/target/release/mibee-rec /usr/local/bin/mibee-rec
 
 # Copy configuration and migrations
-COPY --from=builder /usr/src/notebook-cam/config.toml /etc/notebook-cam/config.toml
-COPY --from=builder /usr/src/notebook-cam/migrations/ /usr/local/share/notebook-cam/migrations/
+COPY --from=builder /usr/src/mibee-rec/config.toml /etc/mibee-rec/config.toml
+COPY --from=builder /usr/src/mibee-rec/migrations/ /usr/local/share/mibee-rec/migrations/
 
 # Create working directory
-WORKDIR /var/lib/notebook-cam
+WORKDIR /var/lib/mibee-rec
 
 # Expose ports: web UI (8443), RTSP (8554), RTMP (1935)
 EXPOSE 8443
@@ -59,4 +59,4 @@ HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://localhost:8443/health
 # Run as non-root
 USER nobody
 
-ENTRYPOINT ["/usr/local/bin/notebook-cam", "--config", "/etc/notebook-cam/config.toml"]
+ENTRYPOINT ["/usr/local/bin/mibee-rec", "--config", "/etc/mibee-rec/config.toml"]

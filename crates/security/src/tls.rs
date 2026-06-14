@@ -12,15 +12,15 @@ use tokio::sync::mpsc;
 /// Generate a self-signed X.509 certificate and its corresponding private key.
 ///
 /// The certificate uses:
-/// - Subject: CN=notebook-cam
-/// - SAN: notebook-cam.local
+/// - Subject: CN=mibee-rec
+/// - SAN: mibee-rec.local
 /// - Validity: defaults (roughly now -1 day to now +30 days)
 pub fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
-    let mut params = CertificateParams::new(vec!["notebook-cam.local".to_string()])
+    let mut params = CertificateParams::new(vec!["mibee-rec.local".to_string()])
         .context("Failed to create certificate parameters")?;
     params
         .distinguished_name
-        .push(DnType::CommonName, "notebook-cam");
+        .push(DnType::CommonName, "mibee-rec");
     // Default is_ca is fine (not a CA for server cert)
 
     let key_pair = KeyPair::generate().context("Failed to generate key pair")?;
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_build_tls_config_generates_files() {
-        let dir = std::env::temp_dir().join("notebook-cam-tls-test");
+        let dir = std::env::temp_dir().join("mibee-rec-tls-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
@@ -266,7 +266,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cert_watcher_reloads_on_file_change() {
-        let dir = std::env::temp_dir().join("notebook-cam-watcher-test");
+        let dir = std::env::temp_dir().join("mibee-rec-watcher-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A rate-limit tracking entry for a single IP.
@@ -71,6 +72,35 @@ pub fn reset_all() {
 #[inline]
 fn is_window_expired(entry: &RateLimitEntry, now: u64, window_secs: u64) -> bool {
     now >= entry.window_start.wrapping_add(window_secs)
+}
+/// Rate-limit configuration from app config.
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitConfig {
+    /// Maximum number of requests allowed in the window.
+    pub max_requests: usize,
+    /// Window duration in seconds.
+    pub window_secs: u64,
+}
+
+static RATE_LIMIT_CONFIG: OnceLock<RateLimitConfig> = OnceLock::new();
+static DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = RateLimitConfig {
+    max_requests: 20,
+    window_secs: 60,
+};
+
+/// Initialize the rate limit configuration from app config.
+pub fn init_rate_limit_config(max_requests: usize, window_secs: u64) {
+    let _ = RATE_LIMIT_CONFIG.set(RateLimitConfig {
+        max_requests,
+        window_secs,
+    });
+}
+
+/// Get the current rate limit configuration, or default if not initialized.
+pub fn get_rate_limit_config() -> &'static RateLimitConfig {
+    RATE_LIMIT_CONFIG
+        .get()
+        .unwrap_or(&DEFAULT_RATE_LIMIT_CONFIG)
 }
 
 #[cfg(test)]

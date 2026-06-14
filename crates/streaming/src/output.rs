@@ -229,12 +229,7 @@ const RTP_MAX_PAYLOAD: usize = 1400;
 ///
 /// Small NALs use Single NAL Unit Packet mode (§5.6).
 /// Large NALs use FU-A fragmentation (§5.8).
-fn build_rtp_packets(
-    nal_data: &[u8],
-    seq: &mut u16,
-    timestamp: u32,
-    ssrc: u32,
-) -> Vec<Vec<u8>> {
+fn build_rtp_packets(nal_data: &[u8], seq: &mut u16, timestamp: u32, ssrc: u32) -> Vec<Vec<u8>> {
     if nal_data.is_empty() {
         return vec![];
     }

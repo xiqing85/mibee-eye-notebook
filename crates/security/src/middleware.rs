@@ -16,8 +16,20 @@ pub struct AuthenticatedUser(pub String);
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn error_response(status: StatusCode, msg: &str) -> Response {
-    (status, Json(serde_json::json!({"error": msg}))).into_response()
+fn error_response(status: StatusCode, message: &str) -> Response {
+    let code = match status {
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::INTERNAL_SERVER_ERROR => "internal_error",
+        StatusCode::TOO_MANY_REQUESTS => "too_many_requests",
+        StatusCode::SERVICE_UNAVAILABLE => "service_unavailable",
+        _ => "error",
+    };
+    let body = serde_json::json!({
+        "error": code,
+        "message": message,
+        "status": status.as_u16(),
+    });
+    (status, Json(body)).into_response()
 }
 
 fn extract_session_token(req: &Request) -> Option<String> {
@@ -156,7 +168,7 @@ pub async fn require_setup(req: Request, next: Next) -> Response {
             drop(conn);
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "SETUP_REQUIRED", "code": 503u16})),
+                Json(serde_json::json!({"error": "setup_required", "message": "Initial setup required", "status": 503})),
             )
                 .into_response()
         }
@@ -178,14 +190,14 @@ pub async fn require_setup(req: Request, next: Next) -> Response {
 /// Axum middleware that rate-limits requests per client IP.
 ///
 /// Uses the in-memory rate limiter from `rate_limit::check_rate_limit`
-/// with a default limit of 20 requests per 60-second window.
-/// To use custom limits, call `check_rate_limit` directly in application code.
+/// with configurable limits from `SecurityConfig` (default: 20 requests per 60-second window).
 ///
 /// When a request is rate-limited, a 429 Too Many Requests response is returned.
 pub async fn rate_limit(req: Request, next: Next) -> Response {
     let ip = client_ip(&req);
 
-    if !rate_limit::check_rate_limit(&ip, 20, 60) {
+    let cfg = rate_limit::get_rate_limit_config();
+    if !rate_limit::check_rate_limit(&ip, cfg.max_requests, cfg.window_secs) {
         tracing::warn!(ip = %ip, "rate limit exceeded");
         return error_response(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
     }
@@ -443,10 +455,15 @@ mod setup_tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-        // Verify the body matches expected format
+        // Verify the body matches canonical ApiError JSON format
         let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
-        let body_str = String::from_utf8_lossy(&body);
-        assert!(body_str.contains("SETUP_REQUIRED"));
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "setup_required", "error code mismatch");
+        assert_eq!(
+            json["message"], "Initial setup required",
+            "message mismatch"
+        );
+        assert_eq!(json["status"], 503, "status mismatch");
     }
 
     #[tokio::test]

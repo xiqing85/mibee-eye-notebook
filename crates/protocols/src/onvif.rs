@@ -34,7 +34,7 @@ use tracing::{debug, info, warn};
 /// ONVIF device metadata returned in SOAP responses.
 #[derive(Debug, Clone)]
 pub struct OnvifDeviceConfig {
-    /// Manufacturer name (e.g., "notebook-cam")
+    /// Manufacturer name (e.g., "mibee-rec")
     pub manufacturer: String,
     /// Model identifier
     pub model: String,
@@ -59,7 +59,7 @@ pub struct OnvifDeviceConfig {
 impl Default for OnvifDeviceConfig {
     fn default() -> Self {
         Self {
-            manufacturer: "notebook-cam".into(),
+            manufacturer: "mibee-rec".into(),
             model: "NB-CAM-1".into(),
             firmware_version: "1.0.0".into(),
             serial_number: "NB-000001".into(),
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = OnvifDeviceConfig::default();
-        assert_eq!(config.manufacturer, "notebook-cam");
+        assert_eq!(config.manufacturer, "mibee-rec");
         assert_eq!(config.model, "NB-CAM-1");
         assert_eq!(config.firmware_version, "1.0.0");
         assert_eq!(config.serial_number, "NB-000001");

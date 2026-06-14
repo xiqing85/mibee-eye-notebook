@@ -2,7 +2,7 @@
 
 ## 概览
 
-notebook-cam REST API 提供对摄像头管理、流媒体控制和系统配置的编程接口。所有 API 端点都使用 TLS 加密并需要适当的身份验证。
+mibee-rec REST API 提供对摄像头管理、流媒体控制和系统配置的编程接口。所有 API 端点都使用 TLS 加密并需要适当的身份验证。
 
 ### 基础 URL
 ```
@@ -139,9 +139,9 @@ curl -X GET https://localhost:8443/health
 
 **响应（200 OK）：**
 ```
-# HELP notebook_cam_system_seconds System uptime in seconds
-# TYPE notebook_cam_system_seconds counter
-notebook_cam_system_seconds 3600
+# HELP mibee_rec_system_seconds System uptime in seconds
+# TYPE mibee_rec_system_seconds counter
+mibee_rec_system_seconds 3600
 ```
 
 **示例：**

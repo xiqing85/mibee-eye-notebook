@@ -3,6 +3,34 @@ use rusqlite::Connection;
 use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Typed error for authentication operations.
+#[derive(Debug, Error)]
+pub enum AuthError {
+    #[error("user not found: {0}")]
+    UserNotFound(String),
+    #[error("incorrect password")]
+    WrongPassword,
+    #[error("database error: {0}")]
+    Database(String),
+    #[error("bcrypt error: {0}")]
+    Bcrypt(String),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<anyhow::Error> for AuthError {
+    fn from(e: anyhow::Error) -> Self {
+        if let Some(inner) = e.downcast_ref::<rusqlite::Error>() {
+            return AuthError::Database(inner.to_string());
+        }
+        if let Some(inner) = e.downcast_ref::<bcrypt::BcryptError>() {
+            return AuthError::Bcrypt(inner.to_string());
+        }
+        AuthError::Other(e.to_string())
+    }
+}
+use thiserror::Error;
+
 /// Default session lifetime: 24 hours.
 const SESSION_TTL_SECS: u64 = 24 * 60 * 60;
 
@@ -211,15 +239,15 @@ pub fn reset_password(
     username: &str,
     old_password: &str,
     new_password: &str,
-) -> Result<()> {
+) -> std::result::Result<(), AuthError> {
     init_users_table(conn)?;
     init_sessions_table(conn)?;
 
     let stored_hash = get_user_password(conn, username)?
-        .ok_or_else(|| anyhow::anyhow!("User '{}' not found", username))?;
+        .ok_or_else(|| AuthError::UserNotFound(username.to_string()))?;
 
     if !crate::password::verify_password(old_password, &stored_hash)? {
-        anyhow::bail!("Old password is incorrect");
+        return Err(AuthError::WrongPassword);
     }
 
     let new_hash = crate::password::hash_password(new_password)?;
@@ -259,6 +287,24 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_sessions_table(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn test_auth_error_display() {
+        let err = AuthError::UserNotFound("admin".to_string());
+        assert_eq!(err.to_string(), "user not found: admin");
+
+        let err = AuthError::WrongPassword;
+        assert_eq!(err.to_string(), "incorrect password");
+
+        let err = AuthError::Database("connection failed".to_string());
+        assert!(err.to_string().contains("database error"));
+
+        let err = AuthError::Bcrypt("cost too high".to_string());
+        assert!(err.to_string().contains("bcrypt error"));
+
+        let err = AuthError::Other("something happened".to_string());
+        assert_eq!(err.to_string(), "something happened");
     }
 
     #[test]

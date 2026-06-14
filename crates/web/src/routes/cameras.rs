@@ -75,16 +75,17 @@ impl From<CameraRow> for CameraResponse {
 pub async fn list_cameras(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
-) -> impl IntoResponse {
+) -> std::result::Result<impl IntoResponse, ApiError> {
     let conn = db.lock().await;
     match db::list_cameras(&conn) {
         Ok(rows) => {
             let cameras: Vec<CameraResponse> = rows.into_iter().map(CameraResponse::from).collect();
-            (StatusCode::OK, Json(serde_json::to_value(cameras).unwrap())).into_response()
+            let value = serde_json::to_value(cameras)?;
+            Ok((StatusCode::OK, Json(value)))
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to list cameras");
-            ApiError::internal("failed to list cameras").into_response()
+            Err(ApiError::internal("failed to list cameras"))
         }
     }
 }
@@ -94,18 +95,17 @@ pub async fn get_camera(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
-) -> impl IntoResponse {
+) -> std::result::Result<impl IntoResponse, ApiError> {
     let conn = db.lock().await;
     match db::get_camera(&conn, &id) {
-        Ok(Some(row)) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(CameraResponse::from(row)).unwrap()),
-        )
-            .into_response(),
-        Ok(None) => ApiError::not_found("camera not found").into_response(),
+        Ok(Some(row)) => {
+            let value = serde_json::to_value(CameraResponse::from(row))?;
+            Ok((StatusCode::OK, Json(value)))
+        }
+        Ok(None) => Err(ApiError::not_found("camera not found")),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to get camera");
-            ApiError::internal("failed to get camera").into_response()
+            Err(ApiError::internal("failed to get camera"))
         }
     }
 }
@@ -115,7 +115,7 @@ pub async fn create_camera(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Json(body): Json<CreateCameraRequest>,
-) -> impl IntoResponse {
+) -> std::result::Result<impl IntoResponse, ApiError> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = crate::routes::chrono_now();
 
@@ -131,14 +131,13 @@ pub async fn create_camera(
 
     let conn = db.lock().await;
     match db::create_camera(&conn, &row) {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(serde_json::to_value(CameraResponse::from(row)).unwrap()),
-        )
-            .into_response(),
+        Ok(()) => {
+            let value = serde_json::to_value(CameraResponse::from(row))?;
+            Ok((StatusCode::CREATED, Json(value)))
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to create camera");
-            ApiError::internal("failed to create camera").into_response()
+            Err(ApiError::internal("failed to create camera"))
         }
     }
 }
@@ -149,16 +148,16 @@ pub async fn update_camera(
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
     Json(body): Json<UpdateCameraRequest>,
-) -> impl IntoResponse {
+) -> std::result::Result<impl IntoResponse, ApiError> {
     let conn = db.lock().await;
 
     // Fetch existing camera, or return 404.
     let existing = match db::get_camera(&conn, &id) {
         Ok(Some(row)) => row,
-        Ok(None) => return ApiError::not_found("camera not found").into_response(),
+        Ok(None) => return Err(ApiError::not_found("camera not found")),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to fetch camera for update");
-            return ApiError::internal("failed to update camera").into_response();
+            return Err(ApiError::internal("failed to update camera"));
         }
     };
 
@@ -174,14 +173,13 @@ pub async fn update_camera(
     };
 
     match db::update_camera(&conn, &updated) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(CameraResponse::from(updated)).unwrap()),
-        )
-            .into_response(),
+        Ok(()) => {
+            let value = serde_json::to_value(CameraResponse::from(updated))?;
+            Ok((StatusCode::OK, Json(value)))
+        }
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to update camera");
-            ApiError::internal("failed to update camera").into_response()
+            Err(ApiError::internal("failed to update camera"))
         }
     }
 }
@@ -196,12 +194,11 @@ pub async fn delete_camera(
     match db::delete_camera(&conn, &id) {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response(),
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("not found") {
-                ApiError::not_found("camera not found").into_response()
-            } else {
+            if e.downcast_ref::<rusqlite::Error>().is_some() {
                 tracing::error!(error = %e, camera_id = %id, "failed to delete camera");
                 ApiError::internal("failed to delete camera").into_response()
+            } else {
+                ApiError::not_found("camera not found").into_response()
             }
         }
     }
