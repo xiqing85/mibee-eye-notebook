@@ -1,4 +1,4 @@
-/// Unified error type for notebook-cam.
+/// Unified error type for mibee-rec.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     /// I/O errors (file system, network sockets, etc.)

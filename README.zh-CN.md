@@ -1,5 +1,10 @@
 # MiBee Rec
 
+[![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-blue.svg)](LICENSE)
+[![Rust: 1.85+](https://img.shields.io/badge/Rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Platform: Linux](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-green.svg)](#)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](docs/zh/contributing.md)
+
 [English](README.md) · [文档](docs/zh/)
 
 基于 Rust 构建的专业本地采集代理。

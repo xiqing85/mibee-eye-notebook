@@ -42,6 +42,12 @@ async fn main() -> anyhow::Result<()> {
     let config = mibee_rec::config::AppConfig::load(&args.config)?;
     config.validate()?;
 
+    // Initialise rate limit config from security settings
+    security::rate_limit::init_rate_limit_config(
+        config.security.rate_limit_max,
+        config.security.rate_limit_window_secs,
+    );
+
     // Initialise tracing (subscriber, optional OTLP export)
     observability::init_tracing(
         &config.observability.log_level,

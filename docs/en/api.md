@@ -2,7 +2,7 @@
 
 ## Overview
 
-The notebook-cam REST API provides programmatic access to camera management, streaming control, and system configuration. All API endpoints use TLS encryption and require proper authentication.
+The mibee-rec REST API provides programmatic access to camera management, streaming control, and system configuration. All API endpoints use TLS encryption and require proper authentication.
 
 ### Base URL
 ```
@@ -139,9 +139,9 @@ curl -X GET https://localhost:8443/health
 
 **Response (200 OK):**
 ```
-# HELP notebook_cam_system_seconds System uptime in seconds
-# TYPE notebook_cam_system_seconds counter
-notebook_cam_system_seconds 3600
+# HELP mibee_rec_system_seconds System uptime in seconds
+# TYPE mibee_rec_system_seconds counter
+mibee_rec_system_seconds 3600
 ```
 
 **Example:**

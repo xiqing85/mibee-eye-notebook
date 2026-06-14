@@ -27,11 +27,11 @@ mod tests {
     fn index_html_contains_title() {
         let html = index_html();
         assert!(
-            html.contains("<title>notebook-cam</title>"),
+            html.contains("<title>mibee-rec</title>"),
             "index.html should contain the title tag"
         );
         assert!(
-            html.contains("notebook-cam"),
+            html.contains("mibee-rec"),
             "index.html should contain the project name"
         );
     }

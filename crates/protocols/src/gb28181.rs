@@ -563,7 +563,7 @@ pub fn build_register_request(
         format!("<sip:{}@{}:{}>", local_id, local_addr, 5060),
     ));
     headers.push(("Max-Forwards".to_string(), "70".to_string()));
-    headers.push(("User-Agent".to_string(), "notebook-cam/0.1".to_string()));
+    headers.push(("User-Agent".to_string(), "mibee-rec/0.1".to_string()));
     headers.push(("Expires".to_string(), expires.to_string()));
     headers.push(("Content-Length".to_string(), "0".to_string()));
 

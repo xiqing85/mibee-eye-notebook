@@ -1,6 +1,6 @@
-# 为 notebook-cam 做贡献
+# 为 mibee-rec 做贡献
 
-感谢您有兴趣为 notebook-cam 做贡献！本指南涵盖了您需要了解的一切来开始并为这个基于 Rust 的笔记本电脑监控代理做出有意义的贡献。
+感谢您有兴趣为 mibee-rec 做贡献！本指南涵盖了您需要了解的一切来开始并为这个基于 Rust 的笔记本电脑监控代理做出有意义的贡献。
 
 ## 开始开发
 
@@ -22,8 +22,8 @@ sudo usermod -aG video $USER
 
 ```bash
 # 克隆仓库
-git clone https://https://github.com/xiqing85/notebook-cam.git
-cd notebook-cam
+git clone https://github.com/xiqing85/mibee-eye-notebook.git
+cd mibee-rec
 
 # 构建项目
 cargo build
@@ -79,7 +79,7 @@ cargo fmt
 ## 项目结构
 
 ```
-notebook-cam/
+mibee-rec/
 ├─ src/                    # 二进制入口点，配置，类型，错误处理
 │  ├─ main.rs             # 应用程序入口点
 │  ├─ config.rs           # 配置管理，使用 TOML
@@ -411,7 +411,7 @@ pub fn all_routes() -> Router<AppState> {
 
 ### CameraType 枚举
 
-摄像头类型在 `src/types.rs` 中定义，代表 notebook-cam 可以处理的不同的源：
+摄像头类型在 `src/types.rs` 中定义，代表 mibee-rec 可以处理的不同的源：
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -800,8 +800,8 @@ cargo fmt                                  # 格式化代码
 
 ## 获取帮助
 
-- [GitHub Issues](https://https://github.com/xiqing85/notebook-cam/issues)
-- [文档](https://https://github.com/xiqing85/notebook-cam/docs)
+- [GitHub Issues](https://github.com/xiqing85/mibee-eye-notebook/issues)
+- [文档](https://github.com/xiqing85/mibee-eye-notebook/docs)
 - [项目 Discord/社区] (如果可用)
 
 祝编码愉快！🚀

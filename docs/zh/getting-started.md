@@ -1,6 +1,6 @@
 # 快速入门
 
-notebook-cam（MiBee Rec）快速入门指南 — 基于 Rust 构建的专业笔记本监控代理。
+mibee-rec（MiBee Rec）快速入门指南 — 基于 Rust 构建的专业笔记本监控代理。
 
 ## 前置条件
 
@@ -54,7 +54,7 @@ cargo run -- --config config.toml
 使用 curl 创建管理员用户：
 
 ```bash
-curl -X POST https://localhost:8443/api/auth/email \
+curl -X POST https://localhost:8443/api/auth/setup \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"yourpass123"}'
 ```
@@ -124,4 +124,4 @@ curl -X POST https://localhost:8443/api/cameras \
 祝监控愉快！
 
 ---
-*Notebook-cam (MiBee Rec) — 基于 Rust 构建的专业笔记本监控代理。*
+*MiBee-Rec (MiBee Rec) — 基于 Rust 构建的专业笔记本监控代理。*

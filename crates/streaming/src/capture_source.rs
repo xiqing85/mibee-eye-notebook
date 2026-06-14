@@ -17,10 +17,10 @@
 //! process overhead + H.264 reference frames).
 
 use std::future::Future;
-use std::pin::Pin;
-use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -132,7 +132,16 @@ async fn spawn_ffmpeg_process(
     let mut cmd = tokio::process::Command::new("ffmpeg");
 
     if format.eq_ignore_ascii_case("MJPEG") {
-        cmd.args(["-analyzeduration", "10000000", "-probesize", "50000000", "-f", "mjpeg", "-i", "pipe:0"]);
+        cmd.args([
+            "-analyzeduration",
+            "10000000",
+            "-probesize",
+            "50000000",
+            "-f",
+            "mjpeg",
+            "-i",
+            "pipe:0",
+        ]);
     } else {
         let pix_fmt = map_pixel_format(format);
         let size_str = format!("{}x{}", width, height);
@@ -161,7 +170,6 @@ async fn spawn_ffmpeg_process(
         "h264",
         "pipe:1",
     ])
-
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::piped());
@@ -270,11 +278,10 @@ impl Source for VideoCaptureSource {
                     device_path
                 ));
             }
-            let meta = std::fs::metadata(&device_path)
-                .context(format!(
-                    "Failed to read metadata for camera device {}",
-                    device_path
-                ))?;
+            let meta = std::fs::metadata(&device_path).context(format!(
+                "Failed to read metadata for camera device {}",
+                device_path
+            ))?;
             // V4L2 devices (/dev/videoN) are character devices, not regular files.
             if !meta.file_type().is_char_device() && !meta.is_file() {
                 return Err(anyhow::anyhow!(
@@ -358,20 +365,33 @@ impl Source for VideoCaptureSource {
                     match b_rx.recv().await {
                         Ok(frame) => {
                             if let Err(e) = stdin.write_all(&frame.data).await {
-                                tracing::warn!(device_index = device_idx, "ffmpeg stdin write failed: {e}");
+                                tracing::warn!(
+                                    device_index = device_idx,
+                                    "ffmpeg stdin write failed: {e}"
+                                );
                                 break;
                             }
                             if let Err(e) = stdin.flush().await {
-                                tracing::warn!(device_index = device_idx, "ffmpeg stdin flush failed: {e}");
+                                tracing::warn!(
+                                    device_index = device_idx,
+                                    "ffmpeg stdin flush failed: {e}"
+                                );
                                 break;
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            tracing::debug!(device_index = device_idx, "camera broadcast closed, stdin writer exiting");
+                            tracing::debug!(
+                                device_index = device_idx,
+                                "camera broadcast closed, stdin writer exiting"
+                            );
                             break;
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(device_index = device_idx, skipped = n, "stdin writer lagged, dropped frames");
+                            tracing::warn!(
+                                device_index = device_idx,
+                                skipped = n,
+                                "stdin writer lagged, dropped frames"
+                            );
                             continue;
                         }
                     }
@@ -437,9 +457,7 @@ impl Source for VideoCaptureSource {
                 if n == 0 {
                     // ffmpeg stdout closed — encoder exited or crashed.
                     self.running = false;
-                    anyhow::bail!(
-                        "ffmpeg process exited unexpectedly (stdout closed)"
-                    );
+                    anyhow::bail!("ffmpeg process exited unexpectedly (stdout closed)");
                 }
 
                 self.buffer.extend_from_slice(&tmp[..n]);

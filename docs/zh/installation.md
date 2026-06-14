@@ -1,6 +1,6 @@
 # 安装指南
 
-本指南涵盖 notebook-cam（MiBee Rec）的安装和部署，这是一个用 Rust 构建的专业笔记本监控代理。
+本指南涵盖 mibee-rec（MiBee Rec）的安装和部署，这是一个用 Rust 构建的专业笔记本监控代理。
 
 ## 系统要求
 
@@ -45,7 +45,7 @@ sudo usermod -aG video $USER
 
 ### 特权端口
 
-默认情况下，notebook-cam 使用：
+默认情况下，mibee-rec 使用：
 - Web UI：8443（TLS）
 - RTSP：8554  
 - RTMP：1935
@@ -195,7 +195,7 @@ log_level = "info"
 
 ### 开发环境
 
-在开发环境中，notebook-cam 在首次运行时自动生成自签名 TLS 证书：
+在开发环境中，mibee-rec 在首次运行时自动生成自签名 TLS 证书：
 
 ```bash
 # 首次运行生成证书
@@ -207,8 +207,8 @@ log_level = "info"
 ```
 
 证书使用：
-- 主题：CN=notebook-cam
-- SAN：notebook-cam.local
+- 主题：CN=mibee-rec
+- SAN：mibee-rec.local
 - 有效期：约 30 天
 
 ### 生产环境
@@ -322,7 +322,7 @@ server {
     add_header X-XSS-Protection "1; mode=block";
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # 代理到 notebook-cam
+    # 代理到 mibee-rec
     location / {
         proxy_pass https://localhost:8443;
         proxy_set_header Host $host;
@@ -523,3 +523,5 @@ ss -tulpn | grep -E "(8443|8554|1935)"
    - 配置文件（删除敏感数据）
    - 复现步骤
    - 预期与实际行为
+
+> **迁移说明（品牌改名）**：开发用 TLS 证书的 CommonName 和 SubjectAltName 已从 `notebook-cam`/`notebook-cam.local` 改为 `mibee-rec`/`mibee-rec.local`。请在启动服务器前删除旧的 `tls/cert.pem` 和 `tls/key.pem` 文件，以便使用正确的身份重新生成自签名证书。

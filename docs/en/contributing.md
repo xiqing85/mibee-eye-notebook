@@ -1,6 +1,6 @@
-# Contributing to notebook-cam
+# Contributing to mibee-rec
 
-Thank you for your interest in contributing to notebook-cam! This guide covers everything you need to know to get started and make meaningful contributions to this Rust-based laptop surveillance agent.
+Thank you for your interest in contributing to mibee-rec! This guide covers everything you need to know to get started and make meaningful contributions to this Rust-based laptop surveillance agent.
 
 ## Getting Started (Development)
 
@@ -22,8 +22,8 @@ sudo usermod -aG video $USER
 
 ```bash
 # Clone the repository
-git clone https://https://github.com/xiqing85/notebook-cam.git
-cd notebook-cam
+git clone https://github.com/xiqing85/mibee-eye-notebook.git
+cd mibee-rec
 
 # Build the project
 cargo build
@@ -79,7 +79,7 @@ cargo fmt
 ## Project Structure
 
 ```
-notebook-cam/
+mibee-rec/
 ├─ src/                    # Binary entry point, config, types, error handling
 │  ├─ main.rs             # Application entry point
 │  ├─ config.rs           # Configuration management with TOML
@@ -411,7 +411,7 @@ Look at existing protocols for reference:
 
 ### CameraType Enum
 
-Camera types are defined in `src/types.rs` and represent the different sources notebook-cam can handle:
+Camera types are defined in `src/types.rs` and represent the different sources mibee-rec can handle:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -800,8 +800,8 @@ The workspace defines these convenient aliases:
 
 ## Getting Help
 
-- [GitHub Issues](https://https://github.com/xiqing85/notebook-cam/issues)
-- [Documentation](https://https://github.com/xiqing85/notebook-cam/docs)
+- [GitHub Issues](https://github.com/xiqing85/mibee-eye-notebook/issues)
+- [Documentation](https://github.com/xiqing85/mibee-eye-notebook/docs)
 - [Project Discord/Community] (if available)
 
 Happy coding! 🚀
