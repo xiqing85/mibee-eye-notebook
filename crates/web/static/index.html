@@ -934,7 +934,7 @@ async function K(id) {
     let pv = document.getElementById('pv');
     if (pv) {
       if (c.status === 'running') {
-        pv.innerHTML = '<img src="/api/cameras/' + encodeURIComponent(c.id) + '/live" alt="Live preview" style="width:100%;height:100%;object-fit:contain;border-radius:var(--r);background:#000" onerror="kE(\'' + encodeURIComponent(c.id) + '\')" />';
+        pv.innerHTML = '<img src="/api/cameras/' + encodeURIComponent(c.id) + '/live" alt="Live preview" style="width:100%;height:100%;object-fit:contain;border-radius:var(--r);background:#000" onerror="if(this.parentNode)kE(\'' + encodeURIComponent(c.id) + '\')" />';
       } else {
         pv.innerHTML = '<div class=vi>&#x25B6;</div><h3>' + t('camera_view.no_stream') + '</h3><p class=tm>' + t('camera_view.start_stream') + '</p><button class="b bp" onclick=vY("' + encodeURIComponent(c.id) + '") style=margin-top:var(--s16) data-i18n="stream.start">' + t('stream.start') + '</button>';
       }
