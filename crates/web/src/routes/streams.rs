@@ -4,7 +4,7 @@
 
 use axum::Json;
 use axum::extract::{Extension, Path};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use futures_core::Stream;
 use protocols::rtsp_server::RtspServer;
@@ -305,10 +305,14 @@ pub async fn snapshot(
     match capture_result {
         Ok(Ok(jpeg_data)) => {
             let mut headers = HeaderMap::new();
-            headers.insert("content-type", "image/jpeg".parse().unwrap());
+            headers.insert("content-type", HeaderValue::from_static("image/jpeg"));
             headers.insert(
                 "content-length",
-                jpeg_data.len().to_string().parse().unwrap(),
+                jpeg_data
+                    .len()
+                    .to_string()
+                    .parse::<HeaderValue>()
+                    .unwrap_or(HeaderValue::from_static("0")),
             );
             (StatusCode::OK, headers, jpeg_data).into_response()
         }
