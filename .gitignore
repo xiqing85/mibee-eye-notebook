@@ -36,3 +36,8 @@ crates/web/tls/*.pem
 
 # Database files (local runtime)
 *.db
+*.db-shm
+*.db-wal
+
+# Build output binary (accidentally generated)
+rust_out
