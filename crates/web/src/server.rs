@@ -1,5 +1,5 @@
-use axum::extract::DefaultBodyLimit;
 use crate::errors::ApiError;
+use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, Method, Request, header};
 use axum::middleware;
 use axum::middleware::Next;
@@ -244,7 +244,8 @@ async fn csrf_middleware(request: Request<axum::body::Body>, next: Next) -> Resp
         Method::POST | Method::PUT | Method::DELETE | Method::PATCH
     );
     // Auth endpoints are exempt from CSRF: login/setup issue the CSRF token
-    let is_auth_endpoint = path == "/api/auth/login" || path == "/api/auth/setup" || path == "/api/auth/logout";
+    let is_auth_endpoint =
+        path == "/api/auth/login" || path == "/api/auth/setup" || path == "/api/auth/logout";
     if is_state_changing && !is_auth_endpoint {
         let cookie_csrf = request
             .headers()
@@ -267,7 +268,8 @@ async fn csrf_middleware(request: Request<axum::body::Body>, next: Next) -> Resp
                     Some(ref actual) if actual == expected => {}
                     _ => {
                         tracing::warn!(method = %method, path = %request.uri().path(), "CSRF token mismatch — rejecting");
-                        return ApiError::bad_request("CSRF token missing or invalid").into_response();
+                        return ApiError::bad_request("CSRF token missing or invalid")
+                            .into_response();
                     }
                 }
             }
