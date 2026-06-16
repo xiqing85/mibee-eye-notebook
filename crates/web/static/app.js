@@ -521,7 +521,7 @@ function V() {
           ? '<button class="b bd bsm" onclick=w("' + id + '") aria-label="' + t('stream.stop') + '">' + t('stream.stop') + '</button>'
           : '<button class="b bp bsm" onclick=Y("' + id + '") aria-label="' + t('stream.start') + '">' + t('stream.start') + '</button>'
         ) +
-        '<button class="b bs bsm" onclick=G("#/c/' + id + '") aria-label="' + t('stream.view') + '">' + t('stream.view') + '</button>' +
+        '<button class="b bs bsm" onclick=K("' + id + '") aria-label="' + t('stream.view') + '">' + t('stream.view') + '</button>' +
         '<button class="b bs bsm" onclick=ec(' + id + ') aria-label="' + t('stream.edit') + '">' + t('stream.edit') + '</button>' +
         '<button class="b bd bsm" onclick=x("' + id + '","' + J(c.name) + '") aria-label="' + t('stream.delete') + '">' + t('stream.delete') + '</button>' +
       '</td>';
@@ -712,32 +712,37 @@ function ft(m, e) {
 // ============================================================
 // CAMERA LIVE VIEW
 // ============================================================
+let _k = false;
 async function K(id) {
+  if (_k) return;
+  _k = true;
+  let setText = (id, txt) => { let e = document.getElementById(id); if (e) e.textContent = txt; };
   P('cam');
+  window.location.hash = '#/c/' + id;
   N(1);
   U('');
-
-  document.getElementById('cn').textContent = t('camera_view.loading');
-  document.getElementById('cs').textContent = '';
-
+  setText('cn', t('camera_view.loading'));
+  setText('cs', '');
   try {
     let r = await A('GET', '/api/cameras/' + id);
     if (!r.ok) {
       T(t('camera_view.load_failed'), 'e');
       G('#db');
+      _k = false;
       return;
     }
     let c = r.data;
-
-    document.getElementById('cn').textContent = c.name;
-    document.getElementById('cs').textContent = c.status;
-    document.getElementById('ci-').textContent = c.id;
-    document.getElementById('cit').textContent = F(c.camera_type);
-    document.getElementById('cis').textContent = c.status;
-    document.getElementById('cic').textContent = c.created_at || '-';
-    document.getElementById('ru').textContent = c.config && c.config.url
+    // Re-assert camera view after fetch — something may have reverted to dashboard during await
+    P('cam');
+    setText('cn', c.name);
+    setText('cs', c.status);
+    setText('ci-', c.id);
+    setText('cit', F(c.camera_type));
+    setText('cis', c.status);
+    setText('cic', c.created_at || '-');
+    setText('ru', c.config && c.config.url
       ? c.config.url
-      : t('camera_view.local_capture');
+      : t('camera_view.local_capture'));
 
     // Live preview: show MJPEG stream when running, placeholder otherwise.
     let pv = document.getElementById('pv');
@@ -748,9 +753,14 @@ async function K(id) {
         pv.innerHTML = '<div class=vi>&#x25B6;</div><h3>' + t('camera_view.no_stream') + '</h3><p class=tm>' + t('camera_view.start_stream') + '</p><button class="b bp" onclick=vY("' + encodeURIComponent(c.id) + '") style=margin-top:var(--s16) data-i18n="stream.start">' + t('stream.start') + '</button>';
       }
     }
-  } catch (_) {
+    // Re-assert camera view at the end of try block
+    P('cam');
+    _k = false;
+  } catch (e) {
     T(t('error.network'), 'e');
     G('#db');
+  } finally {
+    _k = false;
   }
 }
 
@@ -986,6 +996,7 @@ async function createCameraFromDevice(deviceIndex) {
 // ROUTER
 // ============================================================
 async function r() {
+  if (_k) return; // Guard: prevent re-routing while K() is active
   spoll_stop();
   let route = R();
 
@@ -1238,5 +1249,6 @@ window.toggleTheme = toggleTheme;
 window.toggleLang = toggleLang;
 window.translatePage = translatePage;
 window.vY = vY;
+window.K = K;
 
 })();
