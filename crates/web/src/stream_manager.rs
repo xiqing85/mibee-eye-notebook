@@ -30,16 +30,18 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
+use rusqlite::Connection;
 use serde::Serialize;
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use protocols::rtsp_server::RtspServer;
-use streaming::hub::StreamHub;
-use streaming::output::RtspOutput;
+use streaming::hub::{HubHandle, OutputId, StreamHub};
+use streaming::output::{FileOutput, Output, RtmpOutput, RtspOutput};
 use streaming::resource::ResourceController;
 use streaming::source::Source;
 
@@ -95,7 +97,6 @@ pub struct StreamInfo {
 
 // ── StreamHandle ─────────────────────────────────────────────────────────────
 
-/// Internal handle for tracking an active stream.
 struct StreamHandle {
     /// Join handle for the spawned pipeline task.
     join_handle: Option<tokio::task::JoinHandle<()>>,
@@ -103,6 +104,11 @@ struct StreamHandle {
     stop_tx: Option<watch::Sender<bool>>,
     /// RTSP URL for external access.
     rtsp_url: Option<String>,
+    /// RTMP URL we are pushing to (if RTMP push enabled).
+    rtmp_url: Option<String>,
+    /// Handle for attaching outputs at runtime (None if stream not running
+    /// or hub handle already extracted).
+    hub_handle: Option<HubHandle>,
     /// Current status.
     status: StreamStatus,
 }
@@ -118,14 +124,23 @@ pub struct StreamManager {
     streams: RwLock<HashMap<String, StreamHandle>>,
     /// Resource controller for bounding concurrent streams.
     resource_controller: ResourceController,
+    /// Hostname/IP advertised in stream URLs returned to clients.
+    /// Resolved at startup from config or auto-detected LAN IP.
+    advertised_host: String,
+    /// Optional DB connection for reading protocol configs (RTMP push, etc.).
+    /// When None, no protocol-driven outputs are auto-attached.
+    db: Option<Arc<Mutex<Connection>>>,
 }
 
 impl StreamManager {
     /// Create a new stream manager with the default max (16) concurrent streams.
+    #[tracing::instrument(skip_all)]
     pub fn new() -> Self {
         Self {
             streams: RwLock::new(HashMap::new()),
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
+            advertised_host: "localhost".to_string(),
+            db: None,
         }
     }
 
@@ -135,6 +150,37 @@ impl StreamManager {
         Self {
             streams: RwLock::new(HashMap::new()),
             resource_controller: ResourceController::new(max_streams),
+            advertised_host: "localhost".to_string(),
+            db: None,
+        }
+    }
+
+    /// Create a new stream manager with an explicit advertised host.
+    ///
+    /// The `advertised_host` is used when constructing RTSP/RTMP/etc. URLs
+    /// returned to clients so they can reach this machine from the network.
+    /// Use this in production; [`new`](Self::new) defaults to `"localhost`.
+    pub fn with_host(advertised_host: String) -> Self {
+        Self {
+            streams: RwLock::new(HashMap::new()),
+            resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
+            advertised_host,
+            db: None,
+        }
+    }
+
+    /// Create a new stream manager with advertised host AND DB connection.
+    ///
+    /// The DB is used to read protocol configs (e.g., RTMP push enable/url)
+    /// at stream-creation time, so Web UI config changes take effect on the
+    /// next stream start (no restart required for new streams).
+    #[tracing::instrument(skip_all)]
+    pub fn with_host_and_db(advertised_host: String, db: Arc<Mutex<Connection>>) -> Self {
+        Self {
+            streams: RwLock::new(HashMap::new()),
+            resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
+            advertised_host,
+            db: Some(db),
         }
     }
 
@@ -170,6 +216,7 @@ impl StreamManager {
     /// * The resource limit has been reached (use [`available_permits`](Self::available_permits)).
     /// * A stream for this `camera_id` already exists.
     /// * Source creation or pipeline setup fails.
+    #[tracing::instrument(skip_all, fields(camera_id))]
     pub async fn create_stream(
         &self,
         camera_id: String,
@@ -214,9 +261,9 @@ impl StreamManager {
 
         // ── 4. Set up pipeline ──────────────────────────────────────────
         let (stop_tx, stop_rx) = watch::channel(false);
-        let rtsp_base = format!("rtsp://localhost:{}", RTSP_PORT);
+        let rtsp_base = format!("rtsp://{}:{}", self.advertised_host, RTSP_PORT);
 
-        let (run_handle, rtsp_url) = {
+        let (run_handle, rtsp_url, rtmp_url, hub_handle) = {
             let mut hub = StreamHub::new(source, self.resource_controller.clone());
             let stream_url: Option<String>;
 
@@ -225,15 +272,28 @@ impl StreamManager {
                 let stream_path = format!("live/{}", camera_id);
                 let ssrc = Uuid::new_v4().as_u128() as u32;
 
+                // Oneshot channel to receive SPS/PPS from RtspOutput and update the SDP.
+                let (sps_pps_tx, sps_pps_rx) = oneshot::channel::<(Vec<u8>, Vec<u8>)>();
+                let server_clone = server.clone();
+                let path_clone = stream_path.clone();
+
+                tokio::spawn(async move {
+                    if let Ok((sps, pps)) = sps_pps_rx.await {
+                        server_clone.update_sps_pps(&path_clone, sps, pps);
+                        info!(path = %path_clone, "SDP updated with sprop-parameter-sets");
+                    }
+                });
+
                 let frame_tx =
                     server.register_live_stream(stream_path.clone(), SDP_BODY.to_string(), ssrc);
 
-                let output = RtspOutput::with_channel(
+                let mut output = RtspOutput::with_channel(
                     stream_path.clone(),
                     SDP_BODY.to_string(),
                     ssrc,
                     frame_tx,
                 );
+                output.set_sps_pps_tx(sps_pps_tx);
 
                 hub.add_output(Box::new(output)).await;
                 stream_url = Some(format!("{}/{}", rtsp_base, stream_path));
@@ -242,8 +302,120 @@ impl StreamManager {
                 stream_url = None;
             }
 
+            // ── 4b. Optional RTMP push output ───────────────────────────
+            //
+            // If the DB-backed `rtmp_push` config has `enabled: true`,
+            // construct an RtmpOutput from push_url + stream_name and
+            // attach it to the hub. Frames will be pushed to the external
+            // RTMP ingest point in parallel with RTSP serving.
+            //
+            // Read happens at stream creation time; toggling RTMP via
+            // Web UI requires stopping and restarting the stream.
+            let mut rtmp_url: Option<String> = None;
+            if let Some(db) = &self.db {
+                let conn = db.lock().await;
+                match crate::db::get_protocol_config(&conn, "rtmp_push") {
+                    Ok(Some(cfg)) => {
+                        let enabled = cfg
+                            .get("enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if enabled {
+                            let push_url =
+                                cfg.get("push_url").and_then(|v| v.as_str()).unwrap_or("");
+                            let stream_name = cfg
+                                .get("stream_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("stream");
+                            if !push_url.is_empty() {
+                                let full_url = if push_url.ends_with(stream_name) {
+                                    push_url.to_string()
+                                } else {
+                                    format!("{}/{}", push_url.trim_end_matches('/'), stream_name)
+                                };
+                                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    RtmpOutput::new(&full_url)
+                                })) {
+                                    Ok(mut output) => {
+                                        if let Err(e) = output.start().await {
+                                            warn!(%camera_id, error = %e, "RTMP output failed to start; stream will continue without RTMP push");
+                                        } else {
+                                            info!(%camera_id, rtmp_url = %full_url, "RTMP push output attached");
+                                            hub.add_output(Box::new(output)).await;
+                                            rtmp_url = Some(full_url);
+                                        }
+                                    }
+                                    Err(_) => {
+                                        warn!(%camera_id, "RtmpOutput::new panicked; skipping RTMP push");
+                                    }
+                                }
+                            } else {
+                                warn!(%camera_id, "RTMP push enabled but push_url is empty; skipping");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // No rtmp_push config in DB — silently skip.
+                    }
+                    Err(e) => {
+                        warn!(%camera_id, error = %e, "failed to read rtmp_push config from DB; skipping RTMP push");
+                    }
+                }
+            }
+
+            // ── 4c. Optional local recording output ──────────────────────
+            //
+            // If the DB-backed `recording` config has `enabled: true`,
+            // construct a FileOutput that muxes H.264 into rolling MP4
+            // segments. ffmpeg handles segmentation; we run a periodic
+            // pruning pass to enforce the capacity limit.
+            if let Some(db) = &self.db {
+                let conn = db.lock().await;
+                match crate::db::get_protocol_config(&conn, "recording") {
+                    Ok(Some(cfg)) => {
+                        let enabled = cfg
+                            .get("enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if enabled {
+                            let path = cfg
+                                .get("path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("./recordings");
+                            let seg = cfg
+                                .get("segment_duration_secs")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(900);
+                            let cap = cfg
+                                .get("max_capacity_mb")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(10_240);
+                            let mut output = FileOutput::new(path, &camera_id, seg, cap);
+                            match output.start().await {
+                                Ok(()) => {
+                                    info!(%camera_id, path, segment_secs = seg, "FileOutput attached");
+                                    hub.add_output(Box::new(output)).await;
+                                }
+                                Err(e) => {
+                                    warn!(%camera_id, error = %e, "FileOutput failed to start; stream will continue without local recording");
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!(%camera_id, error = %e, "failed to read recording config; skipping local recording");
+                    }
+                }
+            }
+
             // Start the pipeline.
             let handle = hub.run().await;
+
+            // Capture a runtime handle BEFORE moving hub into the monitor task.
+            // This lets external callers (e.g., GB28181 INVITE handler) attach
+            // additional outputs to this stream after it has started.
+            let hub_handle = hub.handle();
 
             // Spawn a monitor task that calls hub.stop() when the external
             // stop signal is received.
@@ -255,7 +427,7 @@ impl StreamManager {
                 hub.stop();
             });
 
-            (handle, stream_url)
+            (handle, stream_url, rtmp_url, Some(hub_handle))
         };
 
         // ── 5. Store the stream handle ──────────────────────────────────
@@ -263,6 +435,8 @@ impl StreamManager {
             join_handle: Some(run_handle),
             stop_tx: Some(stop_tx),
             rtsp_url: rtsp_url.clone(),
+            rtmp_url: rtmp_url.clone(),
+            hub_handle,
             status: StreamStatus::Running,
         };
 
@@ -277,7 +451,7 @@ impl StreamManager {
         Ok(StreamInfo {
             camera_id,
             rtsp_url,
-            rtmp_url: None,
+            rtmp_url,
             status,
         })
     }
@@ -288,6 +462,7 @@ impl StreamManager {
     /// timeout, and removes the stream from tracking.
     ///
     /// Returns an error if the camera ID is not found.
+    #[tracing::instrument(skip_all, fields(camera_id))]
     pub async fn stop_stream(&self, camera_id: &str) -> Result<StreamInfo> {
         // Remove the handle from tracking first so concurrent calls see it gone.
         let mut handle = {
@@ -323,12 +498,13 @@ impl StreamManager {
         Ok(StreamInfo {
             camera_id: camera_id.to_string(),
             rtsp_url: handle.rtsp_url,
-            rtmp_url: None,
+            rtmp_url: handle.rtmp_url,
             status: StreamStatus::Stopped,
         })
     }
 
     /// Stop all active streams during graceful shutdown.
+    #[tracing::instrument(skip_all)]
     pub async fn shutdown_all(&self) {
         let camera_ids: Vec<String> = {
             let streams = self.streams.read().await;
@@ -342,6 +518,7 @@ impl StreamManager {
     }
 
     /// Return information about all currently tracked streams.
+    #[tracing::instrument(skip_all)]
     pub async fn list_active_streams(&self) -> Vec<StreamInfo> {
         let streams = self.streams.read().await;
         streams
@@ -349,13 +526,14 @@ impl StreamManager {
             .map(|(camera_id, handle)| StreamInfo {
                 camera_id: camera_id.clone(),
                 rtsp_url: handle.rtsp_url.clone(),
-                rtmp_url: None,
+                rtmp_url: handle.rtmp_url.clone(),
                 status: handle.status.clone(),
             })
             .collect()
     }
 
     /// Return the number of currently active (tracked) streams.
+    #[tracing::instrument(skip_all)]
     pub async fn active_stream_count(&self) -> usize {
         self.streams.read().await.len()
     }
@@ -364,6 +542,56 @@ impl StreamManager {
     /// (active).
     pub async fn has_stream(&self, camera_id: &str) -> bool {
         self.streams.read().await.contains_key(camera_id)
+    }
+
+    /// Attach a new output to an already-running stream.
+    ///
+    /// This is the runtime entry point used by external protocol handlers
+    /// (e.g., GB28181 INVITE) to push frames from an active camera pipeline
+    /// to a newly-connected consumer.
+    ///
+    /// Returns `Ok(OutputId)` if the output was attached; `Err` if the camera is
+    /// not running or the runtime hub handle is no longer available
+    /// (e.g., the stream is shutting down).
+    #[tracing::instrument(skip_all, fields(camera_id))]
+    pub async fn add_output_to_stream(
+        &self,
+        camera_id: &str,
+        output: Box<dyn Output>,
+    ) -> Result<OutputId> {
+        let streams = self.streams.read().await;
+        let handle = streams
+            .get(camera_id)
+            .ok_or_else(|| anyhow::anyhow!("no active stream for camera {camera_id}"))?;
+        let hub_handle = handle
+            .hub_handle
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no hub handle for camera {camera_id}"))?;
+        let id = hub_handle.add_output_at_runtime(output).await;
+        Ok(id)
+    }
+
+    /// Remove a runtime-attached output from a running stream.
+    ///
+    /// Detaches the output by its [`OutputId`] and signals its task to stop.
+    /// Called from protocol handlers (e.g., GB28181 BYE) when an external
+    /// consumer disconnects.
+    #[tracing::instrument(skip_all, fields(camera_id))]
+    pub async fn remove_output_from_stream(
+        &self,
+        camera_id: &str,
+        output_id: OutputId,
+    ) -> Result<()> {
+        let streams = self.streams.read().await;
+        let handle = streams
+            .get(camera_id)
+            .ok_or_else(|| anyhow::anyhow!("no active stream for camera {camera_id}"))?;
+        let hub_handle = handle
+            .hub_handle
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no hub handle for camera {camera_id}"))?;
+        hub_handle.remove_output(output_id).await;
+        Ok(())
     }
 }
 
@@ -461,6 +689,8 @@ mod tests {
                 join_handle: None,
                 stop_tx: None,
                 rtsp_url: None,
+                rtmp_url: None,
+                hub_handle: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("cam-1".into(), handle);
@@ -491,6 +721,8 @@ mod tests {
                 join_handle: None,
                 stop_tx: None,
                 rtsp_url: Some("rtsp://localhost:8554/live/test".into()),
+                rtmp_url: None,
+                hub_handle: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -522,6 +754,8 @@ mod tests {
                 join_handle: None,
                 stop_tx: Some(stop_tx),
                 rtsp_url: None,
+                rtmp_url: None,
+                hub_handle: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -551,6 +785,8 @@ mod tests {
                 join_handle: None,
                 stop_tx: None,
                 rtsp_url: None,
+                rtmp_url: None,
+                hub_handle: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("a".into(), handle);
@@ -563,6 +799,8 @@ mod tests {
                 join_handle: None,
                 stop_tx: None,
                 rtsp_url: None,
+                rtmp_url: None,
+                hub_handle: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("b".into(), handle);

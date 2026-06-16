@@ -86,6 +86,31 @@
   --tr: 150ms ease;
 }
 
+/* Light theme overrides */
+[data-theme="light"] {
+  --bg: #f5f7fa;
+  --bs: #ffffff;
+  --sf: #ffffff;
+  --in: #f0f2f5;
+  --ho: #e8ebf0;
+  --bd: #d8dde6;
+  --bf: #00bcd4;
+  --ac: #0097a7;
+  --ah: #00838f;
+  --ad: rgba(0,151,167,0.08);
+  --ok: #2e7d32;
+  --od: rgba(46,125,50,0.08);
+  --wa: #ed6c02;
+  --wd: rgba(237,108,2,0.08);
+  --da: #c62828;
+  --dd: rgba(198,40,40,0.08);
+  --t1: #1a1a2e;
+  --t2: #5a5a72;
+  --t3: #8a8a9a;
+  --sm: 0 1px 3px rgba(0,0,0,0.08);
+  --sl: 0 8px 32px rgba(0,0,0,0.12);
+}
+
 /* ============================================================
    RESET & BASE
    ============================================================ */
@@ -179,6 +204,37 @@ a:hover { color: var(--ah); }
   color: var(--da);
   border-color: var(--da);
   background: var(--dd);
+}
+
+/* Theme and language toggle buttons */
+#theme-toggle, #lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s4);
+  border-radius: var(--r6);
+  color: var(--t2);
+  font-size: 0.929rem;
+  transition: all var(--tr);
+  cursor: pointer;
+  border: 1px solid var(--bd);
+  background: transparent;
+  line-height: 1;
+  width: 32px;
+  height: 32px;
+}
+#theme-toggle:hover, #lang-toggle:hover {
+  color: var(--t1);
+  background: var(--ho);
+  border-color: var(--t3);
+}
+#lang-toggle {
+  width: auto;
+  padding: var(--s4) var(--s8);
+  font-weight: 600;
+  font-size: 0.857rem;
+  font-family: var(--mo);
+  letter-spacing: 0.02em;
 }
 
 /* ============================================================
