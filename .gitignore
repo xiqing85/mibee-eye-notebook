@@ -41,3 +41,6 @@ crates/web/tls/*.pem
 
 # Build output binary (accidentally generated)
 rust_out
+
+# Generated build artifact (build.rs inlines CSS+JS into this from index.template.html)
+crates/web/static/index.html
