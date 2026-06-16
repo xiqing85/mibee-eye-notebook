@@ -238,11 +238,14 @@ async fn csp_middleware(request: Request<axum::body::Body>, next: Next) -> Respo
 async fn csrf_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
     use axum::http::Method;
     let method = request.method().clone();
+    let path = request.uri().path();
     let is_state_changing = matches!(
         method,
         Method::POST | Method::PUT | Method::DELETE | Method::PATCH
     );
-    if is_state_changing {
+    // Auth endpoints are exempt from CSRF: login/setup issue the CSRF token
+    let is_auth_endpoint = path == "/api/auth/login" || path == "/api/auth/setup" || path == "/api/auth/logout";
+    if is_state_changing && !is_auth_endpoint {
         let cookie_csrf = request
             .headers()
             .get(header::COOKIE)
