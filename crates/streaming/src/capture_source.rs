@@ -183,7 +183,11 @@ fn detect_camera_capabilities(device_index: usize) -> Result<(String, String, St
             tracing::warn!(
                 "v4l2-ctl not found - install v4l-utils for optimal camera parameters; falling back to MJPEG/1280x720/30"
             );
-            return Ok(("mjpeg".to_string(), "1280x720".to_string(), "30".to_string()));
+            return Ok((
+                "mjpeg".to_string(),
+                "1280x720".to_string(),
+                "30".to_string(),
+            ));
         }
         Err(e) => anyhow::bail!("failed to run v4l2-ctl: {}", e),
     };
@@ -195,7 +199,11 @@ fn detect_camera_capabilities(device_index: usize) -> Result<(String, String, St
             output.status,
             stderr.trim()
         );
-        return Ok(("mjpeg".to_string(), "1280x720".to_string(), "30".to_string()));
+        return Ok((
+            "mjpeg".to_string(),
+            "1280x720".to_string(),
+            "30".to_string(),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -363,7 +371,11 @@ fn detect_camera_capabilities(device_index: usize) -> Result<(String, String, St
 
     // Ultimate fallback — should not normally reach here
     tracing::warn!("could not parse v4l2-ctl output — falling back to MJPEG/1280x720/30");
-    Ok(("mjpeg".to_string(), "1280x720".to_string(), "30".to_string()))
+    Ok((
+        "mjpeg".to_string(),
+        "1280x720".to_string(),
+        "30".to_string(),
+    ))
 }
 impl Source for VideoCaptureSource {
     #[tracing::instrument(skip_all)]
@@ -394,17 +406,32 @@ impl Source for VideoCaptureSource {
 
             let mut cmd = tokio::process::Command::new("ffmpeg");
             cmd.arg("-y")
-                .arg("-f").arg("v4l2")
-                .arg("-input_format").arg(&input_format)
-                .arg("-video_size").arg(&video_size)
-                .arg("-framerate").arg(&framerate)
-                .arg("-i").arg(&device_path)
-                .arg("-c:v").arg("libx264")
-                .arg("-preset").arg("ultrafast")
-                .arg("-tune").arg("zerolatency")
-                .arg("-g").arg("30")
-                .arg("-x264-params").arg("repeat-headers=1")
-                .arg("-f").arg("h264")
+                .arg("-f")
+                .arg("v4l2")
+                .arg("-input_format")
+                .arg(&input_format)
+                .arg("-video_size")
+                .arg(&video_size)
+                .arg("-framerate")
+                .arg(&framerate)
+                .arg("-i")
+                .arg(&device_path)
+                .arg("-pix_fmt")
+                .arg("yuv420p")
+                .arg("-c:v")
+                .arg("libx264")
+                .arg("-preset")
+                .arg("ultrafast")
+                .arg("-tune")
+                .arg("zerolatency")
+                .arg("-threads")
+                .arg("1")
+                .arg("-g")
+                .arg("30")
+                .arg("-x264-params")
+                .arg("repeat-headers=1")
+                .arg("-f")
+                .arg("h264")
                 .arg("pipe:1")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
@@ -448,10 +475,12 @@ impl Source for VideoCaptureSource {
             let (w, h) = {
                 let mut parts = video_size.splitn(2, 'x');
                 (
-                    parts.next()
+                    parts
+                        .next()
                         .and_then(|p| p.parse::<u32>().ok())
                         .unwrap_or(1280),
-                    parts.next()
+                    parts
+                        .next()
                         .and_then(|p| p.parse::<u32>().ok())
                         .unwrap_or(720),
                 )
@@ -508,27 +537,22 @@ impl Source for VideoCaptureSource {
                 // Obtain stdout reference inside the loop — crash restart
                 // can replace self.ffmpeg_stdout and continue will pick it up.
                 let stdout = self
-                .ffmpeg_stdout
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
+                    .ffmpeg_stdout
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
 
                 // Need more data — read a chunk from ffmpeg stdout.
                 let mut tmp = vec![0u8; 65536];
                 let n = stdout
-                .read(&mut tmp)
-                .await
-                .context("error reading ffmpeg stdout")?;
+                    .read(&mut tmp)
+                    .await
+                    .context("error reading ffmpeg stdout")?;
 
                 if n == 0 {
                     // ffmpeg stdout closed — encoder exited or crashed.
                     // Attempt automatic restart with crash limit guarding.
-                    let start_time = self
-                .ffmpeg_start_time
-                .unwrap_or_else(Instant::now);
-                    match check_ffmpeg_crash_restart(
-                        &mut self.crash_count,
-                        start_time,
-                    ) {
+                    let start_time = self.ffmpeg_start_time.unwrap_or_else(Instant::now);
+                    match check_ffmpeg_crash_restart(&mut self.crash_count, start_time) {
                         Ok(delay) => {
                             tracing::warn!(
                                 delay_ms = delay.as_millis(),
@@ -545,64 +569,64 @@ impl Source for VideoCaptureSource {
                             self.ffmpeg_stdout = None;
 
                             // Re-spawn ffmpeg with the same detected params
-                            let device_path =
-                                format!("/dev/video{}", self.device_index);
-                            let video_size = format!(
-                                    "{}x{}",
-                                    self.camera_width, self.camera_height
-                            );
+                            let device_path = format!("/dev/video{}", self.device_index);
+                            let video_size =
+                                format!("{}x{}", self.camera_width, self.camera_height);
 
                             let mut cmd = tokio::process::Command::new("ffmpeg");
                             cmd.arg("-y")
-                            .arg("-f").arg("v4l2")
-                            .arg("-input_format")
-                            .arg(&self.camera_format)
-                            .arg("-video_size").arg(&video_size)
-                            .arg("-framerate")
-                            .arg(&self.camera_framerate)
-                            .arg("-i").arg(&device_path)
-                            .arg("-c:v").arg("libx264")
-                            .arg("-preset").arg("ultrafast")
-                            .arg("-tune").arg("zerolatency")
-                            .arg("-g").arg("30")
-                            .arg("-x264-params")
-                            .arg("repeat-headers=1")
-                            .arg("-f").arg("h264")
-                            .arg("pipe:1")
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped());
+                                .arg("-f")
+                                .arg("v4l2")
+                                .arg("-input_format")
+                                .arg(&self.camera_format)
+                                .arg("-video_size")
+                                .arg(&video_size)
+                                .arg("-framerate")
+                                .arg(&self.camera_framerate)
+                                .arg("-i")
+                                .arg(&device_path)
+                                .arg("-c:v")
+                                .arg("libx264")
+                                .arg("-preset")
+                                .arg("ultrafast")
+                                .arg("-tune")
+                                .arg("zerolatency")
+                                .arg("-g")
+                                .arg("30")
+                                .arg("-x264-params")
+                                .arg("repeat-headers=1")
+                                .arg("-f")
+                                .arg("h264")
+                                .arg("pipe:1")
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped());
 
-                            let mut child = cmd.spawn().context(
-                                "failed to re-spawn ffmpeg after crash",
-                            )?;
+                            let mut child = cmd
+                                .spawn()
+                                .context("failed to re-spawn ffmpeg after crash")?;
 
                             let new_stdout = child
-                            .stdout
-                            .take()
-                            .context(
-                                "failed to capture new ffmpeg stdout",
-                            )?;
+                                .stdout
+                                .take()
+                                .context("failed to capture new ffmpeg stdout")?;
 
                             // Spawn stderr log reader for the new process
                             if let Some(stderr) = child.stderr.take() {
-                                use tokio::io::{
-                                    AsyncBufReadExt, BufReader,
-                                };
+                                use tokio::io::{AsyncBufReadExt, BufReader};
                                 let mut reader = BufReader::new(stderr);
                                 tokio::spawn(async move {
                                     let mut line = String::new();
                                     loop {
                                         line.clear();
-                                        match reader.read_line(&mut line).await
-                                        {
+                                        match reader.read_line(&mut line).await {
                                             Ok(0) => break,
                                             Ok(_) => {
                                                 let trimmed = line.trim_end();
                                                 if !trimmed.is_empty() {
                                                     tracing::warn!(
-                                                    "ffmpeg (restarted): {}",
-                                                    trimmed
+                                                        "ffmpeg (restarted): {}",
+                                                        trimmed
                                                     );
                                                 }
                                             }

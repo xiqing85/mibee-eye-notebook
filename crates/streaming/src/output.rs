@@ -12,13 +12,13 @@ use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::broadcast;
 
-use tokio::sync::oneshot;
 use crate::source::MediaFrame;
 use anyhow::Result;
 use protocols::h264;
 use protocols::rtmp::{RtmpPushClient, build_video_nalus, build_video_sequence_header};
 use protocols::rtp::{RTP_HEADER_SIZE, RTP_MTU, RtpHeaderFlags, RtpPacket, fragment_nal};
 use std::net::SocketAddr;
+use tokio::sync::oneshot;
 
 // ── Output trait ───────────────────────────────────────────────────────────────
 
@@ -190,32 +190,36 @@ impl Output for RtspOutput {
                             }
                             let ts = self.rtp_timestamp;
 
-                            // Before P-frames, re-send cached SPS/PPS so any client
+                            // Re-send cached SPS/PPS before P-frames so any client
                             // that connected mid-GOP can decode immediately without
                             // waiting for the next IDR keyframe.
                             if nal_type == 1 {
                                 if let Some(sps) = &self.cached_sps {
-                                    let pkts =
-                                        build_rtp_packets(sps, &mut self.rtp_seq, ts, self.ssrc);
-                                    for p in pkts {
-                                        let _ = tx.send(p);
+                                    for pkt in
+                                        build_rtp_packets(sps, &mut self.rtp_seq, ts, self.ssrc)
+                                    {
+                                        let _ = tx.send(pkt);
                                     }
                                 }
                                 if let Some(pps) = &self.cached_pps {
-                                    let pkts =
-                                        build_rtp_packets(pps, &mut self.rtp_seq, ts, self.ssrc);
-                                    for p in pkts {
-                                        let _ = tx.send(p);
+                                    for pkt in
+                                        build_rtp_packets(pps, &mut self.rtp_seq, ts, self.ssrc)
+                                    {
+                                        let _ = tx.send(pkt);
                                     }
                                 }
                             }
 
                             // Send the actual NAL unit as RTP packets.
-                            let packets =
-                                build_rtp_packets(&data, &mut self.rtp_seq, ts, self.ssrc);
-                            self.rtp_timestamp = self.rtp_timestamp.wrapping_add(3000);
-                            for pkt in packets {
+                            for pkt in build_rtp_packets(&data, &mut self.rtp_seq, ts, self.ssrc) {
                                 let _ = tx.send(pkt);
+                            }
+
+                            // Only advance timestamp for slice NALs (types 1 and 5).
+                            // SPS(7), PPS(8), SEI(6) are part of the same access unit
+                            // and MUST share the timestamp of their slice (RFC 6184 §5.1).
+                            if nal_type == 1 || nal_type == 5 {
+                                self.rtp_timestamp = self.rtp_timestamp.wrapping_add(3000);
                             }
                             Ok(())
                         }
