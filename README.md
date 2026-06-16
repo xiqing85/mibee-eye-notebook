@@ -81,7 +81,7 @@ mibee-rec/
 | **GB/T 28181 Device** | SIP REGISTER (Digest) + RTP push | Hand-written (`SipDeviceClient` + `RtpPusher`, 2033 LOC) | ⚠️ SIP registers, but **RTP pusher not attached** to StreamHub |
 | **H.264** | NAL unit parser, SPS/PPS, keyframe detection | Hand-written (`H264Parser`) | ✅ Used by RTMP & GB28181 |
 | **H.265 decode** | Browser fallback to H.264 | — | ⚠️ Not universal in browsers; H.264 only for v1 |
-| **Browser live preview** | MSE / JPEG sequence in `<video>` | — | ❌ **Missing** — UI shows static placeholder |
+| **Browser live preview** | MJPEG multipart stream via `<img>` | `live_preview()` route | ✅ Working — RTSP→MJPEG transcode, multipart stream |
 | **Local recording** | MP4 segment archive | — | ❌ **Missing** — no `FileOutput`, no `[recording]` config |
 | **i18n (zh-CN / en-US)** | i18n layer for every UI string | — | ❌ **Missing** — UI hardcoded English |
 | **Day/night theme** | Theme toggle | — | ❌ **Missing** |
