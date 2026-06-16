@@ -558,7 +558,7 @@ impl AppConfig {
         }
         // Log level validation
         match self.observability.log_level.as_str() {
-            "trace" | "debug" | "info" | "warn" | "error" => {},
+            "trace" | "debug" | "info" | "warn" | "error" => {}
             other => anyhow::bail!(
                 "observability.log_level: must be one of trace/debug/info/warn/error, got {}",
                 other

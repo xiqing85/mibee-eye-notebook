@@ -222,7 +222,10 @@ pub fn auto_discover_cameras(conn: &Connection) -> Result<usize> {
         // Skip metadata-only device nodes (UVC cameras expose multiple /dev/videoN,
         // only one has actual capture formats).
         if dev.formats.is_empty() {
-            tracing::debug!(index = dev.index, "skipping device with no formats (likely metadata node)");
+            tracing::debug!(
+                index = dev.index,
+                "skipping device with no formats (likely metadata node)"
+            );
             continue;
         }
 
