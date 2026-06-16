@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -14,7 +14,6 @@ use tokio::sync::Mutex;
 use crate::db;
 use crate::errors::ApiError;
 use security::middleware::AuthenticatedUser;
-
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
@@ -33,11 +32,10 @@ pub struct UpdateSettingsRequest {
 /// GET /api/settings — return all settings as a key-value object.
 #[tracing::instrument(skip_all)]
 pub async fn get_settings(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
-    let conn = db.lock().await;
-    match db::list_settings(&conn) {
+    match db::list_settings(&db).await {
         Ok(rows) => {
             let map: std::collections::BTreeMap<String, String> = rows.into_iter().collect();
             (StatusCode::OK, Json(serde_json::to_value(map).unwrap())).into_response()
@@ -52,13 +50,12 @@ pub async fn get_settings(
 /// PUT /api/settings — update one or more settings.
 #[tracing::instrument(skip_all)]
 pub async fn update_settings(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     Json(body): Json<UpdateSettingsRequest>,
 ) -> impl IntoResponse {
-    let conn = db.lock().await;
     for (key, value) in &body.settings {
-        if let Err(e) = db::set_setting(&conn, key, value) {
+        if let Err(e) = db::set_setting(&db, key, value).await {
             tracing::error!(error = %e, setting_key = %key, "failed to set setting");
             return ApiError::internal("failed to update settings").into_response();
         }

@@ -6,6 +6,7 @@ use parking_lot::Mutex as ParkingLotMutex;
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,10 +128,11 @@ pub struct LoginRequest {
 /// Returns 429 with retry delay when account is locked due to too many failures.
 #[tracing::instrument(skip_all, fields(username = %body.username))]
 pub async fn login_handler(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(_db): Extension<SqlitePool>,
+    Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
     Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    let conn = db.lock().await;
+    let conn = auth_db.lock().await;
 
     // Check login lockout (exponential backoff after 5 failures)
     if let Some(retry_in) = check_lockout(&body.username) {
@@ -220,7 +222,8 @@ pub async fn login_handler(
 /// and clears the cookie by setting Max-Age=0.
 #[tracing::instrument(skip_all)]
 pub async fn logout_handler(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(_db): Extension<SqlitePool>,
+    Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
     let token = req
@@ -235,7 +238,7 @@ pub async fn logout_handler(
         });
 
     if let Some(token) = token {
-        let conn = db.lock().await;
+        let conn = auth_db.lock().await;
         if let Err(e) = security::auth::invalidate_session(&conn, &token) {
             tracing::warn!(error = %e, "logout_handler: failed to invalidate session");
         }
@@ -270,7 +273,8 @@ pub struct SetupRequest {
 /// Returns 200 on success, 400 if already configured or validation fails.
 #[tracing::instrument(skip_all, fields(username = %body.username))]
 pub async fn setup_handler(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(_db): Extension<SqlitePool>,
+    Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
     Json(body): Json<SetupRequest>,
 ) -> impl IntoResponse {
     // Validate
@@ -281,7 +285,7 @@ pub async fn setup_handler(
         return ApiError::bad_request("password must be at least 8 characters").into_response();
     }
 
-    let conn = db.lock().await;
+    let conn = auth_db.lock().await;
 
     // Check if already configured
     match security::auth::is_first_run(&conn) {
@@ -349,11 +353,12 @@ pub struct ResetPasswordRequest {
 /// Returns 200 on success, 401 if the old password is wrong.
 #[tracing::instrument(skip_all)]
 pub async fn reset_password_handler(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(_db): Extension<SqlitePool>,
+    Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
     Extension(user): Extension<security::middleware::AuthenticatedUser>,
     Json(body): Json<ResetPasswordRequest>,
 ) -> impl IntoResponse {
-    let conn = db.lock().await;
+    let conn = auth_db.lock().await;
     match security::auth::reset_password(&conn, &user.0, &body.old_password, &body.new_password) {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response(),
         Err(security::auth::AuthError::WrongPassword) => {
@@ -460,21 +465,14 @@ mod tests {
     async fn test_health_and_metrics_are_public() {
         // register_metrics must be called before the handler runs.
         let _ = observability::register_metrics();
-        let app = crate::server::build_app(std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        )));
+        let app = crate::server::test_app_with_user();
 
         for path in &["/health", "/metrics"] {
             let req = Request::builder().uri(*path).body(Body::empty()).unwrap();
             let res = app.clone().oneshot(req).await.unwrap();
-            assert_ne!(
-                res.status(),
-                StatusCode::UNAUTHORIZED,
-                "public route {path} should not require auth"
-            );
+            assert_ne!(res.status(), StatusCode::UNAUTHORIZED, "public route {path} should not require auth");
         }
     }
-
     #[tokio::test]
     async fn test_unknown_route_returns_404() {
         // Use a seeded DB so setup is complete and the request reaches the router
@@ -532,7 +530,7 @@ mod tests {
                 "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
                 rusqlite::params!["admin", hash],
             )
-            .unwrap();
+                .unwrap();
         }
 
         let app = crate::server::build_app(db);
@@ -658,6 +656,31 @@ mod tests {
     // Login tests
     // -----------------------------------------------------------------------
 
+    /// Helper to set up a test app with an in-memory DB that has a seeded user.
+    fn test_app_with_user() -> (std::sync::Arc<Mutex<Connection>>, String) {
+        let conn = Connection::open_in_memory().unwrap();
+        let hash = security::password::hash_password("current_pass").unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO users (username, password_hash) VALUES ('admin', '{hash}');
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );"
+        ))
+        .unwrap();
+        let token = security::auth::create_session(&conn, "admin").unwrap();
+        let db = std::sync::Arc::new(Mutex::new(conn));
+        (db, token)
+    }
+
     #[tokio::test]
     async fn test_login_success() {
         let (db, _token) = test_app_with_user();
@@ -736,34 +759,10 @@ mod tests {
             "logout should clear cookie"
         );
     }
+
     // -----------------------------------------------------------------------
     // Password reset tests
     // -----------------------------------------------------------------------
-
-    /// Helper to set up a test app with an in-memory DB that has a seeded user.
-    fn test_app_with_user() -> (std::sync::Arc<Mutex<Connection>>, String) {
-        let conn = Connection::open_in_memory().unwrap();
-        let hash = security::password::hash_password("current_pass").unwrap();
-        conn.execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS users (
-                username TEXT PRIMARY KEY,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            INSERT INTO users (username, password_hash) VALUES ('admin', '{hash}');
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL
-            );"
-        ))
-        .unwrap();
-        let token = security::auth::create_session(&conn, "admin").unwrap();
-        let db = std::sync::Arc::new(Mutex::new(conn));
-        (db, token)
-    }
 
     #[tokio::test]
     async fn test_reset_password_requires_auth() {
