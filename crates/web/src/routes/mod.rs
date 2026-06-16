@@ -2,6 +2,7 @@ use axum::Json;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use parking_lot::Mutex as ParkingLotMutex;
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,9 +36,9 @@ struct LoginFailures {
     map: HashMap<String, (u32, Instant)>, // username -> (failure_count, last_attempt_time)
 }
 
-static LOGIN_FAILURES: std::sync::LazyLock<std::sync::Mutex<LoginFailures>> =
+static LOGIN_FAILURES: std::sync::LazyLock<ParkingLotMutex<LoginFailures>> =
     std::sync::LazyLock::new(|| {
-        std::sync::Mutex::new(LoginFailures {
+        ParkingLotMutex::new(LoginFailures {
             map: HashMap::new(),
         })
     });
@@ -45,7 +46,7 @@ static LOGIN_FAILURES: std::sync::LazyLock<std::sync::Mutex<LoginFailures>> =
 /// Check if `username` is currently locked out.
 /// Returns `Some(seconds_remaining)` if locked, `None` otherwise.
 fn check_lockout(username: &str) -> Option<u64> {
-    let mut failures = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut failures = LOGIN_FAILURES.lock();
     cleanup_old_entries(&mut failures);
 
     if let Some(&(count, last_attempt)) = failures.map.get(username) {
@@ -63,7 +64,7 @@ fn check_lockout(username: &str) -> Option<u64> {
 
 /// Record a failed login attempt for `username`.
 fn record_failure(username: &str) {
-    let mut failures = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut failures = LOGIN_FAILURES.lock();
     let entry = failures
         .map
         .entry(username.to_string())
@@ -74,7 +75,7 @@ fn record_failure(username: &str) {
 
 /// Reset the failure counter for `username` after a successful login.
 fn reset_failures(username: &str) {
-    let mut failures = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut failures = LOGIN_FAILURES.lock();
     failures.map.remove(username);
 }
 
