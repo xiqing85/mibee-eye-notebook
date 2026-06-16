@@ -4135,6 +4135,7 @@ dependencies = [
  "include_dir",
  "observability",
  "opentelemetry",
+ "parking_lot",
  "protocols",
  "rusqlite",
  "rustls",

@@ -28,3 +28,4 @@ axum-server.workspace = true
 rustls.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
 futures-core.workspace = true
+parking_lot.workspace = true
