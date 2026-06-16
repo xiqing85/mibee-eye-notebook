@@ -13,13 +13,13 @@
 #![cfg_attr(test, deny(warnings))]
 
 use anyhow::{Result, bail};
-use observability::metrics;
-use std::collections::HashMap;
 use base64::engine::Engine;
+use observability::metrics;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
-use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -1265,10 +1265,10 @@ async fn handle_connection(
                                             let payload_size = if data.len() >= 12 { data.len() - 12 } else { 0 };
                                             octet_count = octet_count.wrapping_add(payload_size as u32);
 
-                                                match build_interleaved_frame(interleave_channel, &data) {
+                                            match build_interleaved_frame(interleave_channel, &data) {
                                                 Ok(interleaved) => {
                                                     if writer.write_all(&interleaved).await.is_err() {
-                                                        break;
+                                                        break; // client disconnected
                                                     }
                                                     metrics::increment_rtsp_bytes_sent(interleaved.len() as u64);
                                                 }
@@ -1283,7 +1283,7 @@ async fn handle_connection(
                                             break;
                                         }
                                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                                            warn!("RTSP client lagged by {n} frames on /{live_path}");
+                                            warn!("RTSP client lagged by {n} packets on /{live_path}");
                                             continue;
                                         }
                                     }
@@ -1489,7 +1489,7 @@ impl RtspServer {
         sdp_body: String,
         ssrc: u32,
     ) -> broadcast::Sender<Vec<u8>> {
-        let (tx, _rx) = broadcast::channel(64);
+        let (tx, _rx) = broadcast::channel(300);
         let entry = LiveStreamEntry {
             frame_tx: tx.clone(),
             sdp_body,
@@ -1526,7 +1526,10 @@ impl RtspServer {
             );
             // Find and replace the existing fmtp line
             if let Some(idx) = base_sdp.find("a=fmtp:96") {
-                let line_end = base_sdp[idx..].find("\r\n").map(|e| idx + e + 2).unwrap_or(base_sdp.len());
+                let line_end = base_sdp[idx..]
+                    .find("\r\n")
+                    .map(|e| idx + e + 2)
+                    .unwrap_or(base_sdp.len());
                 let mut sdp = base_sdp[..idx].to_string();
                 sdp.push_str(&fmtp_with_sprop);
                 sdp.push_str(&base_sdp[line_end..]);
@@ -2568,7 +2571,7 @@ mod tests {
         live_map.insert(
             "livecam".to_string(),
             LiveStreamEntry {
-                frame_tx: broadcast::channel(64).0,
+                frame_tx: broadcast::channel(300).0,
                 sdp_body: "s=Live".to_string(),
                 ssrc: 1,
             },
