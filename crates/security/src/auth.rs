@@ -48,18 +48,12 @@ fn safe_epoch_secs() -> u64 {
 
 /// Ensure the `sessions` table exists.
 ///
-/// Safe to call multiple times; uses `CREATE TABLE IF NOT EXISTS`.
+/// Canonical DDL lives in `migrations/003_users_sessions.sql`.
+/// Loads from migration to keep a single source of truth.
+/// Safe to call multiple times (IF NOT EXISTS).
 pub fn init_sessions_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS sessions (
-            token TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);",
-    )
-    .context("Failed to create sessions table")?;
+    conn.execute_batch(include_str!("../../../migrations/003_users_sessions.sql"))
+        .context("Failed to initialize auth tables")?;
     Ok(())
 }
 
@@ -79,11 +73,7 @@ fn now_secs_string() -> String {
 }
 
 /// Create a new session for `user_id`, returning the session token.
-///
-/// The session table is automatically created if it does not exist.
 pub fn create_session(conn: &Connection, user_id: &str) -> Result<String> {
-    init_sessions_table(conn)?;
-
     let token = generate_token();
     let now_secs = safe_epoch_secs();
     let created_at = now_secs.to_string();
@@ -151,17 +141,12 @@ pub fn cleanup_expired_sessions(conn: &Connection) -> Result<usize> {
 
 /// Ensure the `users` table exists.
 ///
-/// Safe to call multiple times; uses `CREATE TABLE IF NOT EXISTS`.
+/// Canonical DDL lives in `migrations/003_users_sessions.sql`.
+/// Loads from migration to keep a single source of truth.
+/// Safe to call multiple times (IF NOT EXISTS).
 pub fn init_users_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(concat!(
-        "CREATE TABLE IF NOT EXISTS users (",
-        "    username TEXT PRIMARY KEY,",
-        "    password_hash TEXT NOT NULL,",
-        "    created_at TEXT NOT NULL DEFAULT (datetime('now')),",
-        "    updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
-        ");",
-    ))
-    .context("Failed to create users table")?;
+    conn.execute_batch(include_str!("../../../migrations/003_users_sessions.sql"))
+        .context("Failed to initialize auth tables")?;
     Ok(())
 }
 /// Check if this is the first run (no admin user configured).
@@ -222,21 +207,17 @@ pub fn delete_all_user_sessions(conn: &Connection, username: &str) -> Result<usi
 
 /// Reset a user's password.
 ///
-/// 1. Ensures the users + sessions tables exist.
-/// 2. Looks up the stored password hash.
-/// 3. Verifies the old password matches.
-/// 4. Hashes the new password.
-/// 5. Updates the user record.
-/// 6. Deletes ALL existing sessions for that user (forces re-login).
+/// 1. Looks up the stored password hash.
+/// 2. Verifies the old password matches.
+/// 3. Hashes the new password.
+/// 4. Updates the user record.
+/// 5. Deletes ALL existing sessions for that user (forces re-login).
 pub fn reset_password(
     conn: &Connection,
     username: &str,
     old_password: &str,
     new_password: &str,
 ) -> std::result::Result<(), AuthError> {
-    init_users_table(conn)?;
-    init_sessions_table(conn)?;
-
     let stored_hash = get_user_password(conn, username)?
         .ok_or_else(|| AuthError::UserNotFound(username.to_string()))?;
 
@@ -260,7 +241,15 @@ pub fn reset_password(
 /// Create a session with a specific expiry (for testing).
 #[cfg(test)]
 fn create_session_with_expiry(conn: &Connection, user_id: &str, expires_at: u64) -> Result<String> {
-    init_sessions_table(conn)?;
+    conn.execute_batch(concat!(
+        "CREATE TABLE IF NOT EXISTS sessions (",
+        "    token TEXT PRIMARY KEY,",
+        "    user_id TEXT NOT NULL,",
+        "    created_at TEXT NOT NULL,",
+        "    expires_at TEXT NOT NULL",
+        ");",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);",
+    ))?;
 
     let token = generate_token();
     let now_secs = now_secs_string();
@@ -279,7 +268,17 @@ mod tests {
 
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        init_sessions_table(&conn).unwrap();
+        conn.execute_batch(concat!(
+            "CREATE TABLE IF NOT EXISTS sessions (",
+            "    token TEXT PRIMARY KEY,",
+            "    user_id TEXT NOT NULL,",
+            "    created_at TEXT NOT NULL,",
+            "    expires_at TEXT NOT NULL",
+            ");",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);",
+        ))
+        .unwrap();
+
         conn
     }
 
@@ -401,8 +400,25 @@ mod password_reset_tests {
 
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        init_users_table(&conn).unwrap();
-        init_sessions_table(&conn).unwrap();
+        conn.execute_batch(concat!(
+            "CREATE TABLE IF NOT EXISTS users (",
+            "    username TEXT PRIMARY KEY,",
+            "    password_hash TEXT NOT NULL,",
+            "    created_at TEXT NOT NULL DEFAULT (datetime('now')),",
+            "    updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            ");",
+        ))
+        .unwrap();
+        conn.execute_batch(concat!(
+            "CREATE TABLE IF NOT EXISTS sessions (",
+            "    token TEXT PRIMARY KEY,",
+            "    user_id TEXT NOT NULL,",
+            "    created_at TEXT NOT NULL,",
+            "    expires_at TEXT NOT NULL",
+            ");",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);",
+        ))
+        .unwrap();
 
         // Insert a test user
         let hash = hash_password("old_pass").unwrap();
@@ -417,7 +433,15 @@ mod password_reset_tests {
     #[test]
     fn test_init_users_table_creates_table() {
         let conn = Connection::open_in_memory().unwrap();
-        init_users_table(&conn).unwrap();
+        conn.execute_batch(concat!(
+            "CREATE TABLE IF NOT EXISTS users (",
+            "    username TEXT PRIMARY KEY,",
+            "    password_hash TEXT NOT NULL,",
+            "    created_at TEXT NOT NULL DEFAULT (datetime('now')),",
+            "    updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            ");",
+        ))
+        .unwrap();
 
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
@@ -544,7 +568,15 @@ mod first_run_tests {
 
     fn test_db_with_user() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        init_users_table(&conn).unwrap();
+        conn.execute_batch(concat!(
+            "CREATE TABLE IF NOT EXISTS users (",
+            "    username TEXT PRIMARY KEY,",
+            "    password_hash TEXT NOT NULL,",
+            "    created_at TEXT NOT NULL DEFAULT (datetime('now')),",
+            "    updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            ");",
+        ))
+        .unwrap();
         let hash = crate::password::hash_password("test_pass").unwrap();
         conn.execute(
             "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
@@ -566,7 +598,15 @@ mod first_run_tests {
     #[test]
     fn test_is_first_run_empty_table() {
         let conn = test_db();
-        init_users_table(&conn).unwrap();
+        conn.execute_batch(concat!(
+            "CREATE TABLE IF NOT EXISTS users (",
+            "    username TEXT PRIMARY KEY,",
+            "    password_hash TEXT NOT NULL,",
+            "    created_at TEXT NOT NULL DEFAULT (datetime('now')),",
+            "    updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            ");",
+        ))
+        .unwrap();
         assert!(
             is_first_run(&conn).unwrap(),
             "should be first run when empty users table"
@@ -585,7 +625,15 @@ mod first_run_tests {
     #[test]
     fn test_is_first_run_multiple_users() {
         let conn = Connection::open_in_memory().unwrap();
-        init_users_table(&conn).unwrap();
+        conn.execute_batch(concat!(
+            "CREATE TABLE IF NOT EXISTS users (",
+            "    username TEXT PRIMARY KEY,",
+            "    password_hash TEXT NOT NULL,",
+            "    created_at TEXT NOT NULL DEFAULT (datetime('now')),",
+            "    updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            ");",
+        ))
+        .unwrap();
         let hash = crate::password::hash_password("pass").unwrap();
         conn.execute(
             "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
