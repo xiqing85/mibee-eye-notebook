@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_core::Stream;
 use protocols::rtsp_server::RtspServer;
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 use uuid::Uuid;
+use rusqlite::Connection;
 
 use crate::db;
 use crate::errors::ApiError;
@@ -32,15 +33,14 @@ use security::middleware::AuthenticatedUser;
 /// POST /api/cameras/{id}/start — begin capturing frames from a camera.
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn start_stream(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(rtsp_srv): Extension<Arc<RtspServer>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Verify the camera exists.
-    let conn = db.lock().await;
-    let camera = match db::get_camera(&conn, &id) {
+    let camera = match db::get_camera(&db, &id).await {
         Ok(Some(cam)) => cam,
         Ok(None) => return ApiError::not_found("camera not found").into_response(),
         Err(e) => {
@@ -50,7 +50,7 @@ pub async fn start_stream(
     };
     let camera_type = camera.camera_type.clone();
     let config = camera.config.clone();
-    drop(conn);
+
 
     match stream_manager
         .create_stream(id.clone(), &camera_type, &config, Some(&rtsp_srv))
@@ -60,20 +60,18 @@ pub async fn start_stream(
             // Log stream session start (best-effort).
             let session_id = Uuid::new_v4().to_string();
             {
-                let conn = db.lock().await;
-                let _ = db::insert_stream_session(&conn, &session_id, &id);
+                let _ = db::insert_stream_session(&db, &session_id, &id).await;
             }
 
             // Update camera status to "running".
-            let conn = db.lock().await;
             let now = crate::routes::chrono_now();
             let updated = db::CameraRow {
                 status: "running".to_string(),
                 updated_at: now,
                 ..camera
             };
-            let _ = db::update_camera(&conn, &updated);
-            drop(conn);
+            let _ = db::update_camera(&db, &updated).await;
+
 
             tracing::info!(camera_id = %id, rtsp_url = ?info.rtsp_url, "stream started");
             (
@@ -103,14 +101,13 @@ pub async fn start_stream(
 /// POST /api/cameras/{id}/stop — stop capturing from a camera.
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn stop_stream(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Verify the camera exists.
-    let conn = db.lock().await;
-    let camera = match db::get_camera(&conn, &id) {
+    let camera = match db::get_camera(&db, &id).await {
         Ok(Some(cam)) => cam,
         Ok(None) => return ApiError::not_found("camera not found").into_response(),
         Err(e) => {
@@ -118,27 +115,25 @@ pub async fn stop_stream(
             return ApiError::internal("failed to stop stream").into_response();
         }
     };
-    drop(conn);
+
 
     match stream_manager.stop_stream(&id).await {
         Ok(_info) => {
             // Log stream session end (best-effort).
             // TODO: wire actual stats (bytes/frames/errors) from StreamManager when available.
             {
-                let conn = db.lock().await;
-                let _ = db::finalize_stream_session(&conn, &id, 0, 0, 0);
+                let _ = db::finalize_stream_session(&db, &id, 0, 0, 0).await;
             }
 
             // Update DB status.
-            let conn = db.lock().await;
             let now = crate::routes::chrono_now();
             let updated = db::CameraRow {
                 status: "stopped".to_string(),
                 updated_at: now,
                 ..camera
             };
-            let _ = db::update_camera(&conn, &updated);
-            drop(conn);
+            let _ = db::update_camera(&db, &updated).await;
+
 
             tracing::info!(camera_id = %id, "stream stopped");
             (
@@ -152,20 +147,15 @@ pub async fn stop_stream(
             // Idempotent stop: if no active stream, still mark DB as stopped.
             if msg.contains("no active stream") {
                 // Still try to finalize any open session (may be a no-op).
-                {
-                    let conn = db.lock().await;
-                    let _ = db::finalize_stream_session(&conn, &id, 0, 0, 0);
-                }
-
-                let conn = db.lock().await;
+                let _ = db::finalize_stream_session(&db, &id, 0, 0, 0).await;
                 let now = crate::routes::chrono_now();
                 let updated = db::CameraRow {
                     status: "stopped".to_string(),
                     updated_at: now,
                     ..camera
                 };
-                let _ = db::update_camera(&conn, &updated);
-                drop(conn);
+                let _ = db::update_camera(&db, &updated).await;
+
                 return (
                     StatusCode::OK,
                     Json(serde_json::json!({"status": "stopped", "camera_id": id})),
@@ -195,22 +185,19 @@ static SNAPSHOT_LOCKS: OnceLock<Arc<Mutex<HashMap<String, ()>>>> = OnceLock::new
 /// - `500 Internal Server Error` on ffmpeg or IO errors
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn snapshot(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Extension(advertised_host): Extension<Arc<String>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Verify camera exists
-    let camera = {
-        let conn = db.lock().await;
-        match db::get_camera(&conn, &id) {
-            Ok(Some(cam)) => cam,
-            Ok(None) => return ApiError::not_found("camera not found").into_response(),
-            Err(e) => {
-                tracing::error!(error = %e, camera_id = %id, "failed to get camera for snapshot");
-                return ApiError::internal("database error").into_response();
-            }
+    let camera = match db::get_camera(&db, &id).await {
+        Ok(Some(cam)) => cam,
+        Ok(None) => return ApiError::not_found("camera not found").into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, camera_id = %id, "failed to get camera for snapshot");
+            return ApiError::internal("database error").into_response();
         }
     };
     drop(camera);
@@ -358,7 +345,7 @@ pub async fn snapshot(
 /// - Each client gets its own ffmpeg subprocess.
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn live_preview(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Extension(advertised_host): Extension<Arc<String>>,
@@ -368,17 +355,14 @@ pub async fn live_preview(
     use tokio_util::io::ReaderStream;
 
     // Verify camera exists.
-    {
-        let conn = db.lock().await;
-        match db::get_camera(&conn, &id) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return ApiError::not_found("camera not found").into_response();
-            }
-            Err(e) => {
-                tracing::error!(error = %e, camera_id = %id, "failed to get camera");
-                return ApiError::internal("database error").into_response();
-            }
+    match db::get_camera(&db, &id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return ApiError::not_found("camera not found").into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, camera_id = %id, "failed to get camera");
+            return ApiError::internal("database error").into_response();
         }
     }
 

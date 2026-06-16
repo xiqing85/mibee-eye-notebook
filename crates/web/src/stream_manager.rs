@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 use serde::Serialize;
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tracing::{info, warn};
@@ -129,7 +129,7 @@ pub struct StreamManager {
     advertised_host: String,
     /// Optional DB connection for reading protocol configs (RTMP push, etc.).
     /// When None, no protocol-driven outputs are auto-attached.
-    db: Option<Arc<Mutex<Connection>>>,
+    db: Option<SqlitePool>,
 }
 
 impl StreamManager {
@@ -175,7 +175,7 @@ impl StreamManager {
     /// at stream-creation time, so Web UI config changes take effect on the
     /// next stream start (no restart required for new streams).
     #[tracing::instrument(skip_all)]
-    pub fn with_host_and_db(advertised_host: String, db: Arc<Mutex<Connection>>) -> Self {
+    pub fn with_host_and_db(advertised_host: String, db: SqlitePool) -> Self {
         Self {
             streams: RwLock::new(HashMap::new()),
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
@@ -313,8 +313,7 @@ impl StreamManager {
             // Web UI requires stopping and restarting the stream.
             let mut rtmp_url: Option<String> = None;
             if let Some(db) = &self.db {
-                let conn = db.lock().await;
-                match crate::db::get_protocol_config(&conn, "rtmp_push") {
+                match crate::db::get_protocol_config(db, "rtmp_push").await {
                     Ok(Some(cfg)) => {
                         let enabled = cfg
                             .get("enabled")
@@ -370,8 +369,7 @@ impl StreamManager {
             // segments. ffmpeg handles segmentation; we run a periodic
             // pruning pass to enforce the capacity limit.
             if let Some(db) = &self.db {
-                let conn = db.lock().await;
-                match crate::db::get_protocol_config(&conn, "recording") {
+                match crate::db::get_protocol_config(db, "recording").await {
                     Ok(Some(cfg)) => {
                         let enabled = cfg
                             .get("enabled")

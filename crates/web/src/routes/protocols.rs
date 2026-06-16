@@ -9,16 +9,13 @@ use axum::Json;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 use std::sync::Arc;
 
 use crate::errors::ApiError;
 use security::middleware::AuthenticatedUser;
-use tokio::sync::Mutex;
-
-/// Type alias for the shared DB connection.
-type Db = Arc<Mutex<Connection>>;
-
+/// Type alias for the shared DB pool (for web CRUD operations).
+type Db = SqlitePool;
 // ---------------------------------------------------------------------------
 // Schema definitions — used to validate PUT payloads field-by-field.
 // Numeric / boolean fields sent as strings are coerced (for backward
@@ -196,8 +193,7 @@ fn merge_into(target: &mut serde_json::Value, update: serde_json::Value) {
 // ---------------------------------------------------------------------------
 
 async fn handle_get(db: &Db, protocol: &str) -> axum::response::Response {
-    let conn = db.lock().await;
-    match crate::db::get_protocol_config(&conn, protocol) {
+    match crate::db::get_protocol_config(db, protocol).await {
         Ok(Some(v)) => (StatusCode::OK, Json(v)).into_response(),
         Ok(None) => ApiError::not_found(format!("{} config not found", protocol)).into_response(),
         Err(e) => {
@@ -206,7 +202,6 @@ async fn handle_get(db: &Db, protocol: &str) -> axum::response::Response {
         }
     }
 }
-
 async fn handle_put(
     db: &Db,
     protocol: &str,
@@ -219,28 +214,30 @@ async fn handle_put(
             return ApiError::bad_request(&msg).into_response();
         }
     };
-
-    // 2. Read-merge-write inside the DB lock.
-    let conn = db.lock().await;
-    let mut current = match crate::db::get_protocol_config(&conn, protocol) {
+    // 2. Merge with existing config (partial update).
+    let mut current = match crate::db::get_protocol_config(db, protocol).await {
         Ok(Some(v)) => v,
-        Ok(None) => serde_json::Value::Object(serde_json::Map::new()),
+        Ok(None) => serde_json::json!({}),
         Err(e) => {
-            tracing::error!(error = %e, protocol, "failed to read existing protocol config");
+            tracing::error!(error = %e, protocol, "failed to read protocol config");
             return ApiError::internal("database error").into_response();
         }
     };
-    merge_into(&mut current, validated);
-
-    if let Err(e) = crate::db::set_protocol_config(&conn, protocol, &current) {
+    // Merge validated fields into current config.
+if let Some(obj) = validated.as_object() {
+for (key, value) in obj {
+current[key] = value.clone();
+        }
+    }
+// 3. Persist merged config.
+if let Err(e) = crate::db::set_protocol_config(db, protocol, &current).await {
         tracing::error!(error = %e, protocol, "failed to persist protocol config");
         return ApiError::internal("database error").into_response();
     }
 
     tracing::info!(protocol, "protocol config updated via Web UI");
-    (StatusCode::OK, Json(current)).into_response()
+    (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
 }
-
 // ---------------------------------------------------------------------------
 // ONVIF config
 // ---------------------------------------------------------------------------

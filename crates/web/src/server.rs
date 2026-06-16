@@ -32,7 +32,10 @@ pub struct ActiveStreams(pub Arc<Mutex<HashMap<String, bool>>>);
 
 /// Application state passed to all routes via Extension.
 pub struct AppRouterState {
-    pub db: Arc<Mutex<Connection>>,
+    /// Async pool for web CRUD operations (cameras, settings, protocols)
+    pub db: sqlx::SqlitePool,
+    /// Blocking connection for security crate calls (auth, sessions)
+    pub auth_db: Arc<Mutex<Connection>>,
     pub active: ActiveStreams,
     pub stream_manager: Arc<StreamManager>,
     pub rtsp_server: Arc<RtspServer>,
@@ -40,6 +43,8 @@ pub struct AppRouterState {
     pub advertised_host: Arc<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Static asset handler
 // ---------------------------------------------------------------------------
 // Static asset handler
 // ---------------------------------------------------------------------------
@@ -77,6 +82,7 @@ async fn static_handler() -> impl IntoResponse {
 /// - `GET /`                          — static SPA (public, allowed before setup)
 pub fn build_app_with_state(state: AppRouterState) -> Router {
     let db = state.db.clone();
+    let auth_db = state.auth_db.clone();
     let active = state.active.clone();
     let stream_manager = state.stream_manager.clone();
     let rtsp_server = state.rtsp_server.clone();
@@ -170,6 +176,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // Extensions — must be OUTER layer so middleware can access db
         .layer(Extension(stream_manager))
         .layer(Extension(rtsp_server))
+        .layer(Extension(auth_db))
         .layer(Extension(active))
         .layer(Extension(db))
         .layer(Extension(protocol_configs))
@@ -192,9 +199,37 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
 /// and `RtspServer`.
 ///
 /// Provided for backward compatibility with existing tests.
-pub fn build_app(db: Arc<Mutex<Connection>>) -> Router {
+pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Router {
     build_app_with_state(AppRouterState {
         db,
+        auth_db,
+        active: ActiveStreams::default(),
+        stream_manager: Arc::new(StreamManager::new()),
+        rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
+        protocol_configs: Arc::new(Mutex::new(HashMap::new())),
+        advertised_host: Arc::new("localhost".to_string()),
+    })
+}
+
+/// Test helper: creates in-memory pool and auth_db, seeds with a test user,
+/// and returns an app ready for testing.
+#[cfg(test)]
+pub fn test_app_with_user() -> Router {
+    let (pool, auth_db) = crate::db::create_test_dbs();
+    let _ = crate::db::run_migrations(&pool).blocking_expect("Failed to run migrations");
+    // Seed a test user in auth_db
+    let conn = auth_db.lock().expect("Failed to lock auth_db");
+    let password_hash = security::auth::hash_password("test_password")
+        .expect("Failed to hash password");
+    conn.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
+        rusqlite::params!["testuser", password_hash],
+    ).expect("Failed to seed test user");
+    drop(conn);
+    
+    crate::server::build_app_with_state(AppRouterState {
+        db: pool,
+        auth_db,
         active: ActiveStreams::default(),
         stream_manager: Arc::new(StreamManager::new()),
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
@@ -375,7 +410,8 @@ async fn metrics_middleware(request: Request<axum::body::Body>, next: Next) -> R
 pub async fn run(
     host: &str,
     port: u16,
-    db: Connection,
+    db: sqlx::SqlitePool,
+    auth_db: Connection,
     stream_manager: Arc<StreamManager>,
     rtsp_server: Arc<RtspServer>,
     protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
@@ -383,9 +419,10 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
-    let db = Arc::new(Mutex::new(db));
+    let auth_db = Arc::new(Mutex::new(auth_db));
     let state = AppRouterState {
         db,
+        auth_db,
         active: ActiveStreams::default(),
         stream_manager,
         rtsp_server,
@@ -437,7 +474,8 @@ pub async fn run(
 pub async fn run_with_shutdown(
     host: &str,
     port: u16,
-    db: Connection,
+    db: sqlx::SqlitePool,
+    auth_db: Arc<Mutex<Connection>>,
     stream_manager: Arc<StreamManager>,
     rtsp_server: Arc<RtspServer>,
     protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
@@ -447,9 +485,9 @@ pub async fn run_with_shutdown(
     // Register Prometheus metrics
     observability::register_metrics()?;
 
-    let db = Arc::new(Mutex::new(db));
     let state = AppRouterState {
         db,
+        auth_db,
         active: ActiveStreams::default(),
         stream_manager,
         rtsp_server,
@@ -514,20 +552,18 @@ pub async fn run_with_shutdown(
 /// Create a DB with a pre-seeded admin user (setup already completed).
 /// Accessible as `crate::server::test_db_with_user()`.
 #[cfg(test)]
-pub(crate) fn test_db_with_user() -> Arc<Mutex<Connection>> {
-    let conn = Connection::open_in_memory().unwrap();
+pub(crate) fn test_db_with_user() -> (SqlitePool, Arc<Mutex<Connection>>) {
+    let (pool, auth_db) = crate::db::create_test_dbs();
+    let _ = crate::db::run_migrations(&pool).blocking_expect("Failed to run migrations");
+    // Seed admin user in auth_db
+    let conn = auth_db.lock().expect("Failed to lock auth_db");
     let hash = security::password::hash_password("test_pass").unwrap();
     conn.execute_batch(&format!(
-        "CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        INSERT INTO users (username, password_hash) VALUES ('admin', '{hash}');"
+        "INSERT INTO users (username, password_hash) VALUES ('admin', '{hash}');"
     ))
-    .unwrap();
-    Arc::new(Mutex::new(conn))
+    .expect("Failed to seed admin user");
+    drop(conn);
+    (pool, auth_db)
 }
 
 // ---------------------------------------------------------------------------
