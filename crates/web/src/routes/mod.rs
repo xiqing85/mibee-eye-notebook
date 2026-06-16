@@ -133,6 +133,7 @@ pub async fn login_handler(
 
     // Check login lockout (exponential backoff after 5 failures)
     if let Some(retry_in) = check_lockout(&body.username) {
+        observability::increment_auth_failures("locked_out");
         return ApiError::too_many_requests(format!(
             "account locked, try again in {} seconds",
             retry_in
@@ -145,6 +146,7 @@ pub async fn login_handler(
         Ok(Some(h)) => h,
         Ok(None) => {
             record_failure(&body.username);
+            observability::increment_auth_failures("bad_password");
             return ApiError::unauthorized("invalid credentials").into_response();
         }
         Err(e) => {
@@ -160,6 +162,7 @@ pub async fn login_handler(
         }
         Ok(false) => {
             record_failure(&body.username);
+            observability::increment_auth_failures("bad_password");
             return ApiError::unauthorized("invalid credentials").into_response();
         }
         Err(e) => {

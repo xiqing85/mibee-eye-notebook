@@ -173,7 +173,10 @@ impl ChunkBasicHeader {
             bytes.push(((cs_id - 64) % 256) as u8);
             bytes.push(((cs_id - 64) / 256) as u8);
         } else {
-            panic!("Invalid chunk stream ID: {}", cs_id);
+            tracing::warn!(cs_id, "Invalid chunk stream ID, clamping to 2-byte range");
+            // Encode as 2-byte format with clamped value
+            bytes.push(fmt << 6);
+            bytes.push(64u8); // minimum valid 2-byte CSID
         }
 
         bytes

@@ -1,3 +1,4 @@
+use axum::extract::DefaultBodyLimit;
 use crate::errors::ApiError;
 use axum::http::{HeaderValue, Method, Request, header};
 use axum::middleware;
@@ -83,12 +84,13 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let advertised_host = state.advertised_host.clone();
 
     // -- Auth routes (public, rate-limited) --
+    // -- Auth routes (public, rate-limited, 10KB body limit) --
     let auth_routes = Router::new()
         .route("/api/auth/login", post(routes::login_handler))
         .route("/api/auth/setup", post(routes::setup_handler))
         .route("/api/auth/logout", post(routes::logout_handler))
+        .route_layer(DefaultBodyLimit::max(10240)) // 10KB for auth
         .route_layer(middleware::from_fn(security::middleware::rate_limit));
-    // -- Protected routes (require auth) --
     // Reset password gets a rate-limited sub-router
     let reset_route = Router::new()
         .route("/api/auth/reset", post(routes::reset_password_handler))
@@ -181,6 +183,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(cors_layer())
         // W3C trace context — extract traceparent from incoming requests
         .layer(middleware::from_fn(trace_middleware))
+        // HTTP Prometheus metrics
+        .layer(middleware::from_fn(metrics_middleware))
+        // Body size limits
+        .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB default
 }
 /// Convenience builder that creates a default `ActiveStreams`, `StreamManager`,
 /// and `RtspServer`.
@@ -344,6 +350,17 @@ async fn trace_middleware(request: Request<axum::body::Body>, next: Next) -> Res
     let _ = span.set_parent(extracted);
 
     next.run(request).instrument(span).await
+}
+
+/// Middleware that increments the `mibee_http_requests_total` counter for
+/// every incoming HTTP request using method, path, and response status.
+async fn metrics_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let response = next.run(request).await;
+    let status = response.status().as_u16();
+    observability::increment_http_requests(method.as_str(), &path, status);
+    response
 }
 
 /// Initialise the observability layer, build the TLS config, construct the app

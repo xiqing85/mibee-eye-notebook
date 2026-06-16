@@ -14,5 +14,8 @@ pub use metrics::{
     increment_onvif_discovery_requests, increment_rtmp_push_bytes, increment_rtmp_push_errors,
     increment_rtsp_bytes_sent, increment_rtsp_sessions, register_metrics, render_metrics,
     set_active_streams, set_audio_level,
+    // New metrics
+    increment_http_requests, increment_auth_failures, set_recording_active,
+    inc_recording_active, dec_recording_active, increment_frame_drops,
 };
 pub use tracing_setup::init_tracing;
