@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
+use std::collections::HashMap;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub mod cameras;
@@ -28,7 +30,64 @@ pub fn chrono_now() -> String {
 /// Server start instant, set once on first access.
 static START_TIME: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
+/// In-memory tracking of login failures for per-user exponential-backoff lockout.
+struct LoginFailures {
+    map: HashMap<String, (u32, Instant)>, // username -> (failure_count, last_attempt_time)
+}
+
+static LOGIN_FAILURES: std::sync::LazyLock<std::sync::Mutex<LoginFailures>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(LoginFailures {
+            map: HashMap::new(),
+        })
+    });
+
+/// Check if `username` is currently locked out.
+/// Returns `Some(seconds_remaining)` if locked, `None` otherwise.
+fn check_lockout(username: &str) -> Option<u64> {
+    let mut failures = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    cleanup_old_entries(&mut failures);
+
+    if let Some(&(count, last_attempt)) = failures.map.get(username) {
+        if count >= 5 {
+            let elapsed = last_attempt.elapsed().as_secs();
+            // Lockout duration doubles with each failure beyond 5: 60s, 120s, 240s, 480s, ...
+            let lockout_duration = 60u64 * 2u64.pow(count - 5);
+            if elapsed < lockout_duration {
+                return Some(lockout_duration - elapsed);
+            }
+        }
+    }
+    None
+}
+
+/// Record a failed login attempt for `username`.
+fn record_failure(username: &str) {
+    let mut failures = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = failures
+        .map
+        .entry(username.to_string())
+        .or_insert((0, Instant::now()));
+    entry.0 += 1;
+    entry.1 = Instant::now();
+}
+
+/// Reset the failure counter for `username` after a successful login.
+fn reset_failures(username: &str) {
+    let mut failures = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    failures.map.remove(username);
+}
+
+/// Prune entries that have not been touched in the last 30 minutes.
+fn cleanup_old_entries(failures: &mut LoginFailures) {
+    let cutoff = Instant::now()
+        .checked_sub(Duration::from_secs(1800))
+        .unwrap_or(Instant::now());
+    failures.map.retain(|_, v| v.1 > cutoff);
+}
+
 /// GET /health — returns `{"status": "ok", "uptime": <seconds since start>}`.
+#[tracing::instrument(skip_all)]
 pub async fn health_handler() -> Json<Value> {
     let uptime = START_TIME.elapsed().as_secs();
     Json(serde_json::json!({
@@ -38,6 +97,7 @@ pub async fn health_handler() -> Json<Value> {
 }
 
 /// GET /metrics — returns Prometheus text-0.0.4 exposition format.
+#[tracing::instrument(skip_all)]
 pub async fn metrics_handler() -> impl IntoResponse {
     let body = observability::render_metrics();
     let headers = [("content-type", "text/plain; version=0.0.4; charset=utf-8")];
@@ -45,6 +105,7 @@ pub async fn metrics_handler() -> impl IntoResponse {
 }
 
 /// Placeholder handler for not-yet-implemented routes (501).
+#[tracing::instrument(skip_all)]
 pub async fn not_implemented_handler() -> impl IntoResponse {
     ApiError::not_implemented("not implemented").into_response()
 }
@@ -62,16 +123,28 @@ pub struct LoginRequest {
 /// On success, returns a `Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Strict; Path=/` header
 /// and a JSON body `{"status":"ok"}`.
 /// Returns 401 on invalid credentials.
+/// Returns 429 with retry delay when account is locked due to too many failures.
+#[tracing::instrument(skip_all, fields(username = %body.username))]
 pub async fn login_handler(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let conn = db.lock().await;
 
+    // Check login lockout (exponential backoff after 5 failures)
+    if let Some(retry_in) = check_lockout(&body.username) {
+        return ApiError::too_many_requests(format!(
+            "account locked, try again in {} seconds",
+            retry_in
+        ))
+        .into_response();
+    }
+
     // Look up stored password hash
     let stored_hash = match security::auth::get_user_password(&conn, &body.username) {
         Ok(Some(h)) => h,
         Ok(None) => {
+            record_failure(&body.username);
             return ApiError::unauthorized("invalid credentials").into_response();
         }
         Err(e) => {
@@ -82,8 +155,11 @@ pub async fn login_handler(
 
     // Verify password
     match security::password::verify_password(&body.password, &stored_hash) {
-        Ok(true) => {}
+        Ok(true) => {
+            reset_failures(&body.username);
+        }
         Ok(false) => {
+            record_failure(&body.username);
             return ApiError::unauthorized("invalid credentials").into_response();
         }
         Err(e) => {
@@ -105,22 +181,40 @@ pub async fn login_handler(
 
     tracing::info!(username = %body.username, "User logged in");
 
-    // Set HttpOnly + Secure + SameSite cookie
+    // Set HttpOnly + Secure + SameSite session cookie
     let cookie =
         format!("session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400");
 
-    (
+    // Generate CSRF token for double-submit pattern.
+    // The token is NOT HttpOnly so the frontend JS can read it and include
+    // it as X-CSRF-Token header on state-changing requests.
+    let csrf_token = security::auth::generate_token();
+    let csrf_cookie = format!("csrf-token={csrf_token}; SameSite=Strict; Path=/; Max-Age=86400");
+
+    // Build response manually — Axum's tuple header syntax uses `insert` (overwrite),
+    // so two `set-cookie` headers must be appended via `headers_mut().append()`.
+    let mut response = (
         StatusCode::OK,
-        [("set-cookie", cookie)],
-        Json(serde_json::json!({"status": "ok"})),
+        Json(serde_json::json!({"status": "ok", "csrf_token": csrf_token})),
     )
-        .into_response()
+        .into_response();
+    let headers = response.headers_mut();
+    headers.append(
+        axum::http::header::SET_COOKIE,
+        cookie.parse().expect("invalid session cookie header"),
+    );
+    headers.append(
+        axum::http::header::SET_COOKIE,
+        csrf_cookie.parse().expect("invalid csrf cookie header"),
+    );
+    response
 }
 
 /// POST /api/auth/logout — invalidate the current session.
 ///
 /// Reads the session cookie, deletes the session from the database,
 /// and clears the cookie by setting Max-Age=0.
+#[tracing::instrument(skip_all)]
 pub async fn logout_handler(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     req: axum::extract::Request,
@@ -170,6 +264,7 @@ pub struct SetupRequest {
 /// Creates the initial admin user. Only succeeds if no users exist yet.
 /// Also generates a self-signed TLS certificate if not present (best-effort).
 /// Returns 200 on success, 400 if already configured or validation fails.
+#[tracing::instrument(skip_all, fields(username = %body.username))]
 pub async fn setup_handler(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Json(body): Json<SetupRequest>,
@@ -248,6 +343,7 @@ pub struct ResetPasswordRequest {
 /// Validates the old password, hashes the new password, updates the user
 /// record, and invalidates ALL existing sessions for the user (forces re-login).
 /// Returns 200 on success, 401 if the old password is wrong.
+#[tracing::instrument(skip_all)]
 pub async fn reset_password_handler(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(user): Extension<security::middleware::AuthenticatedUser>,

@@ -17,3 +17,4 @@ opentelemetry-prometheus.workspace = true
 opentelemetry_sdk.workspace = true
 prometheus.workspace = true
 serde.workspace = true
+tracing-loki = { version = "0.2", default-features = false, features = ["rustls", "compat-0-2-1"] }

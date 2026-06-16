@@ -13,6 +13,8 @@ hex = "0.4"
 sha2 = "0.10"
 rand.workspace = true
 observability = { path = "../observability" }
+base64.workspace = true
+parking_lot = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

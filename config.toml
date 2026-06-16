@@ -1,6 +1,10 @@
 [web]
 port = 8443
 host = "0.0.0.0"
+# Hostname/IP advertised in stream URLs returned to clients (RTSP/ONVIF/Snapshot).
+# Empty = auto-detect LAN IP at startup via UDP probe.
+# Set this explicitly when behind NAT or if auto-detection picks the wrong interface.
+advertised_host = ""
 
 [rtsp]
 server_port = 8554
@@ -18,6 +22,20 @@ rate_limit_window_secs = 60
 otel_endpoint = "http://localhost:4317"
 log_level = "info"
 
+# ---------------------------------------------------------------------------
+# Remote log shipping (Loki-compatible HTTP endpoint)
+# Uncomment the lines below to enable shipping structured logs to a remote
+# Loki-compatible backend (e.g. Grafana Loki, VictoriaMetrics/vm-logs).
+#
+# This is an OPTIONAL feature — the app works fine without it. When enabled,
+# logs are shipped in addition to stdout/stderr. Network errors are logged as
+# warnings and do not crash the application (fail-open).
+# ---------------------------------------------------------------------------
+# [observability.logs]
+# endpoint = "http://loki:3100"
+# batch_size = 100
+# flush_interval_secs = 5
+# labels = { service = "mibee-rec" }
 [onvif]
 enabled = false
 device_name = "mibee-rec"
@@ -43,3 +61,15 @@ app_name = "live"
 stream_name = "stream1"
 reconnect_interval_secs = 5
 max_reconnect_attempts = 10
+
+[recording]
+# Master enable toggle. When true, all streams auto-record to MP4 segments.
+# Individual recording parameters (path, segment duration, capacity) below.
+enabled = false
+# Directory where MP4 segment files are written. Must exist and be writable.
+path = "./recordings"
+# MP4 segment duration in seconds (each file covers this much video).
+segment_duration_secs = 900
+# Max total capacity in megabytes. 0 = unlimited (no auto-pruning).
+# When exceeded, oldest segments are deleted first (FIFO).
+max_capacity_mb = 10240

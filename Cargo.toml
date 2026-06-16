@@ -38,7 +38,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
 bcrypt = "0.17"
 rand = "0.8"
@@ -46,6 +46,8 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 cpal = "0.18"
 rcgen = "0.14"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+futures-core = "0.3"
+base64 = "0.22"
 libc = "0.2"
 
 [package]
@@ -70,6 +72,7 @@ protocols = { path = "crates/protocols" }
 observability = { path = "crates/observability" }
 web = { path = "crates/web" }
 security = { path = "crates/security" }
+rustls.workspace = true
 
 streaming = { path = "crates/streaming" }
 dirs = "6"

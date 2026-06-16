@@ -56,6 +56,7 @@ impl RtmpPushClient {
     /// Create a new RTMP push client
     ///
     /// Does not connect — call [`connect`](Self::connect) to establish the connection.
+    #[tracing::instrument(skip_all, fields(host, stream_name))]
     pub fn new(host: &str, port: u16, app_name: &str, stream_name: &str) -> Self {
         Self {
             host: host.to_string(),
@@ -71,6 +72,7 @@ impl RtmpPushClient {
     }
 
     /// Returns `true` if the client has an active connection
+    #[tracing::instrument(skip_all)]
     pub fn is_connected(&self) -> bool {
         self.stream.is_some()
     }
@@ -84,6 +86,7 @@ impl RtmpPushClient {
     /// 4. NetConnection.connect
     /// 5. NetConnection.createStream
     /// 6. NetStream.publish
+    #[tracing::instrument(skip_all)]
     pub async fn connect(&mut self) -> Result<()> {
         // 1. TCP connect
         let mut socket = tokio::net::TcpStream::connect(format!("{}:{}", self.host, self.port))
@@ -155,6 +158,7 @@ impl RtmpPushClient {
     }
 
     /// Close the RTMP connection and reset state
+    #[tracing::instrument(skip_all)]
     pub async fn close(&mut self) -> Result<()> {
         if let Some(mut stream) = self.stream.take() {
             // Send FCUnpublish + deleteStream for a clean shutdown
@@ -177,6 +181,7 @@ impl RtmpPushClient {
     /// codec-id byte, CTS bytes, and AVC packet type / NAL data. For typical
     /// use, call [`build_video_sequence_header`] or [`build_video_nalus`] to
     /// construct this payload from raw H.264 data.
+    #[tracing::instrument(skip_all)]
     pub async fn send_video(&mut self, data: &[u8], timestamp: u32) -> Result<()> {
         self.video_timestamp = timestamp;
         let stream = self.stream.as_mut().context("Not connected")?;
@@ -197,6 +202,7 @@ impl RtmpPushClient {
     /// `data` must be the raw RTMP audio payload including the sound-format
     /// byte and AAC packet type. Use [`build_audio_sequence_header`] or
     /// [`build_audio_raw`] for typical usage.
+    #[tracing::instrument(skip_all)]
     pub async fn send_audio(&mut self, data: &[u8], timestamp: u32) -> Result<()> {
         self.audio_timestamp = timestamp;
         let stream = self.stream.as_mut().context("Not connected")?;
@@ -495,6 +501,7 @@ impl RtmpPushClient {
 // ── Video/audio payload helpers ────────────────────────────────────────────────────────────
 
 /// Build an RTMP AVC sequence header payload from SPS and PPS NAL units
+#[tracing::instrument(skip_all)]
 pub fn build_video_sequence_header(sps: &[u8], pps: &[u8]) -> Vec<u8> {
     let mut data = Vec::new();
     data.push(0x17); // keyframe + AVC codec
@@ -521,6 +528,7 @@ pub fn build_video_sequence_header(sps: &[u8], pps: &[u8]) -> Vec<u8> {
 }
 
 /// Build an RTMP AVC NALU payload from raw H.264 NAL units (each with 4-byte length prefix)
+#[tracing::instrument(skip_all)]
 pub fn build_video_nalus(nal_data: &[u8], is_keyframe: bool, composition_offset: i32) -> Vec<u8> {
     let frame_type = if is_keyframe { 1 } else { 2 };
     let mut data = Vec::new();
@@ -535,6 +543,7 @@ pub fn build_video_nalus(nal_data: &[u8], is_keyframe: bool, composition_offset:
 }
 
 /// Build an RTMP AAC sequence header payload
+#[tracing::instrument(skip_all)]
 pub fn build_audio_sequence_header(audio_specific_config: &[u8]) -> Vec<u8> {
     let mut data = Vec::new();
     data.push(0xAF); // AAC, 44kHz, 16-bit, stereo
@@ -544,6 +553,7 @@ pub fn build_audio_sequence_header(audio_specific_config: &[u8]) -> Vec<u8> {
 }
 
 /// Build an RTMP AAC raw frame payload
+#[tracing::instrument(skip_all)]
 pub fn build_audio_raw(aac_data: &[u8]) -> Vec<u8> {
     let mut data = Vec::new();
     data.push(0xAF); // AAC, 44kHz, 16-bit, stereo
@@ -557,6 +567,7 @@ pub fn build_audio_raw(aac_data: &[u8]) -> Vec<u8> {
 /// Extract H.264 NAL units from an RTMP video message
 ///
 /// RTMP video format: 1 byte frame type + codec info + 3 bytes composition time + NAL units
+#[tracing::instrument(skip_all)]
 pub fn extract_h264_nal_units(data: &[u8]) -> Result<Vec<Vec<u8>>> {
     if data.len() < 5 {
         bail!("RTMP video data too short: {}", data.len());
@@ -613,6 +624,7 @@ pub fn extract_h264_nal_units(data: &[u8]) -> Result<Vec<Vec<u8>>> {
 }
 
 /// Extract AAC audio frame from RTMP audio message
+#[tracing::instrument(skip_all)]
 pub fn extract_aac_frame(data: &[u8]) -> Result<Vec<u8>> {
     if data.len() < 2 {
         bail!("RTMP audio data too short: {}", data.len());

@@ -7,7 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 tokio.workspace = true
+opentelemetry.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 anyhow.workspace = true
 include_dir.workspace = true
 serde.workspace = true
@@ -24,3 +26,5 @@ capture = { path = "../capture" }
 streaming = { path = "../streaming" }
 axum-server.workspace = true
 rustls.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
+futures-core.workspace = true

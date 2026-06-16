@@ -93,6 +93,7 @@ impl StreamHub {
     ///
     /// The source is moved into the hub and will be started when [`run`](Self::run)
     /// is called.
+    #[tracing::instrument(skip_all)]
     pub fn new(source: Box<dyn Source>, resource_controller: ResourceController) -> Self {
         let (stop_tx, stop_rx) = watch::channel(false);
         // Broadcast channel capacity: 64 frames. If outputs are slow they'll
@@ -124,6 +125,7 @@ impl StreamHub {
     ///
     /// If the hub is already running (i.e., [`run`](Self::run) was called),
     /// this spawns a new tokio task for the output immediately.
+    #[tracing::instrument(skip_all)]
     pub async fn add_output(&mut self, output: Box<dyn Output>) -> OutputId {
         let id = Uuid::new_v4();
         let (stop_tx, stop_rx) = watch::channel(false);
@@ -156,6 +158,7 @@ impl StreamHub {
     /// Returns `Err` with a 503-style message when:
     /// - The maximum number of outputs has been reached.
     /// - The resource controller has no available permits (all stream slots full).
+    #[tracing::instrument(skip_all)]
     pub async fn try_add_output(&mut self, output: Box<dyn Output>) -> Result<OutputId> {
         {
             let inner = self.inner.lock().await;
@@ -177,6 +180,7 @@ impl StreamHub {
     /// Remove an output from the hub.
     ///
     /// The output's task will be stopped gracefully.
+    #[tracing::instrument(skip_all)]
     pub async fn remove_output(&mut self, id: OutputId) -> bool {
         let mut inner = self.inner.lock().await;
         let removed = inner.outputs.remove(&id).is_some();
@@ -197,6 +201,8 @@ impl StreamHub {
     ///
     /// Returns a `JoinHandle` that resolves when the pipeline stops
     /// (either due to source exhaustion, an error, or [`stop`](Self::stop)).
+    #[tracing::instrument(skip_all)]
+    #[allow(clippy::async_yields_async)]
     pub async fn run(&mut self) -> JoinHandle<()> {
         let mut source = self
             .source
@@ -375,38 +381,137 @@ impl StreamHub {
     /// Signal the hub to stop gracefully.
     ///
     /// All tasks (source and outputs) will see the stop signal and exit.
+    #[tracing::instrument(skip_all)]
     pub fn stop(&self) {
         let _ = self.stop_tx.send(true);
     }
 
     /// Check if the hub has been signalled to stop.
+    #[tracing::instrument(skip_all)]
     pub fn is_stopped(&self) -> bool {
         *self.stop_rx.borrow()
     }
 
+    /// Create a lightweight handle that can add outputs at runtime,
+    /// even after [`run`](Self::run) has moved the hub into its spawned task.
+    ///
+    /// The handle holds cloned Arc/Sender references to the hub's shared
+    /// state, so it stays valid as long as the hub is running.
+    #[tracing::instrument(skip_all)]
+    pub fn handle(&self) -> HubHandle {
+        HubHandle {
+            broadcast_tx: self.broadcast_tx.clone(),
+            inner: self.inner.clone(),
+            global_stop_rx: self.stop_rx.clone(),
+        }
+    }
+
     /// Access the buffer pool.
+    #[tracing::instrument(skip_all)]
     pub fn buffer_pool(&self) -> &BufferPool {
         &self.buffer_pool
     }
 
     /// Access the resource controller.
+    #[tracing::instrument(skip_all)]
     pub fn resource_controller(&self) -> &ResourceController {
         &self.resource
     }
 
     /// Access the stream lifecycle manager.
+    #[tracing::instrument(skip_all)]
     pub fn lifecycle(&self) -> &StreamLifecycle {
         &self.lifecycle
     }
 
     /// Access the per-stream memory budget tracker.
+    #[tracing::instrument(skip_all)]
     pub fn budget(&self) -> &StreamBudget {
         &self.budget
     }
 
     /// The hub's unique stream identifier.
+    #[tracing::instrument(skip_all)]
     pub fn stream_id(&self) -> Uuid {
         self.stream_id
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HubHandle — lightweight handle for runtime output management
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight handle to a running [`StreamHub`] that can add outputs at
+ * runtime, even after the hub has been moved into its spawned task.
+ *
+ * Obtain via [`StreamHub::handle`] BEFORE calling [`StreamHub::run`], then
+ * store it (e.g., in a `StreamManager` entry) for later use.
+ *
+ * Clone-able and Send-safe. The handle stays valid as long as the hub is
+ * running; once the hub stops, calls to [`add_output_at_runtime`](Self::add_output_at_runtime)
+ * will still insert the output into shared state but the spawn will exit
+ * immediately when it observes the global stop signal.
+ */
+#[derive(Clone)]
+pub struct HubHandle {
+    /// Broadcast channel from source task → output tasks.
+    broadcast_tx: broadcast::Sender<Arc<MediaFrame>>,
+    /// Shared output registry.
+    inner: Arc<Mutex<HubInner>>,
+    /// Global stop signal.
+    global_stop_rx: watch::Receiver<bool>,
+}
+
+impl HubHandle {
+    /// Attach a new output to the running hub.
+    ///
+    /// The output is started in its own tokio task and receives frames from
+    /// the hub's broadcast channel. Returns the new [`OutputId`] so the
+    /// caller can remove it later via [`remove_output`](Self::remove_output).
+    #[tracing::instrument(skip_all)]
+    pub async fn add_output_at_runtime(&self, output: Box<dyn Output>) -> OutputId {
+        let id = Uuid::new_v4();
+        let (stop_tx, stop_rx) = watch::channel(false);
+
+        {
+            let mut inner = self.inner.lock().await;
+            inner.outputs.insert(id, output);
+            inner.output_stop.insert(id, stop_tx);
+        }
+
+        // Always spawn — this handle is only useful after run() has started.
+        spawn_output_task(
+            self.broadcast_tx.clone(),
+            self.inner.clone(),
+            self.global_stop_rx.clone(),
+            id,
+            stop_rx,
+        );
+
+        info!("Runtime output attached: {id}");
+        id
+    }
+
+    /// Remove an output from the hub by ID.
+    ///
+    /// Signals the output's task to stop and removes it from the registry.
+    #[tracing::instrument(skip_all)]
+    pub async fn remove_output(&self, id: OutputId) {
+        let mut inner = self.inner.lock().await;
+        // Signal the output task to stop
+        if let Some(stop_tx) = inner.output_stop.remove(&id) {
+            let _ = stop_tx.send(true);
+        }
+        // Remove the output from the map
+        inner.outputs.remove(&id);
+        info!("Runtime output removed: {id}");
+    }
+
+    /// Check if the hub has been signalled to stop.
+    #[tracing::instrument(skip_all)]
+    pub fn is_stopped(&self) -> bool {
+        *self.global_stop_rx.borrow()
     }
 }
 

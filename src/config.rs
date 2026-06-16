@@ -13,6 +13,11 @@ pub struct WebConfig {
 
     #[serde(default = "default_web_host")]
     pub host: String,
+
+    /// Advertised hostname/IP for URLs returned to clients.
+    /// If None, auto-detected at startup via UDP socket.
+    #[serde(default)]
+    pub advertised_host: Option<String>,
 }
 
 fn default_web_port() -> u16 {
@@ -27,6 +32,7 @@ impl Default for WebConfig {
         Self {
             port: 8443,
             host: "0.0.0.0".into(),
+            advertised_host: None,
         }
     }
 }
@@ -290,6 +296,11 @@ pub struct ObservabilityConfig {
 
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Optional remote log shipping (Loki-compatible HTTP endpoint).
+    /// When None (default), logs go to stdout only.
+    #[serde(default)]
+    pub logs: Option<RemoteLogConfig>,
 }
 
 fn default_otel_endpoint() -> String {
@@ -304,6 +315,47 @@ impl Default for ObservabilityConfig {
         Self {
             otel_endpoint: "http://localhost:4317".into(),
             log_level: "info".into(),
+            logs: None,
+        }
+    }
+}
+
+/// Optional remote log shipping to a Loki-compatible HTTP endpoint.
+///
+/// When this section is present in config.toml, structured logs are shipped
+/// to the configured endpoint in addition to stdout/stderr. The feature is
+/// fail-open: if the endpoint is unreachable, a warning is logged and the
+/// application continues with stdout-only logging.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteLogConfig {
+    /// Loki HTTP endpoint URL (e.g. http://loki:3100).
+    #[serde(default)]
+    pub endpoint: String,
+    /// Number of log entries to batch per flush.
+    #[serde(default = "default_remote_log_batch_size")]
+    pub batch_size: usize,
+    /// Flush interval in seconds.
+    #[serde(default = "default_remote_log_flush_interval")]
+    pub flush_interval_secs: u64,
+    /// Additional labels attached to every log stream.
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+fn default_remote_log_batch_size() -> usize {
+    100
+}
+fn default_remote_log_flush_interval() -> u64 {
+    5
+}
+
+impl Default for RemoteLogConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            batch_size: 100,
+            flush_interval_secs: 5,
+            labels: std::collections::HashMap::new(),
         }
     }
 }
@@ -344,8 +396,59 @@ impl Default for DatabaseConfig {
 // AppConfig — top-level configuration
 // ---------------------------------------------------------------------------
 
-/// Top-level application configuration loaded from `config.toml`.
+// Top-level application configuration loaded from `config.toml`.
+
+// ---------------------------------------------------------------------------
+// Recording
+// ---------------------------------------------------------------------------
+
+/// Local recording configuration.
 ///
+/// When enabled, captured H.264 frames are muxed into rolling MP4 segments
+/// in `path`. Oldest segments are auto-pruned when total size exceeds
+/// `max_capacity_mb`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordingConfig {
+    /// Master enable toggle. Individual streams can opt out via Web UI.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Directory where MP4 segment files are written. Must be writable.
+    #[serde(default = "default_recording_path")]
+    pub path: String,
+
+    /// MP4 segment duration in seconds. Each file covers this much video.
+    #[serde(default = "default_segment_duration_secs")]
+    pub segment_duration_secs: u64,
+
+    /// Max total capacity in megabytes. 0 = unlimited (no pruning).
+    #[serde(default = "default_max_capacity_mb")]
+    pub max_capacity_mb: u64,
+}
+
+fn default_recording_path() -> String {
+    "./recordings".into()
+}
+
+fn default_segment_duration_secs() -> u64 {
+    900 // 15 minutes
+}
+
+fn default_max_capacity_mb() -> u64 {
+    10_240 // 10 GB
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_recording_path(),
+            segment_duration_secs: default_segment_duration_secs(),
+            max_capacity_mb: default_max_capacity_mb(),
+        }
+    }
+}
+
 /// Each sub-section has sensible defaults; only the fields that differ from
 /// defaults need to be specified in the TOML file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -372,6 +475,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub rtmp_push: RtmpPushConfig,
+
+    #[serde(default)]
+    pub recording: RecordingConfig,
 
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -589,6 +695,7 @@ port = 9090
             web: WebConfig {
                 port: 9090,
                 host: "127.0.0.1".into(),
+                advertised_host: None,
             },
             ..AppConfig::default()
         };
@@ -872,6 +979,7 @@ enabled = false
             web: WebConfig {
                 port: 80,
                 host: "0.0.0.0".into(),
+                advertised_host: None,
             },
             ..AppConfig::default()
         };
@@ -901,6 +1009,7 @@ enabled = false
             web: WebConfig {
                 port: 8554,
                 host: "0.0.0.0".into(),
+                advertised_host: None,
             },
             rtsp: RtspConfig { server_port: 8554 },
             ..AppConfig::default()

@@ -191,6 +191,84 @@ pub fn list_cameras(conn: &Connection) -> Result<Vec<CameraRow>> {
     Ok(cameras)
 }
 
+/// Auto-discover physically attached video devices and create camera entries
+/// for any that don't already exist in the database.
+///
+/// This runs on startup so the user sees their webcam in the dashboard
+/// immediately without manual configuration.
+pub fn auto_discover_cameras(conn: &Connection) -> Result<usize> {
+    let devices = match capture::video::enumerate_devices() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to enumerate video devices during auto-discovery");
+            return Ok(0);
+        }
+    };
+
+    let existing = list_cameras(conn)?;
+    let existing_indices: std::collections::HashSet<i64> = existing
+        .iter()
+        .filter(|c| c.camera_type == "usb")
+        .filter_map(|c| c.config.get("device_index").and_then(|v| v.as_i64()))
+        .collect();
+
+    let mut discovered = 0;
+    for dev in &devices {
+        let idx = dev.index as i64;
+        if existing_indices.contains(&idx) {
+            continue; // already in DB
+        }
+
+        // Skip metadata-only device nodes (UVC cameras expose multiple /dev/videoN,
+        // only one has actual capture formats).
+        if dev.formats.is_empty() {
+            tracing::debug!(index = dev.index, "skipping device with no formats (likely metadata node)");
+            continue;
+        }
+
+        let name = if dev.name.is_empty() {
+            format!("USB Camera {}", dev.index)
+        } else {
+            dev.name.clone()
+        };
+
+        let now = chrono_epoch_secs();
+        let camera = CameraRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            camera_type: "usb".to_string(),
+            config: serde_json::json!({"device_index": dev.index}),
+            status: "stopped".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        match create_camera(conn, &camera) {
+            Ok(()) => {
+                tracing::info!(
+                    index = dev.index,
+                    name = %camera.name,
+                    "auto-discovered camera"
+                );
+                discovered += 1;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, index = dev.index, "failed to auto-discover camera");
+            }
+        }
+    }
+
+    Ok(discovered)
+}
+
+fn chrono_epoch_secs() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
 pub fn update_camera(conn: &Connection, camera: &CameraRow) -> Result<()> {
     let config_str = serde_json::to_string(&camera.config).context("Failed to serialize config")?;
 
@@ -271,6 +349,65 @@ pub fn list_settings(conn: &Connection) -> Result<Vec<(String, String)>> {
         settings.push(row.context("Failed to read setting row")?);
     }
     Ok(settings)
+}
+
+// ---------------------------------------------------------------------------
+// Protocol configs (onvif / gb28181 / rtmp_push)
+// ---------------------------------------------------------------------------
+
+/// Retrieve one protocol's config as a JSON Value, or None if not stored.
+pub fn get_protocol_config(conn: &Connection, key: &str) -> Result<Option<serde_json::Value>> {
+    let mut stmt = conn
+        .prepare("SELECT value FROM protocol_configs WHERE key = ?1")
+        .context("Failed to prepare get_protocol_config statement")?;
+    let mut rows = stmt.query(rusqlite::params![key])?;
+    match rows.next()? {
+        Some(row) => {
+            let s: String = row.get(0)?;
+            let v: serde_json::Value =
+                serde_json::from_str(&s).context("Failed to parse protocol config JSON")?;
+            Ok(Some(v))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Upsert one protocol config (replaces existing value, updates timestamp).
+pub fn set_protocol_config(conn: &Connection, key: &str, value: &serde_json::Value) -> Result<()> {
+    let s = serde_json::to_string(value).context("Failed to serialize protocol config")?;
+    let sql = "INSERT INTO protocol_configs (key, value, updated_at) VALUES (?1, ?2, datetime('now')) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
+    conn.execute(sql, rusqlite::params![key, s])
+        .context("Failed to upsert protocol config")?;
+    Ok(())
+}
+
+/// Return all stored protocol configs as (key, value) pairs, ordered by key.
+pub fn list_protocol_configs(conn: &Connection) -> Result<Vec<(String, serde_json::Value)>> {
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM protocol_configs ORDER BY key")
+        .context("Failed to prepare list_protocol_configs statement")?;
+    let rows = stmt.query_map([], |row| {
+        let key: String = row.get(0)?;
+        let value_str: String = row.get(1)?;
+        let value: serde_json::Value = serde_json::from_str(&value_str)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok((key, value))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.context("Failed to read protocol_configs row")?);
+    }
+    Ok(out)
+}
+
+/// Return true if the protocol_configs table has zero rows (used at startup
+/// to decide whether to seed from config.toml).
+pub fn protocol_configs_is_empty(conn: &Connection) -> Result<bool> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM protocol_configs", [], |row| {
+        row.get(0)
+    })?;
+    Ok(count == 0)
 }
 
 // ---------------------------------------------------------------------------

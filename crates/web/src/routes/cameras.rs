@@ -72,6 +72,7 @@ impl From<CameraRow> for CameraResponse {
 // ---------------------------------------------------------------------------
 
 /// GET /api/cameras — list all cameras.
+#[tracing::instrument(skip_all)]
 pub async fn list_cameras(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
@@ -91,6 +92,7 @@ pub async fn list_cameras(
 }
 
 /// GET /api/cameras/{id} — get a single camera.
+#[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn get_camera(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
@@ -111,6 +113,7 @@ pub async fn get_camera(
 }
 
 /// POST /api/cameras — create a new camera.
+#[tracing::instrument(skip_all, fields(name = %body.name))]
 pub async fn create_camera(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
@@ -143,6 +146,7 @@ pub async fn create_camera(
 }
 
 /// PUT /api/cameras/{id} — update an existing camera.
+#[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn update_camera(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
@@ -185,6 +189,7 @@ pub async fn update_camera(
 }
 
 /// DELETE /api/cameras/{id} — delete a camera.
+#[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn delete_camera(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
@@ -243,6 +248,7 @@ mod tests {
             stream_manager,
             rtsp_server,
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         (state, token)
     }
@@ -269,6 +275,7 @@ mod tests {
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         let token = {
             let c = state.db.lock().await;
@@ -472,6 +479,7 @@ mod tests {
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         let app = crate::server::build_app_with_state(state);
 

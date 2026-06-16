@@ -15,6 +15,10 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, timeout};
 use uuid::Uuid;
+use futures_core::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::sync::oneshot;
 
 use crate::db;
 use crate::errors::ApiError;
@@ -26,6 +30,7 @@ use security::middleware::AuthenticatedUser;
 // ---------------------------------------------------------------------------
 
 /// POST /api/cameras/{id}/start — begin capturing frames from a camera.
+#[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn start_stream(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
@@ -96,6 +101,7 @@ pub async fn start_stream(
 }
 
 /// POST /api/cameras/{id}/stop — stop capturing from a camera.
+#[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn stop_stream(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
@@ -187,10 +193,12 @@ static SNAPSHOT_LOCKS: OnceLock<Arc<Mutex<HashMap<String, ()>>>> = OnceLock::new
 /// - `409 Conflict` if stream is not active
 /// - `504 Gateway Timeout` if capture takes longer than 30 seconds
 /// - `500 Internal Server Error` on ffmpeg or IO errors
+#[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn snapshot(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
+    Extension(advertised_host): Extension<Arc<String>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Verify camera exists
@@ -245,7 +253,7 @@ pub async fn snapshot(
     };
 
     // RTSP URL for the camera's stream
-    let rtsp_url = format!("rtsp://localhost:8554/live/{}", id);
+    let rtsp_url = format!("rtsp://{}:8554/live/{}", advertised_host.as_str(), id);
 
     // Use ffmpeg to capture a single JPEG frame
     let capture_result = timeout(Duration::from_secs(30), async move {
@@ -324,6 +332,167 @@ pub async fn snapshot(
 }
 
 // ---------------------------------------------------------------------------
+// Live preview (MJPEG stream)
+// ---------------------------------------------------------------------------
+
+/// GET /api/cameras/{id}/live — MJPEG live preview stream.
+///
+/// Returns a `multipart/x-mixed-replace` response with JPEG frames at ~10 fps.
+/// Suitable for direct use in `<img src=...>` — the browser handles the
+/// multipart MJPEG decoding natively, no JavaScript or MSE required.
+///
+/// # Requirements
+/// - Camera must exist and have an active stream (returns 409 otherwise).
+/// - ffmpeg must be installed and on PATH.
+/// - The RTSP server must be reachable at the advertised host.
+///
+/// # Notes
+/// - Authentication is via the session cookie (sent automatically by `<img>`
+///   on same-origin requests).
+/// - The stream runs until the client disconnects (connection closes).
+/// - Each client gets its own ffmpeg subprocess.
+#[tracing::instrument(skip_all, fields(camera_id = %id))]
+pub async fn live_preview(
+    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(advertised_host): Extension<Arc<String>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    use std::process::Stdio;
+    use tokio_util::io::ReaderStream;
+
+    // Verify camera exists.
+    {
+        let conn = db.lock().await;
+        match db::get_camera(&conn, &id) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return ApiError::not_found("camera not found").into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, camera_id = %id, "failed to get camera");
+                return ApiError::internal("database error").into_response();
+            }
+        }
+    }
+
+    // Verify stream is active.
+    if !stream_manager.has_stream(&id).await {
+        return ApiError::conflict("stream not active - start the stream first").into_response();
+    }
+
+    // Live preview: pull from RTSP and convert to MJPEG via ffmpeg.
+    // This single ffmpeg approach works for ALL camera types (USB, RTSP, ONVIF,
+    // GB28181) because every camera's stream is available through the RTSP server.
+    let rtsp_url = format!("rtsp://{}:8554/live/{}", advertised_host.as_str(), id);
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    cmd.args([
+        "-hide_banner",
+        "-loglevel", "fatal",
+        "-fflags", "nobuffer",
+        "-flags", "low_delay",
+        "-analyzeduration", "500000",
+        "-rtsp_transport", "tcp",
+        "-i", &rtsp_url,
+        "-s", "640x360",
+        "-f", "mpjpeg",
+        "-r", "10",
+        "-q:v", "5",
+        "-an",
+        "pipe:1",
+    ]);
+
+    tracing::info!(camera_id = %id, rtsp_url = %rtsp_url, "starting MJPEG live preview");
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to spawn ffmpeg");
+            return ApiError::internal("ffmpeg spawn failed").into_response();
+        }
+    };
+
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            let _ = child.kill().await;
+            return ApiError::internal("ffmpeg stdout unavailable").into_response();
+        }
+    };
+
+    // Oneshot channel to signal the reaper when client disconnects.
+    // The reaper task waits for either:
+    //   - kill_rx triggered: client disconnected, kill ffmpeg and reap
+    //   - child.wait(): ffmpeg exited naturally (EPIPE on stdout write)
+    // Without this, axum does not abort the body stream when the HTTP client
+    // disconnects, so the pipe read end stays open and ffmpeg never receives
+    // EPIPE, becoming a zombie process.
+    let (kill_tx, kill_rx) = oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = kill_rx => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                tracing::debug!(camera_id = %id, "ffmpeg killed on client disconnect");
+            }
+            result = child.wait() => {
+                tracing::debug!(camera_id = %id, status = ?result.ok(), "ffmpeg exited naturally");
+            }
+        }
+    });
+
+    // Stream wrapper that sends kill signal on drop.
+    // When the HTTP response body is dropped (client disconnect),
+    // kill_tx fires, and the reaper kills ffmpeg.
+    //
+    // Safety: FfmpegStream is Unpin because:
+    //   Pin<Box<...>> is Unpin, Option<oneshot::Sender<()>> is Unpin.
+    // So Pin::get_unchecked_mut is safe.
+    struct FfmpegStream {
+        inner: Pin<Box<ReaderStream<tokio::process::ChildStdout>>>,
+        kill_tx: Option<oneshot::Sender<()>>,
+    }
+
+    impl Stream for FfmpegStream {
+        type Item = Result<axum::body::Bytes, std::io::Error>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let this = unsafe { self.get_unchecked_mut() };
+            this.inner.as_mut().poll_next(cx)
+        }
+    }
+
+    impl Drop for FfmpegStream {
+        fn drop(&mut self) {
+            if let Some(tx) = self.kill_tx.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    let stream = FfmpegStream {
+        inner: Box::pin(ReaderStream::new(stdout)),
+        kill_tx: Some(kill_tx),
+    };
+
+    axum::response::Response::builder()
+        .header("content-type", "multipart/x-mixed-replace; boundary=ffmpeg")
+        .header("cache-control", "no-store, no-cache, must-revalidate")
+        .header("pragma", "no-cache")
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap_or_else(|e| {
+            tracing::error!(error = ?e, "failed to build MJPEG response");
+            ApiError::internal("response build failed").into_response()
+        })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -394,6 +563,7 @@ mod tests {
             stream_manager,
             rtsp_server,
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         (state, token, id)
     }
@@ -542,6 +712,7 @@ mod tests {
             stream_manager: Arc::new(StreamManager::new()),
             rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         let app = crate::server::build_app_with_state(state);
 

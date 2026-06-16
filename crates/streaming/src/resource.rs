@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tokio::sync::watch;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::warn;
@@ -150,7 +150,7 @@ impl StreamBudget {
     ///
     /// Returns an error if the stream would exceed the per-stream budget.
     pub fn try_alloc(&self, stream_id: Uuid, bytes: usize) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let current = inner.entry(stream_id).or_insert(0);
         let new_total = current.saturating_add(bytes);
         if new_total > self.max_per_stream {
@@ -170,7 +170,7 @@ impl StreamBudget {
     ///
     /// If the stream's allocated count drops to zero, the entry is removed.
     pub fn release(&self, stream_id: Uuid, bytes: usize) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         if let Some(current) = inner.get_mut(&stream_id) {
             *current = current.saturating_sub(bytes);
             if *current == 0 {
@@ -183,7 +183,6 @@ impl StreamBudget {
     pub fn allocated(&self, stream_id: Uuid) -> usize {
         self.inner
             .lock()
-            .unwrap()
             .get(&stream_id)
             .copied()
             .unwrap_or(0)
@@ -191,17 +190,17 @@ impl StreamBudget {
 
     /// Remove a stream from the tracker, releasing all of its budget.
     pub fn remove_stream(&self, stream_id: Uuid) {
-        self.inner.lock().unwrap().remove(&stream_id);
+        self.inner.lock().remove(&stream_id);
     }
 
     /// Number of tracked streams.
     pub fn stream_count(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().len()
     }
 
     /// Total bytes allocated across all streams.
     pub fn total_allocated(&self) -> usize {
-        self.inner.lock().unwrap().values().sum()
+        self.inner.lock().values().sum()
     }
 
     /// The per-stream budget limit in bytes.
@@ -213,7 +212,6 @@ impl StreamBudget {
     pub fn stream_budgets(&self) -> Vec<(Uuid, usize)> {
         self.inner
             .lock()
-            .unwrap()
             .iter()
             .map(|(k, v)| (*k, *v))
             .collect()
@@ -338,7 +336,6 @@ impl StreamLifecycle {
         let (tx, rx) = watch::channel(StreamState::Starting);
         self.inner
             .lock()
-            .unwrap()
             .insert(stream_id, (StreamState::Starting, tx));
         StreamHandle {
             stream_id,
@@ -350,7 +347,7 @@ impl StreamLifecycle {
     ///
     /// Returns an error if the transition is invalid or the stream is unknown.
     pub fn transition(&self, stream_id: Uuid, state: StreamState) -> Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         let entry = inner
             .get_mut(&stream_id)
             .ok_or_else(|| anyhow::anyhow!("Stream {stream_id} not found in lifecycle"))?;
@@ -406,19 +403,18 @@ impl StreamLifecycle {
 
     /// Get the current state of a stream.
     pub fn state(&self, stream_id: Uuid) -> Option<StreamState> {
-        self.inner.lock().unwrap().get(&stream_id).map(|(s, _)| *s)
+        self.inner.lock().get(&stream_id).map(|(s, _)| *s)
     }
 
     /// Remove a stream from the lifecycle manager entirely.
     pub fn remove(&self, stream_id: Uuid) {
-        self.inner.lock().unwrap().remove(&stream_id);
+        self.inner.lock().remove(&stream_id);
     }
 
     /// Subscribe to state changes for a stream.
     pub fn subscribe(&self, stream_id: Uuid) -> Option<watch::Receiver<StreamState>> {
         self.inner
             .lock()
-            .unwrap()
             .get(&stream_id)
             .map(|(_, tx)| tx.subscribe())
     }
@@ -427,7 +423,6 @@ impl StreamLifecycle {
     pub fn active_count(&self) -> usize {
         self.inner
             .lock()
-            .unwrap()
             .values()
             .filter(|(s, _)| matches!(s, StreamState::Starting | StreamState::Running))
             .count()
@@ -435,7 +430,7 @@ impl StreamLifecycle {
 
     /// Total number of tracked streams (in any state).
     pub fn stream_count(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().len()
     }
 }
 

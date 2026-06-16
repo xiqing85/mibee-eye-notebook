@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use streaming::output::Gb28181Output;
-use streaming::output::Output;
 use tokio::sync::watch;
 
 #[derive(Parser, Debug)]
@@ -32,6 +31,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+
+    // Install rustls crypto provider (required for rustls 0.23+)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     let args = Args::parse();
 
     // Handle --reset-password before starting the server
@@ -42,13 +47,34 @@ async fn main() -> anyhow::Result<()> {
     let config = mibee_rec::config::AppConfig::load(&args.config)?;
     config.validate()?;
 
+    // Resolve advertised host: use configured value or auto-detect LAN IP
+    let advertised_host = match &config.web.advertised_host {
+        Some(host) if !host.is_empty() => host.clone(),
+        _ => {
+            let target: std::net::SocketAddr = "8.8.8.8:53".parse().unwrap();
+            get_local_ip_for_server(&target).unwrap_or_else(|_| "127.0.0.1".to_string())
+        }
+    };
+    tracing::info!(advertised_host = %advertised_host, "resolved advertised host");
+
     // Initialise rate limit config from security settings
     security::rate_limit::init_rate_limit_config(
         config.security.rate_limit_max,
         config.security.rate_limit_window_secs,
     );
 
-    // Initialise tracing (subscriber, optional OTLP export)
+    // Initialise tracing (subscriber, optional OTLP export + Loki log shipping)
+    let loki_endpoint = config
+        .observability
+        .logs
+        .as_ref()
+        .map(|l| l.endpoint.clone());
+    let loki_labels = config
+        .observability
+        .logs
+        .as_ref()
+        .map(|l| l.labels.clone())
+        .unwrap_or_default();
     observability::init_tracing(
         &config.observability.log_level,
         false,
@@ -57,11 +83,39 @@ async fn main() -> anyhow::Result<()> {
         } else {
             Some(config.observability.otel_endpoint.clone())
         },
+        loki_endpoint,
+        loki_labels,
     )?;
 
     // Initialise database
     let db_path = args.db_path.to_string_lossy().to_string();
     let conn = web::db::init_db(&db_path)?;
+
+    // Seed protocol_configs table from config.toml on first run (when empty).
+    // Subsequent runs use the persisted values; users' Web UI edits survive restart.
+    if web::db::protocol_configs_is_empty(&conn)? {
+        tracing::info!("seeding protocol_configs from config.toml (first run)");
+        web::db::set_protocol_config(&conn, "onvif", &serde_json::to_value(&config.onvif)?)?;
+        web::db::set_protocol_config(&conn, "gb28181", &serde_json::to_value(&config.gb28181)?)?;
+        web::db::set_protocol_config(
+            &conn,
+            "rtmp_push",
+            &serde_json::to_value(&config.rtmp_push)?,
+        )?;
+        web::db::set_protocol_config(
+            &conn,
+            "recording",
+            &serde_json::to_value(&config.recording)?,
+        )?;
+    } else {
+        tracing::debug!("protocol_configs table already populated; keeping persisted values");
+    }
+
+    // Auto-discover physically attached cameras (USB webcams etc.)
+    let discovered = web::db::auto_discover_cameras(&conn)?;
+    if discovered > 0 {
+        tracing::info!(count = discovered, "auto-discovered cameras on startup");
+    }
 
     // Collect protocol JoinHandles for graceful shutdown
     let mut protocol_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -81,8 +135,23 @@ async fn main() -> anyhow::Result<()> {
     protocol_handles.push(rtsp_handle);
     tracing::info!(port = config.rtsp.server_port, "RTSP server started");
 
+    // Determine ONVIF / GB28181 enable flags. The DB is the source of
+    // truth (seeded from config.toml on first run, mutated via Web UI).
+    // Fall back to config.toml if the DB lookup fails (e.g., fresh install
+    // before seeding has run).
+    let onvif_enabled = web::db::get_protocol_config(&conn, "onvif")
+        .ok()
+        .flatten()
+        .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+        .unwrap_or(config.onvif.enabled);
+    let gb28181_enabled = web::db::get_protocol_config(&conn, "gb28181")
+        .ok()
+        .flatten()
+        .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+        .unwrap_or(config.gb28181.enabled);
+
     // ONVIF Device (if enabled)
-    if config.onvif.enabled {
+    if onvif_enabled {
         let onvif_device_config = OnvifDeviceConfig {
             manufacturer: config.onvif.manufacturer.clone(),
             model: config.onvif.model.clone(),
@@ -91,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
             hardware_id: config.onvif.model.clone(),
             rtsp_url: format!(
                 "rtsp://{}:{}/webcam",
-                config.web.host, config.rtsp.server_port
+                advertised_host, config.rtsp.server_port
             ),
             scopes: vec!["onvif://www.onvif.org/type/NetworkVideoTransmitter".into()],
             xaddrs: get_onvif_xaddrs(ONVIF_HTTP_PORT),
@@ -112,8 +181,74 @@ async fn main() -> anyhow::Result<()> {
         protocol_handles.push(onvif_handle);
     }
 
-    // GB28181 Device (if enabled)
-    if config.gb28181.enabled {
+    // Create StreamManager early so protocol handlers (ONVIF/GB28181) can
+    // reference it for runtime output attachment.
+    // Open a second DB connection for StreamManager (WAL mode supports
+    // concurrent readers; this lets StreamManager read protocol configs at
+    // stream-creation time without contending with the web server's lock).
+    let streamer_db_conn = web::db::init_db(&db_path)?;
+    let streamer_db = Arc::new(tokio::sync::Mutex::new(streamer_db_conn));
+    let stream_manager = Arc::new(web::stream_manager::StreamManager::with_host_and_db(
+        advertised_host.clone(),
+        streamer_db,
+    ));
+
+    // Auto-start streams for cameras with DB status "running" (resume across restart).
+    // This ensures the in-memory StreamManager state matches the persistent DB state.
+    {
+        let running_cameras = {
+            let conn = web::db::init_db(&db_path)?;
+            let all = web::db::list_cameras(&conn)?;
+            all.into_iter().filter(|c| c.status == "running").collect::<Vec<_>>()
+        };
+        let count = running_cameras.len();
+        if count > 0 {
+            tracing::info!(count = count, "found cameras with status 'running', auto-starting");
+        }
+        for camera in running_cameras {
+            tracing::info!(camera_id = %camera.id, name = %camera.name, "auto-starting stream");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_else(|_| "0".to_string());
+            match stream_manager
+                .create_stream(
+                    camera.id.clone(),
+                    &camera.camera_type,
+                    &camera.config,
+                    Some(&rtsp_server),
+                )
+                .await
+            {
+                Ok(info) => {
+                    tracing::info!(camera_id = %camera.id, rtsp_url = ?info.rtsp_url, "stream auto-started");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        camera_id = %camera.id,
+                        error = %e,
+                        "failed to auto-start stream; marking as stopped"
+                    );
+                    // Update DB status to "stopped" since stream cannot start.
+                    if let Ok(conn) = web::db::init_db(&db_path) {
+                        let _ = web::db::update_camera(
+                            &conn,
+                            &web::db::CameraRow {
+                                status: "stopped".to_string(),
+                                updated_at: now,
+                                ..camera
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        if count > 0 {
+            tracing::info!(count = count, "auto-start complete");
+        }
+    }
+
+    if gb28181_enabled {
         let device_id = config.gb28181.device_id.clone();
         let sip_addr = config.gb28181.platform_sip_address.clone();
         let sip_port = config.gb28181.platform_sip_port;
@@ -121,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
         let sip_domain = config.gb28181.sip_domain.clone();
         let register_interval = config.gb28181.register_interval_secs;
 
+        let stream_manager_for_gb = stream_manager.clone();
         let gb28181_handle = tokio::spawn(async move {
             // Parse SIP server address
             let sip_server_addr: SocketAddr = match format!("{}:{}", sip_addr, sip_port).parse() {
@@ -168,8 +304,11 @@ async fn main() -> anyhow::Result<()> {
             use tokio::sync::Mutex;
             let processed_invites: Arc<Mutex<HashSet<String>>> =
                 Arc::new(Mutex::new(HashSet::new()));
-            // Track active RTP push outputs by Call-ID for BYE cleanup
-            let mut gb28181_outputs: HashMap<String, Gb28181Output> = HashMap::new();
+            // Track active RTP push outputs by Call-ID → camera_id for BYE cleanup.
+            // (Outputs are now attached to StreamHub via stream_manager; we only
+            // track the mapping here so BYE can log which camera was involved.)
+            let mut gb28181_outputs: HashMap<String, (String, streaming::hub::OutputId)> =
+                HashMap::new();
 
             // Registration state
             let mut registered = false;
@@ -348,7 +487,9 @@ async fn main() -> anyhow::Result<()> {
                                                         tracing::error!(error = %e, call_id = %call_id, "Failed to send 200 OK to INVITE");
                                                     } else {
                                                         tracing::info!(call_id = %call_id, "Sent 200 OK to INVITE");
-                                                        // Start RTP push to the platform's media receiver
+                                                        // Attach GB28181 RTP output to the first active local stream.
+                                                        // The platform expects "this device's video feed";
+                                                        // with a single webcam, the first active stream is it.
                                                         match invite_info
                                                             .media_address
                                                             .parse::<std::net::IpAddr>()
@@ -358,27 +499,57 @@ async fn main() -> anyhow::Result<()> {
                                                                     ip,
                                                                     invite_info.media_port,
                                                                 );
-                                                                let mut output = Gb28181Output::new(
+                                                                let output = Gb28181Output::new(
                                                                     dest,
                                                                     invite_info.ssrc,
                                                                     invite_info.payload_type,
                                                                     &call_id,
                                                                 );
-                                                                match output.start().await {
-                                                                    Ok(()) => {
-                                                                        tracing::info!(
-                                                                            call_id = %call_id,
-                                                                            dest = %dest,
-                                                                            ssrc = %invite_info.ssrc,
-                                                                            "RTP push started for GB28181 session"
-                                                                        );
-                                                                        gb28181_outputs.insert(
-                                                                            call_id.clone(),
-                                                                            output,
-                                                                        );
+                                                                let active = stream_manager_for_gb
+                                                                    .list_active_streams()
+                                                                    .await;
+                                                                match active.first() {
+                                                                    Some(info) => {
+                                                                        let camera_id =
+                                                                            info.camera_id.clone();
+                                                                        match stream_manager_for_gb
+                                                                            .add_output_to_stream(
+                                                                                &camera_id,
+                                                                                Box::new(output),
+                                                                            )
+                                                                            .await
+                                                                        {
+                                                                            Ok(output_id) => {
+                                                                                tracing::info!(
+                                                                                    call_id = %call_id,
+                                                                                    camera_id = %camera_id,
+                                                                                    dest = %dest,
+                                                                                    ssrc = %invite_info.ssrc,
+                                                                                    "GB28181 RTP output attached to active stream"
+                                                                                );
+                                                                                gb28181_outputs
+                                                                                    .insert(
+                                                                                    call_id.clone(),
+                                                                                    (
+                                                                                        camera_id,
+                                                                                        output_id,
+                                                                                    ),
+                                                                                );
+                                                                            }
+                                                                            Err(e) => {
+                                                                                tracing::error!(
+                                                                                    error = %e,
+                                                                                    call_id = %call_id,
+                                                                                    "Failed to attach GB28181 output to stream"
+                                                                                );
+                                                                            }
+                                                                        }
                                                                     }
-                                                                    Err(e) => {
-                                                                        tracing::error!(error = %e, call_id = %call_id, "Failed to start RTP push");
+                                                                    None => {
+                                                                        tracing::warn!(
+                                                                            call_id = %call_id,
+                                                                            "GB28181 INVITE received but no active local stream; start a camera first"
+                                                                        );
                                                                     }
                                                                 }
                                                             }
@@ -397,13 +568,21 @@ async fn main() -> anyhow::Result<()> {
                                             let call_id =
                                                 msg.get_header("Call-ID").unwrap_or("").to_string();
                                             tracing::info!(call_id = %call_id, "Received BYE, ending session");
-                                            if let Some(mut output) =
+                                            if let Some((camera_id, output_id)) =
                                                 gb28181_outputs.remove(&call_id)
                                             {
-                                                if let Err(e) = output.stop().await {
-                                                    tracing::error!(error = %e, call_id = %call_id, "Error stopping RTP push");
-                                                } else {
-                                                    tracing::info!(call_id = %call_id, "RTP push stopped for GB28181 session");
+                                                match stream_manager_for_gb
+                                                    .remove_output_from_stream(
+                                                        &camera_id, output_id,
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(()) => {
+                                                        tracing::info!(call_id = %call_id, camera_id = %camera_id, "GB28181 output detached on BYE")
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(error = %e, call_id = %call_id, "Failed to detach GB28181 output")
+                                                    }
                                                 }
                                             } else {
                                                 tracing::debug!(call_id = %call_id, "No active RTP push for this session");
@@ -508,7 +687,7 @@ async fn main() -> anyhow::Result<()> {
         config.web.host, config.web.port
     );
     // Create StreamManager and run server (blocks until shutdown)
-    let stream_manager = Arc::new(web::stream_manager::StreamManager::new());
+    // (StreamManager was created earlier so protocol handlers can reference it.)
 
     // Build protocol config store for REST API
     let mut protocol_configs = HashMap::new();
@@ -532,6 +711,7 @@ async fn main() -> anyhow::Result<()> {
         rtsp_server,
         protocol_configs,
         shutdown_rx,
+        advertised_host.clone(),
     )
     .await?;
 

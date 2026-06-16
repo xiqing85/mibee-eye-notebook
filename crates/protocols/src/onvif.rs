@@ -64,8 +64,8 @@ impl Default for OnvifDeviceConfig {
             firmware_version: "1.0.0".into(),
             serial_number: "NB-000001".into(),
             hardware_id: "1.0".into(),
-            xaddrs: vec!["http://localhost:8080/onvif/device_service".into()],
-            rtsp_url: "rtsp://localhost:8554/webcam".into(),
+            xaddrs: vec![],
+            rtsp_url: String::new(),
             scopes: vec![
                 "onvif://www.onvif.org/type/NetworkVideoTransmitter".into(),
                 "onvif://www.onvif.org/hardware/NB-CAM-1".into(),
@@ -89,6 +89,7 @@ const SOAP_ENVELOPE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 ///
 /// `relates_to` is the MessageID from the incoming Probe that this
 /// response matches. Pass `None` for tests that don't need the correlation.
+#[tracing::instrument(skip_all)]
 pub fn build_probe_match_xml(config: &OnvifDeviceConfig, relates_to: Option<&str>) -> String {
     let uuid = generate_uuid();
     let xaddrs = config.xaddrs.join(" ");
@@ -131,6 +132,7 @@ pub fn build_probe_match_xml(config: &OnvifDeviceConfig, relates_to: Option<&str
 }
 
 /// Build a SOAP `GetDeviceInformation` response XML string.
+#[tracing::instrument(skip_all)]
 pub fn build_get_device_info_response(config: &OnvifDeviceConfig) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -155,6 +157,7 @@ pub fn build_get_device_info_response(config: &OnvifDeviceConfig) -> String {
 }
 
 /// Build a SOAP `GetProfiles` response XML string with a single profile.
+#[tracing::instrument(skip_all)]
 pub fn build_get_profiles_response() -> String {
     r#"<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
@@ -182,6 +185,7 @@ pub fn build_get_profiles_response() -> String {
 }
 
 /// Build a SOAP `GetStreamUri` response XML string.
+#[tracing::instrument(skip_all)]
 pub fn build_get_stream_uri_response(rtsp_url: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -207,6 +211,7 @@ pub fn build_get_stream_uri_response(rtsp_url: &str) -> String {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Extract the `wsa:MessageID` from a WS-Discovery Probe XML string.
+#[tracing::instrument(skip_all)]
 pub fn extract_message_id(xml: &str) -> Option<String> {
     // Look for <wsa:MessageID> or <MessageID> tag
     for tag in &["<wsa:MessageID>", "<MessageID>"] {
@@ -226,6 +231,7 @@ pub fn extract_message_id(xml: &str) -> Option<String> {
 /// Handle a WS-Discovery Probe message and return a ProbeMatch response.
 ///
 /// Returns `None` if the message does not appear to be a Probe.
+#[tracing::instrument(skip_all)]
 pub fn handle_probe_message(body: &str, config: &OnvifDeviceConfig) -> Option<String> {
     // Simple check: look for Probe action marker
     if !body.contains("Probe") && !body.contains("wsdiscovery") {
@@ -269,6 +275,7 @@ impl WsDiscoveryServer {
     ///
     /// The standard ONVIF port is 3702. Use `0.0.0.0:3702` to bind on all
     /// interfaces, or `127.0.0.1:3702` for local-only testing.
+    #[tracing::instrument(skip_all)]
     pub async fn bind(config: OnvifDeviceConfig, addr: &str) -> Result<Self> {
         let socket = UdpSocket::bind(addr)
             .await
@@ -281,6 +288,7 @@ impl WsDiscoveryServer {
     }
 
     /// Return the local socket address.
+    #[tracing::instrument(skip_all)]
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.socket
             .local_addr()
@@ -291,6 +299,7 @@ impl WsDiscoveryServer {
     ///
     /// Listens for UDP datagrams, matches Probe messages, and sends
     /// ProbeMatch responses. Runs indefinitely; drop the future to stop.
+    #[tracing::instrument(skip_all)]
     pub async fn run(&self) -> Result<()> {
         let mut buf = vec![0u8; 65535];
         loop {
@@ -348,6 +357,7 @@ pub struct SoapDeviceService {
 
 impl SoapDeviceService {
     /// Create a new SOAP device service with the given device config.
+    #[tracing::instrument(skip_all)]
     pub fn new(config: OnvifDeviceConfig) -> Self {
         Self { config }
     }
@@ -361,6 +371,7 @@ impl SoapDeviceService {
     ///
     /// Returns `None` if the action is not recognized (caller should
     /// respond with a SOAP fault).
+    #[tracing::instrument(skip_all)]
     pub fn handle_request(&self, body: &str) -> Option<String> {
         if body.contains("GetDeviceInformation") {
             Some(build_get_device_info_response(&self.config))
@@ -380,9 +391,9 @@ impl SoapDeviceService {
 
 /// Generate a random UUID v4 string in the format `uuid:xxxxxxxx-...`.
 fn generate_uuid() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 16] = rng.r#gen();
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     format!(
         "uuid:{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         bytes[0],

@@ -31,6 +31,7 @@ pub struct UpdateSettingsRequest {
 // ---------------------------------------------------------------------------
 
 /// GET /api/settings — return all settings as a key-value object.
+#[tracing::instrument(skip_all)]
 pub async fn get_settings(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
@@ -49,6 +50,7 @@ pub async fn get_settings(
 }
 
 /// PUT /api/settings — update one or more settings.
+#[tracing::instrument(skip_all)]
 pub async fn update_settings(
     Extension(db): Extension<Arc<Mutex<Connection>>>,
     Extension(_user): Extension<AuthenticatedUser>,
@@ -104,6 +106,7 @@ mod tests {
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         let token = {
             let c = state.db.lock().await;
@@ -139,6 +142,7 @@ mod tests {
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         let token = {
             let c = state.db.lock().await;
@@ -226,6 +230,7 @@ mod tests {
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
         };
         let app = crate::server::build_app_with_state(state);
 
