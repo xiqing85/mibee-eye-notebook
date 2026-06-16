@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — MJPEG live preview corruption + camera view re-entry crash
+- **MJPEG live preview corruption resolved** (horizontal tearing, green blocks, mosaic artifacts):
+  - Root cause 1: ffmpeg capture command missing `-pix_fmt yuv420p` — pixel format mismatch caused decoder corruption.
+  - Root cause 2: `-tune zerolatency` enabled sliced threading, producing 8 slice NALs per frame. Each slice incremented the RTP timestamp → 8× too fast (24000/frame instead of 3000), causing complete frame misalignment.
+  - Root cause 3: SPS/PPS re-sent before every P-slice (8× per frame) flooded the broadcast channel, causing IDR frame fragments to be dropped.
+  - Fix: added `-pix_fmt yuv420p` + `-threads 1` to force single-slice frames; RTP timestamp now only increments for slice NALs (types 1/5) per RFC 6184 §5.1; broadcast channel capacity increased 64→300.
+- **Camera view re-entry crash fixed** ("Cannot set properties of null"): `_k` re-entry guard in router `r()` and `K()` prevents hashchange-triggered double-entry; `setText()` null-safe helper wraps all `textContent` assignments.
+
+### Fixed — production hardening (security + reliability)
+- **Mutex poisoning eliminated**: `resource.rs` and `rtsp_server.rs` now use `parking_lot::Mutex` (non-poisoning). Eliminates crash-on-panic cascade.
+- **CSRF bypass on MJPEG endpoint fixed**: `server.rs` CSRF middleware now correctly covers all state-changing routes.
+- **Crypto RNG hardened**: `thread_rng()` replaced with `OsRng` in all cryptographic code paths (session tokens, CSRF tokens).
+
 ### Added — Authoritative product positioning
 - New [`docs/POSITIONING.md`](docs/POSITIONING.md) (bilingual zh/en) — authoritative product scope, target users, deployment model, capture scope, protocol scope, recording scope, security posture, observability, platform roadmap, UX requirements. **Any conflict between POSITIONING.md and other docs → POSITIONING.md wins.**
 - `AGENTS.md` rewritten: added Product Scope, Platform Support, UX Requirements, Observability Stack, Security Posture sections; removed stale Architecture Mismatch Notes (those refactors are already done); accurate Project Status reflecting what is wired vs unwired vs missing.
@@ -37,8 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hot-toggle of ONVIF/GB28181 without restart**: currently requires server restart. Hot-enable/disable requires protocol lifecycle management (start/stop WS-Discovery and SIP registration in response to Web UI toggle). Targeted for later phase.
 - **Frontend type coercion in `app.js`**: backend safely handles legacy string-typed config values via schema coercion, so this is non-blocking. Frontend will be cleaned up when `app.js` is rewritten for i18n + theme + live preview.
 - **W3C traceparent propagation**: tracing spans exist within the process but are not propagated across HTTP boundaries (no `traceparent` header injection/extraction in middleware). Targeted for next phase.
-- **Browser live preview**: no `<video>` element or MSE/JPEG pipeline yet. UI shows static placeholder.
-- **i18n + day/night theme**: UI is hardcoded English, dark-only.
+- ~~**Browser live preview**: no `<video>` element or MSE/JPEG pipeline yet. UI shows static placeholder.~~ → **Fixed**: MJPEG multipart stream working (`/api/cameras/{id}/live`), camera view renders correctly, re-entry crash fixed.
+- ~~**i18n + day/night theme**: UI is hardcoded English, dark-only.~~ → **Fixed**: full zh-CN/en-US i18n layer + day/night theme with system auto-detect.
 
 ### Changed — Brand rename
 - **Rebranded from `notebook-cam` to `mibee-rec`** across all source, config, docs, and UI.
