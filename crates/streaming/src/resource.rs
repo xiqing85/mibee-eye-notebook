@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use std::collections::HashMap;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use tokio::sync::watch;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::warn;
@@ -181,11 +181,7 @@ impl StreamBudget {
 
     /// Returns the number of bytes currently allocated for a stream.
     pub fn allocated(&self, stream_id: Uuid) -> usize {
-        self.inner
-            .lock()
-            .get(&stream_id)
-            .copied()
-            .unwrap_or(0)
+        self.inner.lock().get(&stream_id).copied().unwrap_or(0)
     }
 
     /// Remove a stream from the tracker, releasing all of its budget.
@@ -210,11 +206,7 @@ impl StreamBudget {
 
     /// Returns a list of `(stream_id, allocated_bytes)` for all tracked streams.
     pub fn stream_budgets(&self) -> Vec<(Uuid, usize)> {
-        self.inner
-            .lock()
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect()
+        self.inner.lock().iter().map(|(k, v)| (*k, *v)).collect()
     }
 }
 
