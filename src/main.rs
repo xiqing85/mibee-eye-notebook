@@ -31,7 +31,6 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-
     // Install rustls crypto provider (required for rustls 0.23+)
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -196,11 +195,16 @@ async fn main() -> anyhow::Result<()> {
         let running_cameras = {
             let conn = web::db::init_db(&db_path)?;
             let all = web::db::list_cameras(&conn)?;
-            all.into_iter().filter(|c| c.status == "running").collect::<Vec<_>>()
+            all.into_iter()
+                .filter(|c| c.status == "running")
+                .collect::<Vec<_>>()
         };
         let count = running_cameras.len();
         if count > 0 {
-            tracing::info!(count = count, "found cameras with status 'running', auto-starting");
+            tracing::info!(
+                count = count,
+                "found cameras with status 'running', auto-starting"
+            );
         }
         for camera in running_cameras {
             tracing::info!(camera_id = %camera.id, name = %camera.name, "auto-starting stream");

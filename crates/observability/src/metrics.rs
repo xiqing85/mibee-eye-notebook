@@ -152,7 +152,9 @@ pub fn increment_http_requests(method: &str, path: &str, status: u16) {
 /// `failure_type` must be one of `"bad_password"`, `"locked_out"`, or `"rate_limited"`.
 pub fn increment_auth_failures(failure_type: &str) {
     if let Some(m) = GLOBAL_METRICS.get() {
-        m.auth_failures_total.with_label_values(&[failure_type]).inc();
+        m.auth_failures_total
+            .with_label_values(&[failure_type])
+            .inc();
     }
 }
 
@@ -627,12 +629,16 @@ mod tests {
 
         let output = m.render();
         assert!(
-            output.contains(r#"mibee_http_requests_total{method="POST",path="/api/auth/login",status="200"} 1"#),
+            output.contains(
+                r#"mibee_http_requests_total{method="POST",path="/api/auth/login",status="200"} 1"#
+            ),
             "POST login should appear once\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains(r#"mibee_http_requests_total{method="GET",path="/health",status="200"} 2"#),
+            output.contains(
+                r#"mibee_http_requests_total{method="GET",path="/health",status="200"} 2"#
+            ),
             "GET health should appear twice\n=== output ===\n{}",
             output
         );
