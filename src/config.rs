@@ -502,6 +502,9 @@ impl AppConfig {
     /// - gb28181.register_interval_secs must be > 0 (if enabled)
     /// - rtmp_push.reconnect_interval_secs must be > 0 (if enabled)
     /// - rtmp_push.max_reconnect_attempts must be > 0 (if enabled)
+    /// - observability.log_level must be one of: trace, debug, info, warn, error
+    /// - recording.path must not be empty
+    /// - recording.segment_duration_secs must be > 0
     pub fn validate(&self) -> anyhow::Result<()> {
         // Web port
         if self.web.port <= 1024 {
@@ -544,6 +547,22 @@ impl AppConfig {
         // RTMP push max reconnect attempts
         if self.rtmp_push.enabled && self.rtmp_push.max_reconnect_attempts == 0 {
             anyhow::bail!("rtmp_push.max_reconnect_attempts: must be > 0, got 0");
+        }
+        // Recording path
+        if self.recording.path.trim().is_empty() {
+            anyhow::bail!("recording.path: must not be empty");
+        }
+        // Recording segment duration
+        if self.recording.segment_duration_secs == 0 {
+            anyhow::bail!("recording.segment_duration_secs: must be > 0, got 0");
+        }
+        // Log level validation
+        match self.observability.log_level.as_str() {
+            "trace" | "debug" | "info" | "warn" | "error" => {},
+            other => anyhow::bail!(
+                "observability.log_level: must be one of trace/debug/info/warn/error, got {}",
+                other
+            ),
         }
         Ok(())
     }

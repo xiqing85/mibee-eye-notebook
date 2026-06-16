@@ -199,6 +199,7 @@ pub async fn rate_limit(req: Request, next: Next) -> Response {
     let cfg = rate_limit::get_rate_limit_config();
     if !rate_limit::check_rate_limit(&ip, cfg.max_requests, cfg.window_secs) {
         tracing::warn!(ip = %ip, "rate limit exceeded");
+        observability::increment_auth_failures("rate_limited");
         return error_response(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
     }
 

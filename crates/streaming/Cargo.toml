@@ -19,6 +19,7 @@ serde_json.workspace = true
 futures = "0.3"
 cpal.workspace = true
 parking_lot = "0.12"
+observability = { path = "../observability" }
 
 [dev-dependencies]
 axum.workspace = true
