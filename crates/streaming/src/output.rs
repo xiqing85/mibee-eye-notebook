@@ -173,18 +173,18 @@ impl Output for RtspOutput {
                                 self.cached_sps = Some(data.clone());
                                 if self.cached_pps.is_some() {
                                     if let Some(tx) = self.sps_pps_tx.take() {
-                                        let sps = self.cached_sps.clone().unwrap();
-                                        let pps = self.cached_pps.clone().unwrap();
-                                        let _ = tx.send((sps, pps));
+                                        if let (Some(sps), Some(pps)) = (self.cached_sps.clone(), self.cached_pps.clone()) {
+                                            let _ = tx.send((sps, pps));
+                                        }
                                     }
                                 }
                             } else if nal_type == 8 {
                                 self.cached_pps = Some(data.clone());
                                 if self.cached_sps.is_some() {
                                     if let Some(tx) = self.sps_pps_tx.take() {
-                                        let sps = self.cached_sps.clone().unwrap();
-                                        let pps = self.cached_pps.clone().unwrap();
-                                        let _ = tx.send((sps, pps));
+                                        if let (Some(sps), Some(pps)) = (self.cached_sps.clone(), self.cached_pps.clone()) {
+                                            let _ = tx.send((sps, pps));
+                                        }
                                     }
                                 }
                             }

@@ -283,7 +283,10 @@ impl Md5 {
         }
 
         while offset + 64 <= len {
-            let block: &[u8; 64] = data[offset..offset + 64].try_into().unwrap();
+            let block: &[u8; 64] = match data[offset..offset + 64].try_into() {
+                Ok(b) => b,
+                Err(_) => break, // unreachable: loop bound guarantees 64-byte slice
+            };
             Self::process_block(&mut self.state, block);
             offset += 64;
         }
@@ -340,8 +343,10 @@ impl Md5 {
         ];
 
         let mut x = [0u32; 16];
-        for i in 0..16 {
-            x[i] = u32::from_le_bytes(block[i * 4..i * 4 + 4].try_into().unwrap());
+        for (i, chunk) in block.chunks_exact(4).enumerate() {
+            if let Ok(arr) = chunk.try_into() {
+                x[i] = u32::from_le_bytes(arr);
+            }
         }
 
         let [mut a, mut b, mut c, mut d] = *state;

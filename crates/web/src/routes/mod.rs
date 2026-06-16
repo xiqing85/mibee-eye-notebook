@@ -205,14 +205,22 @@ pub async fn login_handler(
     )
         .into_response();
     let headers = response.headers_mut();
-    headers.append(
-        axum::http::header::SET_COOKIE,
-        cookie.parse().expect("invalid session cookie header"),
-    );
-    headers.append(
-        axum::http::header::SET_COOKIE,
-        csrf_cookie.parse().expect("invalid csrf cookie header"),
-    );
+    let session_header: axum::http::HeaderValue = match cookie.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize session cookie");
+            return ApiError::internal("internal error").into_response();
+        }
+    };
+    headers.append(axum::http::header::SET_COOKIE, session_header);
+    let csrf_header: axum::http::HeaderValue = match csrf_cookie.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize csrf cookie");
+            return ApiError::internal("internal error").into_response();
+        }
+    };
+    headers.append(axum::http::header::SET_COOKIE, csrf_header);
     response
 }
 

@@ -38,7 +38,13 @@ pub async fn get_settings(
     match db::list_settings(&db).await {
         Ok(rows) => {
             let map: std::collections::BTreeMap<String, String> = rows.into_iter().collect();
-            (StatusCode::OK, Json(serde_json::to_value(map).unwrap())).into_response()
+            match serde_json::to_value(map) {
+                Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to serialize settings");
+                    ApiError::internal("failed to serialize settings").into_response()
+                }
+            }
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to list settings");
