@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%2300bcd4' d='M12 2c-3.3 0-6 2.7-6 6v3H4v11h16V11h-2V8c0-3.3-2.7-6-6-6zm0 2c2.2 0 4 1.8 4 4v3H8V8c0-2.2 1.8-4 4-4zm0 9a2 2 0 0 1 2 2c0 .7-.4 1.3-1 1.7V19a1 1 0 0 1-2 0v-2.3c-.6-.4-1-1-1-1.7a2 2 0 0 1 2-2z'/%3E%3C/svg%3E">
+<title>mibee-rec</title>
+<style id="injected-css"></style>
+</head>
+<body>
+<div id=to class=to></div>
+<nav id=nv class="nv h" aria-label="Main navigation"><div class=nb>mibee-rec</div><button class=hb id=hbtn aria-label="Toggle navigation menu" aria-expanded="false"><svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg></button><div class=nl><a href="#db" class=nl data-i18n="nav.dashboard">Dashboard</a><a href="#st" class=nl data-i18n="nav.settings">Settings</a><a href="#dv" class=nl data-i18n="nav.devices">Devices</a></div><div class=nr><button id=theme-toggle aria-label="Toggle theme" onclick=toggleTheme()><svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg></button><button id=lang-toggle aria-label="Switch language" onclick=toggleLang() style="font-family:var(--mo);font-weight:600">\u4e2d</button><button id=lo aria-label="Logout" data-i18n="nav.logout">Logout</button></div></nav>
+<main>
+
+<section id=pg-login class="pg ap">
+<div class=ac><div class=lg>mibee-rec</div><h1 data-i18n="login.title">Sign In</h1><p class=st data-i18n="login.subtitle">Camera surveillance management</p><div id=le class=ae></div>
+<form id=lf><div class=fg><label for=lu data-i18n="login.username">Username</label><input type=text id=lu data-i18n-placeholder="login.username_ph" placeholder=Username required autocomplete=username></div>
+<div class=fg><label for=lp data-i18n="login.password">Password</label><input type=password id=lp data-i18n-placeholder="login.password_ph" placeholder=Password required autocomplete=current-password></div>
+<button type=submit class="b bp" style=width:100% id=ls data-i18n="login.submit">Sign In</button></form></div></section>
+
+<section id=pg-stp class="pg ap">
+<div class=ac><div class=lg>mibee-rec</div><h1 data-i18n="setup.title">Initial Setup</h1><p class=st data-i18n="setup.subtitle">Create admin account</p><div id=se class=ae></div>
+<form id=sf><div class=fg><label for=su data-i18n="setup.username">Admin Username</label><input type=text id=su data-i18n-placeholder="setup.username_ph" placeholder=admin required autocomplete=username></div>
+<div class=fg><label for=sp data-i18n="setup.password">Password</label><input type=password id=sp data-i18n-placeholder="setup.password_ph" placeholder="Strong password" required autocomplete=new-password></div>
+<div class=fg><label for=sc data-i18n="setup.confirm">Confirm Password</label><input type=password id=sc data-i18n-placeholder="setup.confirm_ph" placeholder="Repeat password" required autocomplete=new-password></div>
+<button type=submit class="b bp" style=width:100% id=ss data-i18n="setup.submit">Create Account</button></form></div></section>
+
+<section id=pg-db class=pg>
+<div class=ph><div><h1 data-i18n="dashboard.title">Cameras</h1><p class=tm data-i18n="dashboard.subtitle">Manage surveillance cameras</p></div><button class="b bp" onclick=wa() aria-label="Add camera" data-i18n="dashboard.add">+ Add Camera</button></div>
+<div class=sf style=padding:0><div id=cl class=ld><div class=sp></div><span data-i18n="dashboard.loading">Loading cameras...</span></div>
+<div id=ce class="em h"><div class=ei>&#x1F4F7;</div><h3 data-i18n="dashboard.empty_title">No cameras configured</h3><p class=tm data-i18n="dashboard.empty_desc">Add your first camera to start monitoring.</p></div>
+<div id=ct class="tc h"><table><thead><tr><th data-i18n="table.name">Name</th><th data-i18n="table.type">Type</th><th data-i18n="table.status">Status</th><th data-i18n="table.stream_url">Stream URL</th><th data-i18n="table.actions">Actions</th></tr></thead><tbody id=cb></tbody></table></div>
+</div>
+</section>
+
+<section id=pg-cam class=pg>
+<div class=ph><div><h1 id=cn data-i18n="camera_view.title">Camera</h1><p id=cs data-i18n="camera_view.loading">Loading...</p></div><button class="b bs" onclick=G("#db") aria-label="Back to dashboard" data-i18n="camera_view.back">&larr; Back</button></div>
+<div class=lv><div class=vp id=pv><div class=vi>&#x25B6;</div><h3 data-i18n="camera_view.no_stream">No Stream Available</h3><p class=tm data-i18n="camera_view.ext_player">Use external RTSP player</p></div><code id=ru style="font-family:var(--mo);font-size:.857rem;background:var(--in);padding:var(--s8) var(--s16);border-radius:var(--r6);border:1px solid var(--bd)"></code><button class="b bs bsm" onclick=cr() style=margin-top:var(--s8) aria-label="Copy RTSP URL to clipboard" data-i18n="camera_view.copy_rtsp">Copy RTSP URL</button></div>
+<div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=ig><div class=ii><span class=l data-i18n="caminfo.id">ID</span><span class=v id=ci->-</span></div><div class=ii><span class=l data-i18n="caminfo.type">Type</span><span class=v id=cit>-</span></div><div class=ii><span class=l data-i18n="caminfo.status">Status</span><span class=v id=cis>-</span></div><div class=ii><span class=l data-i18n="caminfo.created">Created</span><span class=v id=cic>-</span></div></div></div></div></section>
+
+<section id=pg-st class=pg>
+<div class=ph><div><h1 data-i18n="settings.title">Settings</h1><p class=tm data-i18n="settings.subtitle">Configure system settings</p></div><button class="b bp" onclick=Q() id=sb data-i18n="settings.save">Save Changes</button></div>
+<div id=sl class=ld><div class=sp></div><span data-i18n="settings.loading">Loading settings...</span></div>
+<form id=sfm class="sg h"><div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3 data-i18n="settings.server">Server</h3></div>
+<div class=fg><label for=swp data-i18n="settings.web_port">Web UI Port</label><input type=number id=swp data-i18n-placeholder="settings.web_port_ph" placeholder=9090></div>
+<div class=fg><label for=srp data-i18n="settings.rtsp_port">RTSP Port</label><input type=number id=srp data-i18n-placeholder="settings.rtsp_port_ph" placeholder=8554></div></div>
+<div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3 data-i18n="settings.mibee">MiBee NVR</h3></div>
+<div class=fg><label for=smu data-i18n="settings.mibee_url">MiBee URL</label><input type=url id=smu data-i18n-placeholder="settings.mibee_url_ph" placeholder="http://192.168.1.100:9090"></div>
+<div class=fg><label for=smk data-i18n="settings.mibee_api_key">MiBee API Key</label><input type=password id=smk data-i18n-placeholder="settings.mibee_api_key_ph" placeholder=Optional></div></div>
+<div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3 data-i18n="settings.recording">Recording</h3></div>
+<div class=fg><label for=srp2 data-i18n="settings.recordings_path">Recordings Path</label><input type=text id=srp2 data-i18n-placeholder="settings.recordings_path_ph" placeholder=/var/lib/mibee-rec/recordings></div>
+<div class=fg><label for=smd data-i18n="settings.max_segment_duration">Max Segment Duration (s)</label><input type=number id=smd data-i18n-placeholder="settings.max_segment_ph" placeholder=300></div></div>
+<div class=cs><h3 data-i18n="settings.change_password">Change Password</h3><div class=fg><label for=cpw data-i18n="settings.current_password">Current Password</label><input type=password id=cpw data-i18n-placeholder="settings.current_password_ph" placeholder="Current password" autocomplete=current-password></div><div class=fg><label for=npw data-i18n="settings.new_password">New Password</label><input type=password id=npw data-i18n-placeholder="settings.new_password_ph" placeholder="New password (min 8 chars)" autocomplete=new-password></div><div class=fg><label for=cnpw data-i18n="settings.confirm_new_password">Confirm New Password</label><input type=password id=cnpw data-i18n-placeholder="settings.confirm_new_password_ph" placeholder="Repeat new password" autocomplete=new-password></div><button class="b bp" id=cpbtn onclick=cp() data-i18n="settings.change_password_btn">Change Password</button></div>
+<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.onvif">ONVIF Configuration</h3><div class=cs-body id=onvif-cfg><div class=fg><label for=onv-enabled data-i18n="protocol.enabled">Enabled</label><select id=onv-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=onv-port data-i18n="protocol.port">Port</label><input type=number id=onv-port data-i18n-placeholder="protocol.port_ph" placeholder=3702></div><div class=fg><label for=onv-device-name data-i18n="protocol.device_name">Device Name</label><input id=onv-device-name data-i18n-placeholder="protocol.device_name_ph" placeholder=mibee-rec></div><button class="b bp" onclick=sp('onvif') data-i18n="protocol.save_onvif">Save ONVIF</button></div></div>
+<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.gb28181">GB28181 Configuration</h3><div class=cs-body id=gb-cfg><div class=fg><label for=gb-enabled data-i18n="protocol.enabled">Enabled</label><select id=gb-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=gb-device-id data-i18n="protocol.device_id">Device ID</label><input id=gb-device-id data-i18n-placeholder="protocol.device_id_ph" placeholder="34020000001320000101"></div><div class=fg><label for=gb-server-ip data-i18n="protocol.server_ip">Server IP</label><input id=gb-server-ip data-i18n-placeholder="protocol.server_ip_ph" placeholder="192.168.1.100"></div><div class=fg><label for=gb-server-port data-i18n="protocol.server_port">Server Port</label><input type=number id=gb-server-port data-i18n-placeholder="protocol.server_port_ph" placeholder=5060></div><button class="b bp" onclick=sp('gb28181') data-i18n="protocol.save_gb28181">Save GB28181</button></div></div>
+<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.rtmp">RTMP Push Configuration</h3><div class=cs-body id=rtmp-cfg><div class=fg><label for=rtmp-enabled data-i18n="protocol.enabled">Enabled</label><select id=rtmp-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=rtmp-url data-i18n="protocol.url">Push URL</label><input id=rtmp-url data-i18n-placeholder="protocol.url_ph" placeholder="rtmp://nvr-host:1935/live/stream"></div><button class="b bp" onclick=sp('rtmp') data-i18n="protocol.save_rtmp">Save RTMP</button></div></div>
+</form></section>
+
+<section id=pg-dv class=pg>
+<div class=ph><div><h1 data-i18n="devices.title">Devices</h1><p class=tm data-i18n="devices.subtitle">Local video and audio devices</p></div></div>
+<div id=video-devices></div>
+<div id=audio-devices></div>
+</section>
+</main>
+
+<div id=mo class="mo h" role="dialog" aria-modal="true" aria-labelledby="mt"><div class=md><div class=mh><h2 id=mt data-i18n="camera.add">Add Camera</h2><button class=mc onclick=cm() aria-label="Close dialog">&times;</button></div>
+<div class=mb><div id=me class=ae></div>
+<div class=fg><label for=cn2 data-i18n="camera.name">Camera Name</label><input type=text id=cn2 data-i18n-placeholder="camera.name_ph" placeholder="Front Door" required></div>
+<div class=fg><label for=cty data-i18n="camera.type">Camera Type</label><select id=cty required><option value="" data-i18n="camera.select_type">Select type...</option><option value=rtsp data-i18n="camera.type_rtsp">RTSP</option><option value=onvif data-i18n="camera.type_onvif">ONVIF</option><option value=usb data-i18n="camera.type_usb">USB</option><option value=gb28181 data-i18n="camera.type_gb28181">GB/T 28181</option><option value=rtmp data-i18n="camera.type_rtmp">RTMP</option></select></div>
+<div class="fg h" id="cam-device-group"><label for="cam-device-select" data-i18n="camera.device_label">USB Device</label><select id="cam-device-select" disabled><option value="" data-i18n="camera.select_device">Select a device...</option></select></div>
+<div class=fg><label for=cc data-i18n="camera.config">Config (JSON)</label><textarea id=cc rows=3 data-i18n-placeholder="camera.config_ph" placeholder='{"url":"rtsp://192.168.1.100:554/stream1"}' style="font-family:var(--mo);font-size:.857rem"></textarea><span class=ht data-i18n="camera.config_hint">Camera-specific configuration as JSON</span></div></div>
+<div class=mf><button class="b bs" onclick=cm() data-i18n="common.cancel">Cancel</button><button class="b bp" id=msb onclick=sc() data-i18n="camera.add">Add Camera</button></div></div></div>
+
+<div id=co class="mo h" role="dialog" aria-modal="true" aria-labelledby="coh"><div class=md style=max-width:400px><div class=tc style=padding:var(--s48) var(--s24)><div style="font-size:2.5rem;margin-bottom:var(--s16)">&#x26A0;</div><h3 id=coh style=font-size:1.143rem;margin-bottom:var(--s8) data-i18n="camera.delete_title">Delete Camera</h3><p id=ct2 style=color:var(--t2);font-size:.929rem data-i18n="camera.delete_desc">Are you sure?</p></div>
+<div class=mf style=justify-content:center><button class="b bs" onclick=cC() data-i18n="common.cancel">Cancel</button><button class="b bd" id=cdb onclick=cD() data-i18n="common.delete">Delete</button></div></div></div>
+
+<script id="injected-js"></script>
+</body>
+</html>
