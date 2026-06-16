@@ -6,19 +6,19 @@ use axum::Json;
 use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use futures_core::Stream;
 use protocols::rtsp_server::RtspServer;
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 use uuid::Uuid;
-use futures_core::Stream;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::sync::oneshot;
 
 use crate::db;
 use crate::errors::ApiError;
@@ -253,7 +253,11 @@ pub async fn snapshot(
     };
 
     // RTSP URL for the camera's stream
-    let rtsp_host = if advertised_host.is_empty() { "127.0.0.1" } else { advertised_host.as_str() };
+    let rtsp_host = if advertised_host.is_empty() {
+        "127.0.0.1"
+    } else {
+        advertised_host.as_str()
+    };
     let rtsp_url = format!("rtsp://{}:8554/live/{}", rtsp_host, id);
 
     // Use ffmpeg to capture a single JPEG frame
@@ -386,7 +390,11 @@ pub async fn live_preview(
     // Live preview: pull from RTSP and convert to MJPEG via ffmpeg.
     // This single ffmpeg approach works for ALL camera types (USB, RTSP, ONVIF,
     // GB28181) because every camera's stream is available through the RTSP server.
-    let rtsp_host = if advertised_host.is_empty() { "127.0.0.1" } else { advertised_host.as_str() };
+    let rtsp_host = if advertised_host.is_empty() {
+        "127.0.0.1"
+    } else {
+        advertised_host.as_str()
+    };
     let rtsp_url = format!("rtsp://{}:8554/live/{}", rtsp_host, id);
 
     let mut cmd = Command::new("ffmpeg");
@@ -395,16 +403,26 @@ pub async fn live_preview(
         .stderr(Stdio::null());
     cmd.args([
         "-hide_banner",
-        "-loglevel", "fatal",
-        "-fflags", "nobuffer",
-        "-flags", "low_delay",
-        "-analyzeduration", "500000",
-        "-rtsp_transport", "tcp",
-        "-i", &rtsp_url,
-        "-s", "640x360",
-        "-f", "mpjpeg",
-        "-r", "10",
-        "-q:v", "5",
+        "-loglevel",
+        "fatal",
+        "-fflags",
+        "nobuffer",
+        "-flags",
+        "low_delay",
+        "-analyzeduration",
+        "500000",
+        "-rtsp_transport",
+        "tcp",
+        "-i",
+        &rtsp_url,
+        "-s",
+        "640x360",
+        "-f",
+        "mpjpeg",
+        "-r",
+        "10",
+        "-q:v",
+        "5",
         "-an",
         "pipe:1",
     ]);

@@ -5,10 +5,10 @@ use axum::response::IntoResponse;
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::Arc;
-use std::time::Instant;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub mod cameras;
