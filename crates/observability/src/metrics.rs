@@ -22,6 +22,11 @@ pub struct Metrics {
     onvif_discovery_requests: IntCounter,
     gb28181_register_status: IntCounterVec,
     audio_level_db: GaugeVec,
+    // ─── New metrics ────────────────────────────────
+    http_requests_total: IntCounterVec,
+    auth_failures_total: IntCounterVec,
+    recording_active: IntGauge,
+    frame_drops_total: IntCounter,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +136,54 @@ pub fn set_audio_level(stream_id: &str, db_level: f64) {
     }
 }
 
+// ─── New metric helpers ─────────────────────────────────────────
+
+/// Increment the `mibee_http_requests_total` counter.
+pub fn increment_http_requests(method: &str, path: &str, status: u16) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.http_requests_total
+            .with_label_values(&[method, path, &status.to_string()])
+            .inc();
+    }
+}
+
+/// Increment the `mibee_auth_failures_total` counter by failure type.
+///
+/// `failure_type` must be one of `"bad_password"`, `"locked_out"`, or `"rate_limited"`.
+pub fn increment_auth_failures(failure_type: &str) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.auth_failures_total.with_label_values(&[failure_type]).inc();
+    }
+}
+
+/// Set the `mibee_recording_active` gauge to an absolute value.
+pub fn set_recording_active(count: i64) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.recording_active.set(count);
+    }
+}
+
+/// Increment the `mibee_recording_active` gauge by 1.
+pub fn inc_recording_active() {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.recording_active.inc();
+    }
+}
+
+/// Decrement the `mibee_recording_active` gauge by 1.
+pub fn dec_recording_active() {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.recording_active.dec();
+    }
+}
+
+/// Increment the `mibee_frame_drops_total` counter.
+pub fn increment_frame_drops() {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.frame_drops_total.inc();
+    }
+}
+
 /// Render all registered metrics in Prometheus text-0.0.4 exposition format.
 pub fn render_metrics() -> String {
     let metric_families = global_metrics().registry.gather();
@@ -225,6 +278,37 @@ impl Metrics {
         )?;
         registry.register(Box::new(audio_level_db.clone()))?;
 
+        // ─── New metrics ───────────────────────────────────
+        let http_requests_total = IntCounterVec::new(
+            Opts::new(
+                "mibee_http_requests_total",
+                "Total HTTP requests by method, path, and status",
+            ),
+            &["method", "path", "status"],
+        )?;
+        registry.register(Box::new(http_requests_total.clone()))?;
+
+        let auth_failures_total = IntCounterVec::new(
+            Opts::new(
+                "mibee_auth_failures_total",
+                "Total authentication failures by type",
+            ),
+            &["type"],
+        )?;
+        registry.register(Box::new(auth_failures_total.clone()))?;
+
+        let recording_active = IntGauge::new(
+            "mibee_recording_active",
+            "Number of active recording outputs",
+        )?;
+        registry.register(Box::new(recording_active.clone()))?;
+
+        let frame_drops_total = IntCounter::new(
+            "mibee_frame_drops_total",
+            "Total number of dropped frames in broadcast",
+        )?;
+        registry.register(Box::new(frame_drops_total.clone()))?;
+
         Ok(Metrics {
             registry,
             active_streams,
@@ -237,6 +321,10 @@ impl Metrics {
             onvif_discovery_requests,
             gb28181_register_status,
             audio_level_db,
+            http_requests_total,
+            auth_failures_total,
+            recording_active,
+            frame_drops_total,
         })
     }
 
@@ -278,6 +366,15 @@ mod tests {
         m.gb28181_register_status
             .with_label_values(&["registered"])
             .inc();
+        // Activate new metrics so they appear in output
+        m.http_requests_total
+            .with_label_values(&["GET", "/health", "200"])
+            .inc();
+        m.auth_failures_total
+            .with_label_values(&["bad_password"])
+            .inc();
+        m.recording_active.set(1);
+        m.frame_drops_total.inc_by(3);
 
         let output = m.render();
         // All metrics should appear in the rendered text
@@ -316,6 +413,22 @@ mod tests {
         assert!(
             output.contains("mibee_rec_gb28181_register_status"),
             "output should contain gb28181_register_status counter"
+        );
+        assert!(
+            output.contains("mibee_http_requests_total"),
+            "output should contain http_requests_total counter"
+        );
+        assert!(
+            output.contains("mibee_auth_failures_total"),
+            "output should contain auth_failures_total counter"
+        );
+        assert!(
+            output.contains("mibee_recording_active"),
+            "output should contain recording_active gauge"
+        );
+        assert!(
+            output.contains("mibee_frame_drops_total"),
+            "output should contain frame_drops_total counter"
         );
     }
 
@@ -494,6 +607,105 @@ mod tests {
         assert!(
             output.contains(r#"mibee_rec_audio_level_db{stream_id="default"} 0"#),
             "audio_level_db should show 0\n=== output ===\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_increment_http_requests() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+
+        m.http_requests_total
+            .with_label_values(&["POST", "/api/auth/login", "200"])
+            .inc();
+        m.http_requests_total
+            .with_label_values(&["GET", "/health", "200"])
+            .inc();
+        m.http_requests_total
+            .with_label_values(&["GET", "/health", "200"])
+            .inc();
+
+        let output = m.render();
+        assert!(
+            output.contains(r#"mibee_http_requests_total{method="POST",path="/api/auth/login",status="200"} 1"#),
+            "POST login should appear once\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(r#"mibee_http_requests_total{method="GET",path="/health",status="200"} 2"#),
+            "GET health should appear twice\n=== output ===\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_increment_auth_failures() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+
+        m.auth_failures_total
+            .with_label_values(&["bad_password"])
+            .inc();
+        m.auth_failures_total
+            .with_label_values(&["bad_password"])
+            .inc();
+        m.auth_failures_total
+            .with_label_values(&["locked_out"])
+            .inc();
+        m.auth_failures_total
+            .with_label_values(&["rate_limited"])
+            .inc();
+
+        let output = m.render();
+        assert!(
+            output.contains(r#"mibee_auth_failures_total{type="bad_password"} 2"#),
+            "bad_password should be 2\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(r#"mibee_auth_failures_total{type="locked_out"} 1"#),
+            "locked_out should be 1\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(r#"mibee_auth_failures_total{type="rate_limited"} 1"#),
+            "rate_limited should be 1\n=== output ===\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_set_recording_active() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+
+        m.recording_active.set(2);
+        let output = m.render();
+        assert!(
+            output.contains("mibee_recording_active 2"),
+            "recording_active should be 2\n=== output ===\n{}",
+            output
+        );
+
+        m.recording_active.set(0);
+        let output = m.render();
+        assert!(
+            output.contains("mibee_recording_active 0"),
+            "recording_active should be 0\n=== output ===\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_increment_frame_drops() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+
+        m.frame_drops_total.inc();
+        m.frame_drops_total.inc();
+        m.frame_drops_total.inc();
+
+        let output = m.render();
+        assert!(
+            output.contains("mibee_frame_drops_total 3"),
+            "frame_drops should be 3\n=== output ===\n{}",
             output
         );
     }

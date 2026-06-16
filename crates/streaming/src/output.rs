@@ -872,6 +872,7 @@ impl Output for FileOutput {
             self.stdin = Some(stdin);
             self.child = Some(child);
             self.started = true;
+            observability::inc_recording_active();
             Ok(())
         })
     }
@@ -937,6 +938,7 @@ impl Output for FileOutput {
                 }
             }
             self.started = false;
+            observability::dec_recording_active();
             tracing::info!(camera_id = %self.camera_id, "FileOutput stopped");
             Ok(())
         })

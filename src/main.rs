@@ -50,10 +50,7 @@ async fn main() -> anyhow::Result<()> {
     // Resolve advertised host: use configured value or auto-detect LAN IP
     let advertised_host = match &config.web.advertised_host {
         Some(host) if !host.is_empty() => host.clone(),
-        _ => {
-            let target: std::net::SocketAddr = "8.8.8.8:53".parse().unwrap();
-            get_local_ip_for_server(&target).unwrap_or_else(|_| "127.0.0.1".to_string())
-        }
+        _ => get_first_non_loopback_ipv4().unwrap_or_else(|| "127.0.0.1".to_string()),
     };
     tracing::info!(advertised_host = %advertised_host, "resolved advertised host");
 
@@ -788,6 +785,35 @@ fn get_local_ip_for_server(server_addr: &SocketAddr) -> anyhow::Result<String> {
     socket.connect(server_addr)?;
     let local_addr = socket.local_addr()?;
     Ok(local_addr.ip().to_string())
+}
+
+/// Get the first non-loopback IPv4 address via interface enumeration.
+/// Falls back to "127.0.0.1" if no suitable interface is found.
+fn get_first_non_loopback_ipv4() -> Option<String> {
+    let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+    unsafe {
+        if libc::getifaddrs(&mut ifap) != 0 {
+            return None;
+        }
+        let mut ip = None;
+        let mut ptr = ifap;
+        while !ptr.is_null() {
+            let ifa = &*ptr;
+            if let Some(addr) = ifa.ifa_addr.as_ref() {
+                if addr.sa_family as libc::c_uint == libc::AF_INET as libc::c_uint {
+                    let sin = addr as *const libc::sockaddr as *const libc::sockaddr_in;
+                    let ip_addr = Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
+                    if !ip_addr.is_loopback() && !ip_addr.is_unspecified() {
+                        ip = Some(ip_addr.to_string());
+                        break;
+                    }
+                }
+            }
+            ptr = ifa.ifa_next;
+        }
+        libc::freeifaddrs(ifap);
+        ip
+    }
 }
 
 /// Default port for the ONVIF device service HTTP endpoint.

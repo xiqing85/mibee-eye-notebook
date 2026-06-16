@@ -358,8 +358,13 @@ impl StreamHub {
                         let frame = Arc::new(frame);
 
                         // Broadcast to all outputs.
+                        // If the channel is full, `send` blocks (backpressure).
+                        // `SendError` means all receivers have been dropped —
+                        // which is fine; we just continue.
                         if broadcast_tx.receiver_count() > 0 {
-                            let _ = broadcast_tx.send(frame);
+                            if let Err(broadcast::error::SendError(_)) = broadcast_tx.send(frame) {
+                                // All receivers dropped — nothing to track.
+                            }
                         }
                     }
                 }
