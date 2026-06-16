@@ -17,8 +17,6 @@
 //! process overhead + H.264 reference frames).
 
 use std::future::Future;
-#[cfg(unix)]
-use std::os::unix::fs::FileTypeExt;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
@@ -87,6 +85,7 @@ impl VideoCaptureSource {
     ///
     /// `device_index` is the OS device index (e.g. `0` for `/dev/video0`).
     /// The camera is not opened until [`start()`](Self::start) is called.
+    #[tracing::instrument(skip_all, fields(device_index))]
     pub fn new(device_index: usize) -> Self {
         Self {
             device_index,
@@ -106,109 +105,16 @@ impl VideoCaptureSource {
     }
 
     /// Return whether the source has been started.
+    #[tracing::instrument(skip_all)]
     pub fn is_running(&self) -> bool {
         self.running
     }
 
     /// Return the camera device index.
+    #[tracing::instrument(skip_all)]
     pub fn device_index(&self) -> usize {
         self.device_index
     }
-}
-
-// ---------------------------------------------------------------------------
-// FFmpeg subprocess spawning
-// ---------------------------------------------------------------------------
-
-/// Spawn an ffmpeg subprocess for H.264 encoding.
-///
-/// Constructs and spawns the ffmpeg command based on the frame format,
-/// takes ownership of stdin/stdout pipes, and returns all three handles.
-async fn spawn_ffmpeg_process(
-    width: u32,
-    height: u32,
-    format: &str,
-) -> Result<(Child, ChildStdin, ChildStdout)> {
-    let mut cmd = tokio::process::Command::new("ffmpeg");
-
-    if format.eq_ignore_ascii_case("MJPEG") {
-        cmd.args([
-            "-analyzeduration",
-            "10000000",
-            "-probesize",
-            "50000000",
-            "-f",
-            "mjpeg",
-            "-i",
-            "pipe:0",
-        ]);
-    } else {
-        let pix_fmt = map_pixel_format(format);
-        let size_str = format!("{}x{}", width, height);
-        cmd.arg("-f")
-            .arg("rawvideo")
-            .arg("-pix_fmt")
-            .arg(pix_fmt)
-            .arg("-s")
-            .arg(&size_str)
-            .arg("-i")
-            .arg("pipe:0");
-    }
-
-    cmd.args([
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
-        "-g",
-        "30",
-        "-x264-params",
-        "repeat-headers=1",
-        "-f",
-        "h264",
-        "pipe:1",
-    ])
-    .stdin(std::process::Stdio::piped())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
-
-    let mut child = cmd
-        .spawn()
-        .context("failed to spawn ffmpeg — is ffmpeg installed and in $PATH?")?;
-
-    let stdin = child
-        .stdin
-        .take()
-        .context("failed to capture ffmpeg stdin")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("failed to capture ffmpeg stdout")?;
-
-    if let Some(stderr) = child.stderr.take() {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let trimmed = line.trim_end();
-                        if !trimmed.is_empty() {
-                            tracing::warn!("ffmpeg: {trimmed}");
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-
-    Ok((child, stdin, stdout))
 }
 
 // ---------------------------------------------------------------------------
@@ -245,159 +151,74 @@ fn check_ffmpeg_crash_restart(
 }
 
 impl Source for VideoCaptureSource {
+    #[tracing::instrument(skip_all)]
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         // Capture device_index by value (Copy) so the async block doesn't
         // need a full &mut self borrow at construction time.
         let index = self.device_index;
 
         Box::pin(async move {
-            // ── 1. Open camera and start streaming ──────────────────────
-            let mut capture =
-                VideoCapture::new(index).context("failed to open video capture device")?;
-
-            let mut rx = capture
-                .start_stream()
-                .context("failed to start video stream")?;
-
-            // ── 2. Receive first frame to detect format ─────────────────
-            let first_frame: VideoFrame = rx
-                .recv()
-                .await
-                .ok_or_else(|| anyhow::anyhow!("camera closed before first frame"))?;
-
-            let width = first_frame.width;
-            let height = first_frame.height;
-            let format = first_frame.format.clone();
-            // ── 2. Validate device and configuration before ffmpeg ───────────
-            // Check camera device path exists and is readable
             let device_path = format!("/dev/video{}", index);
+
+            // Validate device exists
             if !std::path::Path::new(&device_path).exists() {
-                return Err(anyhow::anyhow!(
-                    "Camera device {} does not exist: {}",
-                    index,
-                    device_path
-                ));
-            }
-            let meta = std::fs::metadata(&device_path).context(format!(
-                "Failed to read metadata for camera device {}",
-                device_path
-            ))?;
-            // V4L2 devices (/dev/videoN) are character devices, not regular files.
-            if !meta.file_type().is_char_device() && !meta.is_file() {
-                return Err(anyhow::anyhow!(
-                    "Camera device {} is not a valid device node: {}",
-                    index,
-                    device_path
-                ));
             }
 
-            // Validate resolution is not empty/zero
-            if width == 0 || height == 0 {
-                return Err(anyhow::anyhow!(
-                    "Invalid camera resolution: {}x{} - both width and height must be > 0",
-                    width,
-                    height
-                ));
-            }
+            let mut cmd = tokio::process::Command::new("ffmpeg");
+            cmd.arg("-y")
+                .arg("-f").arg("v4l2")
+                .arg("-input_format").arg("mjpeg")
+                .arg("-video_size").arg("1280x720")
+                .arg("-framerate").arg("30")
+                .arg("-i").arg(&device_path)
+                .arg("-c:v").arg("libx264")
+                .arg("-preset").arg("ultrafast")
+                .arg("-tune").arg("zerolatency")
+                .arg("-g").arg("30")
+                .arg("-x264-params").arg("repeat-headers=1")
+                .arg("-f").arg("h264")
+                .arg("pipe:1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
 
-            // Validate resolution is reasonable (not excessively large)
-            if width > 7680 || height > 4320 {
-                return Err(anyhow::anyhow!(
-                    "Camera resolution {}x{} exceeds maximum supported resolution 7680x4320",
-                    width,
-                    height
-                ));
-            }
+            tracing::info!(device = %device_path, "spawning ffmpeg for direct V4L2 capture");
 
-            // Note: Audio device validation is handled in AudioCaptureSource::start()
-            // This validation focuses on video capture device and configuration
+            let mut child = cmd
+                .spawn()
+                .context("failed to spawn ffmpeg — is ffmpeg installed and in $PATH?")?;
 
-            // Store camera params for potential ffmpeg restart
-            self.camera_width = width;
-            self.camera_height = height;
-            self.camera_format = format.clone();
+            let stdout = child
+                .stdout
+                .take()
+                .context("failed to capture ffmpeg stdout")?;
 
-            // ── 2a. Create bounded broadcast channel for frame buffering ──
-            // Capacity 120 frames ≈ 4s at 30fps. When full, the oldest unread
-            // frame is automatically overwritten (drop-oldest semantics).
-            let (b_tx, b_rx) = broadcast::channel::<VideoFrame>(120);
-            tokio::spawn(async move {
-                while let Some(frame) = rx.recv().await {
-                    if b_tx.send(frame).is_err() {
-                        // No active receivers — source is shutting down
-                        break;
-                    }
-                }
-            });
-
-            // ── 3. Spawn ffmpeg subprocess for H.264 encoding ──────────
-            let (child, stdin, stdout) = spawn_ffmpeg_process(width, height, &format).await?;
-
-            // ── 4. Write the very first frame to kick off encoding ──────
-            //
-            // This gives ffmpeg initial data so that the first next_frame()
-            // call is more likely to have encoded output ready immediately.
-            let mut stdin = stdin;
-            stdin
-                .write_all(&first_frame.data)
-                .await
-                .context("failed to write first frame to ffmpeg stdin")?;
-            stdin
-                .flush()
-                .await
-                .context("failed to flush ffmpeg stdin")?;
-
-            // ── 5. Spawn stdin writer task and store handles ───────────
-            //
-            // CRITICAL: stdin writes MUST be decoupled from stdout reads.
-            // ffmpeg needs multiple frames to complete its probe phase before
-            // producing H.264 output. If we write-then-read sequentially in
-            // next_frame(), ffmpeg blocks waiting for more input while we
-            // block waiting for output — classic pipe deadlock.
-            //
-            // The writer task continuously feeds camera frames to ffmpeg,
-            // while next_frame() only reads encoded output from stdout.
-            let device_idx = self.device_index;
-            tokio::spawn(async move {
-                let mut b_rx = b_rx;
-                let mut stdin = stdin;
-                loop {
-                    match b_rx.recv().await {
-                        Ok(frame) => {
-                            if let Err(e) = stdin.write_all(&frame.data).await {
-                                tracing::warn!(
-                                    device_index = device_idx,
-                                    "ffmpeg stdin write failed: {e}"
-                                );
-                                break;
+            if let Some(stderr) = child.stderr.take() {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut reader = BufReader::new(stderr);
+                tokio::spawn(async move {
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        match reader.read_line(&mut line).await {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                let trimmed = line.trim_end();
+                                if !trimmed.is_empty() {
+                                    tracing::warn!("ffmpeg: {}", trimmed);
+                                }
                             }
-                            if let Err(e) = stdin.flush().await {
-                                tracing::warn!(
-                                    device_index = device_idx,
-                                    "ffmpeg stdin flush failed: {e}"
-                                );
-                                break;
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            tracing::debug!(
-                                device_index = device_idx,
-                                "camera broadcast closed, stdin writer exiting"
-                            );
-                            break;
-                        }
-                        Err(broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(
-                                device_index = device_idx,
-                                skipped = n,
-                                "stdin writer lagged, dropped frames"
-                            );
-                            continue;
+                            Err(_) => break,
                         }
                     }
-                }
-            });
-            self.capture = Some(capture);
+                });
+            }
+
+            let stdout = stdout;
+
+            self.camera_width = 1280;
+            self.camera_height = 720;
+            self.camera_format = "mjpeg".to_string();
             self.ffmpeg_child = Some(child);
             self.ffmpeg_stdout = Some(stdout);
             self.running = true;
@@ -405,16 +226,13 @@ impl Source for VideoCaptureSource {
 
             tracing::info!(
                 device_index = index,
-                width,
-                height,
-                format = %format,
-                "VideoCaptureSource started"
+                "VideoCaptureSource started (direct ffmpeg V4L2 mode)"
             );
-
             Ok(())
         })
     }
 
+    #[tracing::instrument(skip_all)]
     fn next_frame(&mut self) -> Pin<Box<dyn Future<Output = Result<MediaFrame>> + Send + '_>> {
         Box::pin(async move {
             if !self.running {
@@ -465,6 +283,7 @@ impl Source for VideoCaptureSource {
         })
     }
 
+    #[tracing::instrument(skip_all)]
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
             // 1. stdin is owned by the spawned writer task. Dropping capture
@@ -545,6 +364,7 @@ pub struct AudioCaptureSource {
 
 impl AudioCaptureSource {
     /// Create a new audio capture source using the default input device.
+    #[tracing::instrument(skip_all)]
     pub fn new() -> Self {
         Self {
             device_name: None,
@@ -561,6 +381,7 @@ impl AudioCaptureSource {
     }
 
     /// Create a new audio capture source for a specific device by name.
+    #[tracing::instrument(skip_all)]
     pub fn with_device(device_name: String) -> Self {
         Self {
             device_name: Some(device_name),
@@ -577,6 +398,7 @@ impl AudioCaptureSource {
     }
 
     /// Return whether the source has been started.
+    #[tracing::instrument(skip_all)]
     pub fn is_running(&self) -> bool {
         self.running
     }
@@ -589,6 +411,7 @@ impl Default for AudioCaptureSource {
 }
 
 impl Source for AudioCaptureSource {
+    #[tracing::instrument(skip_all)]
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         // Clone for device lookup inside async block.
         let target_device = self.device_name.clone();
@@ -688,6 +511,7 @@ impl Source for AudioCaptureSource {
         })
     }
 
+    #[tracing::instrument(skip_all)]
     fn next_frame(&mut self) -> Pin<Box<dyn Future<Output = Result<MediaFrame>> + Send + '_>> {
         Box::pin(async move {
             if !self.running {
@@ -769,6 +593,7 @@ impl Source for AudioCaptureSource {
         })
     }
 
+    #[tracing::instrument(skip_all)]
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
             // 1. Drop stdin - closes the pipe, sending EOF to ffmpeg.
@@ -790,48 +615,6 @@ impl Source for AudioCaptureSource {
             tracing::info!("AudioCaptureSource stopped");
             Ok(())
         })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Pixel format conversion
-// ---------------------------------------------------------------------------
-
-/// Map camera pixel format strings to ffmpeg `-pix_fmt` values.
-///
-/// The format string comes from [`VideoFrame::format`] which is the Debug
-/// representation of nokhwa's [`FrameFormat`] enum (e.g. `"MJPEG"`,
-/// `"YUYV"`, `"NV12"`).
-///
-/// For MJPEG this function returns `"mjpeg"` as a sentinel — the caller
-/// should use `-f mjpeg` instead of `-f rawvideo` in that case.
-fn map_pixel_format(format: &str) -> &'static str {
-    // Match against known pixel format strings (case-insensitive).
-    // The format comes from nokhwa's Debug representation of FrameFormat.
-    match format {
-        f if f.eq_ignore_ascii_case("MJPEG") => {
-            tracing::warn!("MJPEG passed to map_pixel_format — use -f mjpeg instead");
-            "yuvj422p"
-        }
-        f if f.eq_ignore_ascii_case("YUYV") || f.eq_ignore_ascii_case("YUY2") => "yuyv422",
-        f if f.eq_ignore_ascii_case("NV12") => "nv12",
-        f if f.eq_ignore_ascii_case("BGRA") => "bgra",
-        f if f.eq_ignore_ascii_case("I420") || f.eq_ignore_ascii_case("IYUV") => "yuv420p",
-        f if f.eq_ignore_ascii_case("RGB24") => "rgb24",
-        f if f.eq_ignore_ascii_case("UYVY") => "uyvy422",
-        f if f.eq_ignore_ascii_case("GRAY")
-            || f.eq_ignore_ascii_case("GRAY8")
-            || f.eq_ignore_ascii_case("Y800")
-            || f.eq_ignore_ascii_case("Y16") =>
-        {
-            "gray"
-        }
-        f if f.eq_ignore_ascii_case("BGR24") => "bgr24",
-        f if f.eq_ignore_ascii_case("YV12") => "yuv420p",
-        _ => {
-            tracing::warn!("Unknown camera pixel format '{format}', falling back to yuv420p");
-            "yuv420p"
-        }
     }
 }
 
@@ -986,44 +769,6 @@ mod tests {
         assert_eq!(source.device_index(), 3);
         assert!(!source.is_running());
     }
-
-    // ── Pixel format mapping ───────────────────────────────────────────
-
-    #[test]
-    fn test_map_pixel_format_mjpeg() {
-        // MJPEG returns a fallback value (callers should check for MJPEG
-        // before calling this function).
-        let fmt = map_pixel_format("MJPEG");
-        assert!(!fmt.is_empty());
-    }
-
-    #[test]
-    fn test_map_pixel_format_raw_formats() {
-        assert_eq!(map_pixel_format("YUYV"), "yuyv422");
-        assert_eq!(map_pixel_format("NV12"), "nv12");
-        assert_eq!(map_pixel_format("BGRA"), "bgra");
-        assert_eq!(map_pixel_format("I420"), "yuv420p");
-        assert_eq!(map_pixel_format("RGB24"), "rgb24");
-        assert_eq!(map_pixel_format("UYVY"), "uyvy422");
-        assert_eq!(map_pixel_format("GRAY"), "gray");
-        assert_eq!(map_pixel_format("BGR24"), "bgr24");
-        assert_eq!(map_pixel_format("YV12"), "yuv420p");
-    }
-
-    #[test]
-    fn test_map_pixel_format_case_insensitive() {
-        assert_eq!(map_pixel_format("yuyv"), "yuyv422");
-        assert_eq!(map_pixel_format("nv12"), "nv12");
-        assert_eq!(map_pixel_format("bgra"), "bgra");
-    }
-
-    #[test]
-    fn test_map_pixel_format_unknown_fallback() {
-        // Unknown format returns the lowercase input as a best-effort guess.
-        let fmt = map_pixel_format("CUSTOM");
-        assert!(!fmt.is_empty());
-    }
-
     // ── NAL parsing: extract_next_nal ──────────────────────────────────
 
     /// H.264 Annex B stream with SPS (4-byte SC), PPS (3-byte SC), IDR
