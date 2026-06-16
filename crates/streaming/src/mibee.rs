@@ -28,11 +28,11 @@
 //! ```
 
 use anyhow::{Context, Result};
+use opentelemetry::propagation::Injector;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration;
-
 // ── Re-exports ──────────────────────────────────────────────────────────────────
 
 pub use reqwest::header::HeaderValue;
@@ -190,11 +190,16 @@ impl MiBeeClient {
     /// Perform an authenticated GET and deserialize the JSON response.
     async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = self.build_url(path);
-        let response = self
+        let mut request = self
             .client
             .get(&url)
             .basic_auth(&self.username, Some(&self.password))
-            .send()
+            .build()
+            .context("failed to build GET request")?;
+        inject_trace_context(request.headers_mut());
+        let response = self
+            .client
+            .execute(request)
             .await
             .with_context(|| format!("GET {url} failed — is the MiBee NVR reachable?"))?;
 
@@ -217,12 +222,17 @@ impl MiBeeClient {
         body: &B,
     ) -> Result<T> {
         let url = self.build_url(path);
-        let response = self
+        let mut request = self
             .client
             .post(&url)
             .basic_auth(&self.username, Some(&self.password))
             .json(body)
-            .send()
+            .build()
+            .context("failed to build POST request")?;
+        inject_trace_context(request.headers_mut());
+        let response = self
+            .client
+            .execute(request)
             .await
             .with_context(|| format!("POST {url} failed"))?;
 
@@ -245,12 +255,17 @@ impl MiBeeClient {
         body: &B,
     ) -> Result<T> {
         let url = self.build_url(path);
-        let response = self
+        let mut request = self
             .client
             .put(&url)
             .basic_auth(&self.username, Some(&self.password))
             .json(body)
-            .send()
+            .build()
+            .context("failed to build PUT request")?;
+        inject_trace_context(request.headers_mut());
+        let response = self
+            .client
+            .execute(request)
             .await
             .with_context(|| format!("PUT {url} failed"))?;
 
@@ -269,11 +284,16 @@ impl MiBeeClient {
     /// Perform an authenticated DELETE.
     async fn delete_request(&self, path: &str) -> Result<()> {
         let url = self.build_url(path);
-        let response = self
+        let mut request = self
             .client
             .delete(&url)
             .basic_auth(&self.username, Some(&self.password))
-            .send()
+            .build()
+            .context("failed to build DELETE request")?;
+        inject_trace_context(request.headers_mut());
+        let response = self
+            .client
+            .execute(request)
             .await
             .with_context(|| format!("DELETE {url} failed"))?;
 
@@ -429,11 +449,16 @@ impl MiBeeClient {
     /// connection drops.
     pub async fn subscribe_events(&self) -> Result<tokio::sync::mpsc::Receiver<CameraEvent>> {
         let url = self.build_url("/api/events");
-        let response = self
+        let mut request = self
             .client
             .get(&url)
             .basic_auth(&self.username, Some(&self.password))
-            .send()
+            .build()
+            .context("failed to build SSE request")?;
+        inject_trace_context(request.headers_mut());
+        let response = self
+            .client
+            .execute(request)
             .await
             .with_context(|| format!("SSE connection to {url} failed"))?;
 
@@ -452,6 +477,35 @@ impl MiBeeClient {
 
         Ok(rx)
     }
+}
+
+// ── Trace context injection ─────────────────────────────────────────────────────
+
+/// Injects the current OpenTelemetry trace context (`traceparent` header) into
+/// an outbound HTTP request's headers using the globally configured propagator.
+///
+/// This enables distributed tracing: the receiving service can extract the
+/// trace context and continue the same trace across service boundaries.
+fn inject_trace_context(headers: &mut reqwest::header::HeaderMap) {
+    struct HeaderInjector<'a>(&'a mut reqwest::header::HeaderMap);
+
+    impl Injector for HeaderInjector<'_> {
+        fn set(&mut self, key: &str, value: String) {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(&value) {
+                self.0.insert(
+                    reqwest::header::HeaderName::from_bytes(key.as_bytes()).unwrap(),
+                    val,
+                );
+            }
+        }
+    }
+
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(
+            &opentelemetry::Context::current(),
+            &mut HeaderInjector(headers),
+        )
+    });
 }
 
 // ── SSE parsing ─────────────────────────────────────────────────────────────────

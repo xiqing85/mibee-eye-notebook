@@ -275,6 +275,7 @@ impl SipMessage {
     ///
     /// Handles both requests (METHOD uri SIP/2.0) and responses
     /// (SIP/2.0 CODE REASON).
+    #[tracing::instrument(skip_all)]
     pub fn parse(data: &str) -> Result<Self> {
         // Split headers and body by \r\n\r\n
         let mut parts = data.splitn(2, "\r\n\r\n");
@@ -352,6 +353,7 @@ impl SipMessage {
     }
 
     /// Serialize the SIP message to a string.
+    #[tracing::instrument(skip_all)]
     pub fn serialize(&self) -> String {
         let mut result = String::new();
         result.push_str(&self.start_line);
@@ -412,6 +414,7 @@ impl SdpMedia {
 
 impl SdpSession {
     /// Parse an SDP string.
+    #[tracing::instrument(skip_all)]
     pub fn parse(data: &str) -> Result<Self> {
         let mut origin = String::new();
         let mut session_name = String::new();
@@ -492,6 +495,7 @@ impl SdpSession {
     }
 
     /// Serialize to SDP string.
+    #[tracing::instrument(skip_all)]
     pub fn serialize(&self) -> String {
         let mut result = String::new();
         result.push_str("v=0\r\n");
@@ -529,6 +533,7 @@ impl SdpSession {
 
 /// Build a SIP REGISTER request for device registration.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all)]
 pub fn build_register_request(
     local_id: &str,
     local_addr: &str,
@@ -583,6 +588,7 @@ pub fn build_register_request(
 }
 
 /// Build a SIP BYE request.
+#[tracing::instrument(skip_all)]
 pub fn build_bye_request(
     local_id: &str,
     local_addr: &str,
@@ -631,6 +637,7 @@ pub fn build_bye_request(
 /// * `local_sdp` - SDP body describing the media being sent (video stream)
 /// * `local_tag` - Tag to add to To header for dialog identification
 /// * `cseq` - CSeq number from INVITE
+#[tracing::instrument(skip_all)]
 pub fn build_invite_response(
     invite: &SipMessage,
     local_id: &str,
@@ -706,6 +713,7 @@ pub struct DigestAuthParams {
 }
 
 /// Parse WWW-Authenticate or Authorization header value (Digest auth).
+#[tracing::instrument(skip_all)]
 pub fn parse_digest_auth(header_value: &str) -> Result<DigestAuthParams> {
     let rest = header_value
         .strip_prefix("Digest ")
@@ -794,6 +802,7 @@ pub fn parse_digest_auth(header_value: &str) -> Result<DigestAuthParams> {
 ///   HA1 = SHA-256(username:realm:password)
 ///   HA2 = SHA-256(method:uri)
 ///   response = SHA-256(HA1:nonce:HA2)
+#[tracing::instrument(skip_all)]
 pub fn build_digest_auth(
     username: &str,
     realm: &str,
@@ -1191,6 +1200,7 @@ pub struct SipDeviceClient {
 
 impl SipDeviceClient {
     /// Create a new SIP device client.
+    #[tracing::instrument(skip_all, fields(device_id))]
     pub fn new(
         device_id: &str,
         sip_server_addr: SocketAddr,
@@ -1219,6 +1229,7 @@ impl SipDeviceClient {
     }
 
     /// Build an initial (unauthenticated) SIP REGISTER request.
+    #[tracing::instrument(skip_all)]
     pub fn build_register(&self) -> SipMessage {
         metrics::increment_gb28181_register_status("registered");
         build_register_request(
@@ -1234,6 +1245,7 @@ impl SipDeviceClient {
     }
 
     /// Build a SIP REGISTER request with Digest authentication.
+    #[tracing::instrument(skip_all)]
     pub fn build_register_with_auth(&self, auth: &DigestAuthParams) -> SipMessage {
         metrics::increment_gb28181_register_status("registered");
         let uri = format!("sip:{}@{}", self.device_id, self.domain);
@@ -1259,6 +1271,7 @@ impl SipDeviceClient {
     }
 
     /// Build a SIP BYE request to end a session.
+    #[tracing::instrument(skip_all)]
     pub fn build_bye(
         &self,
         remote_id: &str,
@@ -1277,6 +1290,7 @@ impl SipDeviceClient {
     }
 
     /// Increment the CSeq counter.
+    #[tracing::instrument(skip_all)]
     pub fn inc_cseq(&mut self) {
         self.cseq = self.cseq.wrapping_add(1);
     }
@@ -1284,6 +1298,7 @@ impl SipDeviceClient {
 
 /// Parse the WWW-Authenticate header from a 401 SIP response to extract
 /// the Digest challenge parameters.
+#[tracing::instrument(skip_all)]
 pub fn parse_401_challenge(msg: &SipMessage) -> Result<DigestAuthParams> {
     let auth_header = msg
         .get_header("WWW-Authenticate")
@@ -1312,6 +1327,7 @@ pub struct InviteInfo {
 ///
 /// The INVITE comes FROM the platform TO this device, containing the
 /// platform's receive address and port in the SDP body.
+#[tracing::instrument(skip_all)]
 pub fn parse_invite(msg: &SipMessage) -> Result<InviteInfo> {
     let call_id = msg
         .get_header("Call-ID")
@@ -1385,6 +1401,7 @@ pub struct RtpPusher {
 
 impl RtpPusher {
     /// Create a new RTP pusher.
+    #[tracing::instrument(skip_all)]
     pub fn new(destination: SocketAddr, ssrc: u32, payload_type: u8) -> Self {
         Self {
             destination,
@@ -1400,6 +1417,7 @@ impl RtpPusher {
     /// Uses Single NAL Unit packet format (RFC 6184 section 5.6).
     /// The sequence number is auto-incremented after each packet.
     /// Returns the serialized RTP packet bytes.
+    #[tracing::instrument(skip_all)]
     pub fn build_rtp_packet(&mut self, nal: &[u8]) -> Vec<u8> {
         let packet = RtpPacket {
             flags: RtpHeaderFlags {
@@ -1430,6 +1448,7 @@ impl RtpPusher {
     /// Increment the timestamp by the given amount.
     ///
     /// Typical increment for 30fps H.264 at 90kHz clock is 3000 (90000/30).
+    #[tracing::instrument(skip_all)]
     pub fn increment_timestamp(&mut self, increment: u32) {
         self.timestamp = self.timestamp.wrapping_add(increment);
     }

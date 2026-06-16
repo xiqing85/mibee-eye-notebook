@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fmt::Write;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Typed error for authentication operations.
@@ -34,6 +35,17 @@ use thiserror::Error;
 /// Default session lifetime: 24 hours.
 const SESSION_TTL_SECS: u64 = 24 * 60 * 60;
 
+/// Safe wrapper that returns seconds since UNIX_EPOCH, falling back to 0 on clock errors.
+fn safe_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "System time before UNIX_EPOCH; falling back to 0. Clock may be broken.");
+            Duration::ZERO
+        })
+        .as_secs()
+}
+
 /// Ensure the `sessions` table exists.
 ///
 /// Safe to call multiple times; uses `CREATE TABLE IF NOT EXISTS`.
@@ -54,35 +66,26 @@ pub fn init_sessions_table(conn: &Connection) -> Result<()> {
 /// Generate a cryptographically random 32-byte hex string (64 hex chars).
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut bytes);
     let mut hex = String::with_capacity(64);
     for b in &bytes {
         let _ = write!(hex, "{b:02x}");
     }
     hex
 }
-
 #[cfg(test)]
 fn now_secs_string() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .to_string()
+    safe_epoch_secs().to_string()
 }
 
 /// Create a new session for `user_id`, returning the session token.
 ///
 /// The session table is automatically created if it does not exist.
-/// The session will expire 24 hours from creation time.
 pub fn create_session(conn: &Connection, user_id: &str) -> Result<String> {
     init_sessions_table(conn)?;
 
     let token = generate_token();
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now_secs = safe_epoch_secs();
     let created_at = now_secs.to_string();
     let expires_at = (now_secs + SESSION_TTL_SECS).to_string();
 
@@ -112,10 +115,7 @@ pub fn validate_session(conn: &Connection, token: &str) -> Result<Option<String>
             let expires_secs: u64 = expires_at
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid expires_at timestamp: {e}"))?;
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let now = safe_epoch_secs();
 
             if now < expires_secs {
                 Ok(Some(user_id))
@@ -137,14 +137,8 @@ pub fn invalidate_session(conn: &Connection, token: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove all expired sessions from the database.
-/// Returns the number of deleted rows.
 pub fn cleanup_expired_sessions(conn: &Connection) -> Result<usize> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .to_string();
+    let now = safe_epoch_secs().to_string();
 
     let count = conn
         .execute(
@@ -346,12 +340,7 @@ mod tests {
     fn test_validate_expired_session() {
         let conn = test_db();
 
-        // Create a session that expired 1 hour ago
-        let past = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - 3600;
+        let past = safe_epoch_secs() - 3600;
         let token = create_session_with_expiry(&conn, "admin", past).unwrap();
 
         let result = validate_session(&conn, &token).unwrap();
@@ -373,12 +362,7 @@ mod tests {
     fn test_cleanup_expired_sessions() {
         let conn = test_db();
 
-        // Create an expired session
-        let past = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - 3600;
+        let past = safe_epoch_secs() - 3600;
         let _token = create_session_with_expiry(&conn, "admin", past).unwrap();
 
         // Create a valid session

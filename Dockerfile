@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libv4l-1 \
     curl \
     ca-certificates \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary (renamed from mibee-rec to mibee-rec for consistency)
@@ -54,9 +55,12 @@ EXPOSE 8554
 EXPOSE 1935
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://localhost:8443/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s CMD curl -kf https://localhost:8443/health || exit 1
 
-# Run as non-root
-USER nobody
+# Create mibee-rec user with video/audio groups for device access
+RUN useradd -r -m -G video,audio mibee-rec
+
+# Switch to mibee-rec user (non-root for security)
+USER mibee-rec
 
 ENTRYPOINT ["/usr/local/bin/mibee-rec", "--config", "/etc/mibee-rec/config.toml"]

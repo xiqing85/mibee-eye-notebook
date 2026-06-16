@@ -78,6 +78,8 @@ pub struct VideoCaptureSource {
     camera_height: u32,
     /// Camera pixel format (stored for ffmpeg restart).
     camera_format: String,
+    /// Camera framerate (stored for ffmpeg restart).
+    camera_framerate: String,
 }
 
 impl VideoCaptureSource {
@@ -101,6 +103,7 @@ impl VideoCaptureSource {
             camera_width: 0,
             camera_height: 0,
             camera_format: String::new(),
+            camera_framerate: String::new(),
         }
     }
 
@@ -127,7 +130,6 @@ impl VideoCaptureSource {
 // next_frame() returns an error on stdout EOF instead of attempting restart.
 /// Otherwise, increments the counter and returns the exponential backoff
 /// delay (2s, 4s, 8s for attempts 1, 2, 3).
-#[allow(dead_code)]
 fn check_ffmpeg_crash_restart(
     crash_count: &mut u32,
     ffmpeg_start_time: Instant,
@@ -150,6 +152,219 @@ fn check_ffmpeg_crash_restart(
     Ok(delay)
 }
 
+// ---------------------------------------------------------------------------
+// Camera capability detection (v4l2-ctl)
+// ---------------------------------------------------------------------------
+
+/// Auto-detect camera capabilities by running `v4l2-ctl --list-formats-ext`.
+///
+/// Returns `(input_format, video_size, framerate)` suitable for ffmpeg's
+/// `-input_format`, `-video_size`, and `-framerate` options.
+///
+/// Fallback chain:
+///   Format: MJPEG -> YUYV -> NV12 -> first available
+///   Resolution: 1280x720 -> 960x540 -> 640x480 -> first available
+///   Framerate: 30 -> 15 -> 10 -> first available
+///
+/// If `v4l2-ctl` is not installed, falls back to MJPEG/1280x720/30 with a warning.
+#[tracing::instrument(skip_all, fields(device_index))]
+fn detect_camera_capabilities(device_index: usize) -> Result<(String, String, String)> {
+    let device_path = format!("/dev/video{}", device_index);
+
+    // Try to run v4l2-ctl
+    let output = match std::process::Command::new("v4l2-ctl")
+        .arg("--device")
+        .arg(&device_path)
+        .arg("--list-formats-ext")
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(
+                "v4l2-ctl not found - install v4l-utils for optimal camera parameters; falling back to MJPEG/1280x720/30"
+            );
+            return Ok(("mjpeg".to_string(), "1280x720".to_string(), "30".to_string()));
+        }
+        Err(e) => anyhow::bail!("failed to run v4l2-ctl: {}", e),
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            "v4l2-ctl exited with status {} — falling back to MJPEG/1280x720/30: {}",
+            output.status,
+            stderr.trim()
+        );
+        return Ok(("mjpeg".to_string(), "1280x720".to_string(), "30".to_string()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // ------------------------------------------------------------------
+    // Parse v4l2-ctl --list-formats-ext output
+    //
+    // Typical format:
+    //   [0]: 'MJPG' (Motion-JPEG, compressed)
+    //       Size: Discrete 1280x720
+    //           Interval: 30 fps (1/30 second)
+    //           Interval: 15 fps (1/15 second)
+    //       Size: Discrete 640x480
+    //           Interval: 30 fps (1/30 second)
+    //   [1]: 'YUYV' (YUYV 4:2:2)
+    //       Size: Discrete 640x480
+    //           Interval: 30 fps (1/30 second)
+    // ------------------------------------------------------------------
+
+    let format_map: &[(&str, &str)] = &[
+        ("MJPG", "mjpeg"),
+        ("YUYV", "yuyv422"),
+        ("NV12", "nv12"),
+        ("H264", "h264"),
+    ];
+
+    struct ResEntry {
+        size: String,
+        framerates: Vec<u32>,
+    }
+
+    struct FmtEntry {
+        fourcc: String,
+        resolutions: Vec<ResEntry>,
+    }
+
+    let mut formats: Vec<FmtEntry> = Vec::new();
+    let mut cur_fourcc: Option<String> = None;
+    let mut cur_resolutions: Vec<ResEntry> = Vec::new();
+    let mut cur_size: Option<String> = None;
+    let mut cur_framerates: Vec<u32> = Vec::new();
+
+    for line in stdout.lines() {
+        let t = line.trim();
+
+        // Format header: "[N]: 'FOURCC' (description)"
+        if t.starts_with('[') {
+            // Flush previous format
+            if let Some(fcc) = cur_fourcc.take() {
+                if let Some(sz) = cur_size.take() {
+                    cur_resolutions.push(ResEntry {
+                        size: sz,
+                        framerates: std::mem::take(&mut cur_framerates),
+                    });
+                }
+                formats.push(FmtEntry {
+                    fourcc: fcc,
+                    resolutions: std::mem::take(&mut cur_resolutions),
+                });
+            }
+
+            // Extract fourcc from between single quotes
+            if let Some(qs) = t.find('\'') {
+                if let Some(qe) = t[qs + 1..].find('\'') {
+                    cur_fourcc = Some(t[qs + 1..qs + 1 + qe].to_uppercase());
+                }
+            }
+        }
+        // Size line: "Size: Discrete WxH" or "Size: Discretes WxH"
+        else if t.starts_with("Size:") {
+            // Flush previous resolution
+            if let Some(sz) = cur_size.take() {
+                cur_resolutions.push(ResEntry {
+                    size: sz,
+                    framerates: std::mem::take(&mut cur_framerates),
+                });
+            }
+
+            let rest = t
+                .strip_prefix("Size:")
+                .unwrap_or("")
+                .trim_start_matches("Discrete")
+                .trim_start_matches("Discretes")
+                .trim();
+            if !rest.is_empty() && rest.contains('x') {
+                cur_size = Some(rest.to_string());
+            }
+        }
+        // Interval line: "Interval: FPS fps (1/DUR second)"
+        else if t.starts_with("Interval:") {
+            let rest = t.strip_prefix("Interval:").unwrap_or("").trim();
+            if let Some(fps_str) = rest.split_whitespace().next() {
+                if let Ok(fps) = fps_str.parse::<u32>() {
+                    cur_framerates.push(fps);
+                }
+            }
+        }
+    }
+
+    // Flush remaining entries
+    if let Some(fcc) = cur_fourcc.take() {
+        if let Some(sz) = cur_size.take() {
+            cur_resolutions.push(ResEntry {
+                size: sz,
+                framerates: std::mem::take(&mut cur_framerates),
+            });
+        }
+        formats.push(FmtEntry {
+            fourcc: fcc,
+            resolutions: std::mem::take(&mut cur_resolutions),
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Select best parameters via fallback chain
+    // ------------------------------------------------------------------
+
+    let preferred_formats = ["MJPG", "YUYV", "NV12"];
+    let preferred_resolutions = ["1280x720", "960x540", "640x480"];
+    let preferred_framerates = [30, 15, 10];
+
+    for &pf in &preferred_formats {
+        if let Some(entry) = formats.iter().find(|f| f.fourcc == pf) {
+            if let Some(ffmpeg_fmt) = format_map.iter().find(|(k, _)| *k == pf).map(|(_, v)| *v) {
+                for &pr in &preferred_resolutions {
+                    if let Some(res) = entry.resolutions.iter().find(|r| r.size == pr) {
+                        for &pfps in &preferred_framerates {
+                            if res.framerates.contains(&pfps) {
+                                return Ok((
+                                    ffmpeg_fmt.to_string(),
+                                    pr.to_string(),
+                                    pfps.to_string(),
+                                ));
+                            }
+                        }
+                        // Prefer highest available framerate
+                        if let Some(&fps) = res.framerates.first() {
+                            return Ok((ffmpeg_fmt.to_string(), pr.to_string(), fps.to_string()));
+                        }
+                        return Ok((ffmpeg_fmt.to_string(), pr.to_string(), "30".to_string()));
+                    }
+                }
+                // Preferred resolution not found — use first available
+                if let Some(res) = entry.resolutions.first() {
+                    if let Some(&fps) = res.framerates.first() {
+                        return Ok((ffmpeg_fmt.to_string(), res.size.clone(), fps.to_string()));
+                    }
+                    return Ok((ffmpeg_fmt.to_string(), res.size.clone(), "30".to_string()));
+                }
+            }
+        }
+    }
+
+    // Fallback to any available format
+    if let Some(entry) = formats.first() {
+        if let Some((_, ffmpeg_fmt)) = format_map.iter().find(|(k, _)| *k == entry.fourcc) {
+            if let Some(res) = entry.resolutions.first() {
+                if let Some(&fps) = res.framerates.first() {
+                    return Ok((ffmpeg_fmt.to_string(), res.size.clone(), fps.to_string()));
+                }
+                return Ok((ffmpeg_fmt.to_string(), res.size.clone(), "30".to_string()));
+            }
+        }
+    }
+
+    // Ultimate fallback — should not normally reach here
+    tracing::warn!("could not parse v4l2-ctl output — falling back to MJPEG/1280x720/30");
+    Ok(("mjpeg".to_string(), "1280x720".to_string(), "30".to_string()))
+}
 impl Source for VideoCaptureSource {
     #[tracing::instrument(skip_all)]
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
@@ -162,14 +377,27 @@ impl Source for VideoCaptureSource {
 
             // Validate device exists
             if !std::path::Path::new(&device_path).exists() {
+                anyhow::bail!("Video device {} not found", device_path);
             }
+
+            // Auto-detect camera capabilities at runtime
+            let (input_format, video_size, framerate) = detect_camera_capabilities(index)
+                .context("failed to detect camera capabilities")?;
+
+            tracing::info!(
+                device = %device_path,
+                input_format = %input_format,
+                video_size = %video_size,
+                framerate = %framerate,
+                "detected camera capabilities"
+            );
 
             let mut cmd = tokio::process::Command::new("ffmpeg");
             cmd.arg("-y")
                 .arg("-f").arg("v4l2")
-                .arg("-input_format").arg("mjpeg")
-                .arg("-video_size").arg("1280x720")
-                .arg("-framerate").arg("30")
+                .arg("-input_format").arg(&input_format)
+                .arg("-video_size").arg(&video_size)
+                .arg("-framerate").arg(&framerate)
                 .arg("-i").arg(&device_path)
                 .arg("-c:v").arg("libx264")
                 .arg("-preset").arg("ultrafast")
@@ -216,9 +444,22 @@ impl Source for VideoCaptureSource {
 
             let stdout = stdout;
 
-            self.camera_width = 1280;
-            self.camera_height = 720;
-            self.camera_format = "mjpeg".to_string();
+            // Parse resolution string to store width/height
+            let (w, h) = {
+                let mut parts = video_size.splitn(2, 'x');
+                (
+                    parts.next()
+                        .and_then(|p| p.parse::<u32>().ok())
+                        .unwrap_or(1280),
+                    parts.next()
+                        .and_then(|p| p.parse::<u32>().ok())
+                        .unwrap_or(720),
+                )
+            };
+            self.camera_width = w;
+            self.camera_height = h;
+            self.camera_format = input_format.clone();
+            self.camera_framerate = framerate.clone();
             self.ffmpeg_child = Some(child);
             self.ffmpeg_stdout = Some(stdout);
             self.running = true;
@@ -226,7 +467,10 @@ impl Source for VideoCaptureSource {
 
             tracing::info!(
                 device_index = index,
-                "VideoCaptureSource started (direct ffmpeg V4L2 mode)"
+                input_format = %input_format,
+                video_size = %video_size,
+                framerate = %framerate,
+                "VideoCaptureSource started (direct ffmpeg V4L2 mode with auto-detected params)"
             );
             Ok(())
         })
@@ -244,16 +488,12 @@ impl Source for VideoCaptureSource {
                 .map(|t| t.elapsed().as_millis() as u64)
                 .unwrap_or(0);
 
-            let stdout = self
-                .ffmpeg_stdout
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
-
             // Read from ffmpeg stdout until a complete NAL unit is available.
             // stdin writes are handled by a separate task spawned in start(),
             // which continuously feeds camera frames to ffmpeg. This decouples
             // input from output and prevents pipe deadlock during ffmpeg's
             // initial probe phase.
+            // stdout is obtained inside the loop so crash-restart can replace it.
             loop {
                 // Try to extract a complete NAL unit from accumulated data.
                 if let Some((nal_data, keyframe, new_offset)) = extract_next_nal(&self.buffer, 0) {
@@ -265,17 +505,130 @@ impl Source for VideoCaptureSource {
                     });
                 }
 
+                // Obtain stdout reference inside the loop — crash restart
+                // can replace self.ffmpeg_stdout and continue will pick it up.
+                let stdout = self
+                .ffmpeg_stdout
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
+
                 // Need more data — read a chunk from ffmpeg stdout.
                 let mut tmp = vec![0u8; 65536];
                 let n = stdout
-                    .read(&mut tmp)
-                    .await
-                    .context("error reading ffmpeg stdout")?;
+                .read(&mut tmp)
+                .await
+                .context("error reading ffmpeg stdout")?;
 
                 if n == 0 {
                     // ffmpeg stdout closed — encoder exited or crashed.
-                    self.running = false;
-                    anyhow::bail!("ffmpeg process exited unexpectedly (stdout closed)");
+                    // Attempt automatic restart with crash limit guarding.
+                    let start_time = self
+                .ffmpeg_start_time
+                .unwrap_or_else(Instant::now);
+                    match check_ffmpeg_crash_restart(
+                        &mut self.crash_count,
+                        start_time,
+                    ) {
+                        Ok(delay) => {
+                            tracing::warn!(
+                                delay_ms = delay.as_millis(),
+                                crash_count = self.crash_count,
+                                "ffmpeg crashed, restarting after backoff"
+                            );
+                            tokio::time::sleep(delay).await;
+
+                            // Clean up the old (already exited) process
+                            if let Some(mut child) = self.ffmpeg_child.take() {
+                                let _ = child.kill().await;
+                                let _ = child.wait().await;
+                            }
+                            self.ffmpeg_stdout = None;
+
+                            // Re-spawn ffmpeg with the same detected params
+                            let device_path =
+                                format!("/dev/video{}", self.device_index);
+                            let video_size = format!(
+                                    "{}x{}",
+                                    self.camera_width, self.camera_height
+                            );
+
+                            let mut cmd = tokio::process::Command::new("ffmpeg");
+                            cmd.arg("-y")
+                            .arg("-f").arg("v4l2")
+                            .arg("-input_format")
+                            .arg(&self.camera_format)
+                            .arg("-video_size").arg(&video_size)
+                            .arg("-framerate")
+                            .arg(&self.camera_framerate)
+                            .arg("-i").arg(&device_path)
+                            .arg("-c:v").arg("libx264")
+                            .arg("-preset").arg("ultrafast")
+                            .arg("-tune").arg("zerolatency")
+                            .arg("-g").arg("30")
+                            .arg("-x264-params")
+                            .arg("repeat-headers=1")
+                            .arg("-f").arg("h264")
+                            .arg("pipe:1")
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped());
+
+                            let mut child = cmd.spawn().context(
+                                "failed to re-spawn ffmpeg after crash",
+                            )?;
+
+                            let new_stdout = child
+                            .stdout
+                            .take()
+                            .context(
+                                "failed to capture new ffmpeg stdout",
+                            )?;
+
+                            // Spawn stderr log reader for the new process
+                            if let Some(stderr) = child.stderr.take() {
+                                use tokio::io::{
+                                    AsyncBufReadExt, BufReader,
+                                };
+                                let mut reader = BufReader::new(stderr);
+                                tokio::spawn(async move {
+                                    let mut line = String::new();
+                                    loop {
+                                        line.clear();
+                                        match reader.read_line(&mut line).await
+                                        {
+                                            Ok(0) => break,
+                                            Ok(_) => {
+                                                let trimmed = line.trim_end();
+                                                if !trimmed.is_empty() {
+                                                    tracing::warn!(
+                                                    "ffmpeg (restarted): {}",
+                                                    trimmed
+                                                    );
+                                                }
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                });
+                            }
+
+                            self.ffmpeg_child = Some(child);
+                            self.ffmpeg_stdout = Some(new_stdout);
+                            self.ffmpeg_start_time = Some(Instant::now());
+                            self.buffer.clear();
+
+                            // Continue the loop to read from new stdout
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                            error = %e,
+                            "ffmpeg crash restart limit exceeded"
+                            );
+                            self.running = false;
+                            return Err(e);
+                        }
+                    }
                 }
 
                 self.buffer.extend_from_slice(&tmp[..n]);

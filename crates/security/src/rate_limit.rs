@@ -1,5 +1,5 @@
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,7 +12,6 @@ struct RateLimitEntry {
     window_start: u64,
 }
 
-/// Global in-memory rate-limit state keyed by client IP.
 static STATE: std::sync::LazyLock<Mutex<HashMap<String, RateLimitEntry>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -26,7 +25,7 @@ pub fn check_rate_limit(ip: &str, max: usize, window_secs: u64) -> bool {
         .unwrap()
         .as_secs();
 
-    let mut state = STATE.lock().unwrap();
+    let mut state = STATE.lock();
 
     match state.get_mut(ip) {
         Some(ref mut entry) if !is_window_expired(entry, now, window_secs) => {
@@ -58,13 +57,13 @@ pub fn check_rate_limit(ip: &str, max: usize, window_secs: u64) -> bool {
 
 /// Reset rate-limit state for a given IP (e.g. after successful login).
 pub fn reset_rate_limit(ip: &str) {
-    let mut state = STATE.lock().unwrap();
+    let mut state = STATE.lock();
     state.remove(ip);
 }
 
 /// Clear all rate-limit state (for testing).
 pub fn reset_all() {
-    let mut state = STATE.lock().unwrap();
+    let mut state = STATE.lock();
     state.clear();
 }
 

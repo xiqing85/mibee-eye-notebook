@@ -2,12 +2,12 @@
 
 [![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-blue.svg)](LICENSE)
 [![Rust: 1.85+](https://img.shields.io/badge/Rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![Platform: Linux](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-green.svg)](#)
+[![Platform: Linux Tier 1](https://img.shields.io/badge/Platform-Linux%20Tier%201-green.svg)](docs/POSITIONING.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](docs/en/contributing.md)
 
-[中文文档](README.zh-CN.md) · [Documentation](docs/en/)
+[中文文档](README.zh-CN.md) · [Documentation](docs/en/) · [**Product Positioning**](docs/POSITIONING.md)
 
-Captures webcam and microphone from the host machine, encodes to H.264/AAC, and serves streams to external NVRs via RTSP Server / RTMP Push / ONVIF Device / GB/T 28181 Device. Part of the [MiBee](https://https://github.com/xiqing85) ecosystem.
+**PC-local webcam & microphone capture agent.** Captures only physically-attached devices (USB webcam, built-in/USB mic) from THIS machine, exposes them through a TLS-gated Web UI as the primary control surface. Outbound streaming to NVRs / live platforms is **available but default-off**, enabled per-protocol via Web UI. Part of the [MiBee](https://https://github.com/xiqing85) ecosystem.
 
 ## Features
 
@@ -71,20 +71,30 @@ mibee-rec/
 
 ## Protocol Support Status
 
-| Protocol | Component | Implementation | Status |
-|----------|-----------|----------------|--------|
-| RTSP | Server | Hand-written (`RtspServer`) — external clients connect to pull streams | ✅ |
-| RTMP | Push client | Push local stream to external NVR ingest | ✅ |
-| ONVIF | Device endpoint | Serve device info, let external NVR discover this host | ✅ |
-| GB/T 28181 | Device | Register with external platform, push RTP on INVITE | ✅ |
-| GB/T 28181 | SIP + RTP | Wrapper via [gmv](https://crates.io/crates/gmv) (`Gb28181Client`) | ✅ |
-| H.264 | NAL unit parser | Hand-written (`H264Parser`) | ✅ |
-| H.265 | Decoding | Browser fallback to H.264 | ⚠️ |
-| CaptureSource | Capture→streaming adapter | `crates/streaming/src/capture_source.rs` | ✅ |
-| Streaming → Root | Wiring | root `main.rs` → streaming crate | ✅ |
-| Auth Login/Logout | Session management | Returns 501 | 🚧 Stub |
+| Area | Component | Implementation | Runtime status |
+|------|-----------|----------------|----------------|
+| **Auth (login/logout/setup/reset)** | Session-based | bcrypt + 24h session + rate limit | ✅ Implemented & wired in |
+| **TLS (rustls)** | HTTPS only, no HTTP | Auto self-signed dev cert, hot-reload | ✅ Implemented & wired in |
+| **RTSP Server** | RFC 2326 + Digest auth + RTP interleaved | Hand-written (`RtspServer`) | ✅ Wired into runtime |
+| **RTMP Push** | Handshake + connect + publish | Hand-written (`RtmpPushClient`, 1084 LOC) | ⚠️ Code complete, **NOT wired** into StreamManager |
+| **ONVIF Device** | WS-Discovery + SOAP device service | Hand-written (`WsDiscoveryServer`, 701 LOC) | ⚠️ Code complete, **NOT started** at runtime |
+| **GB/T 28181 Device** | SIP REGISTER (Digest) + RTP push | Hand-written (`SipDeviceClient` + `RtpPusher`, 2033 LOC) | ⚠️ SIP registers, but **RTP pusher not attached** to StreamHub |
+| **H.264** | NAL unit parser, SPS/PPS, keyframe detection | Hand-written (`H264Parser`) | ✅ Used by RTMP & GB28181 |
+| **H.265 decode** | Browser fallback to H.264 | — | ⚠️ Not universal in browsers; H.264 only for v1 |
+| **Browser live preview** | MSE / JPEG sequence in `<video>` | — | ❌ **Missing** — UI shows static placeholder |
+| **Local recording** | MP4 segment archive | — | ❌ **Missing** — no `FileOutput`, no `[recording]` config |
+| **i18n (zh-CN / en-US)** | i18n layer for every UI string | — | ❌ **Missing** — UI hardcoded English |
+| **Day/night theme** | Theme toggle | — | ❌ **Missing** |
+| **CSRF / CSP** | Token + strict header | — | ❌ **Missing** |
+| **Remote log shipping** | Loki / OTLP logs | — | ❌ **Missing** (stdout only) |
+| **OTel traces** | OTLP gRPC exporter | Pipeline wired | ⚠️ **Zero `#[tracing::instrument]`** → zero spans |
+| **Prometheus metrics** | 10 counters/gauges | Manual via `prometheus` crate | ✅ `/metrics` endpoint |
+| **Cross-platform: Windows** | MSMF + WASAPI | — | ❌ **Does not compile** (`libc::getifaddrs` POSIX-only) |
+| **Cross-platform: macOS** | AVFoundation + CoreAudio | — | ❌ **Does not compile** in practice (`/dev/videoN` hardcoded) |
 
-**Legend**: ✅ Implemented · ⚠️ Partial / Fallback · ❌ Missing · 🚧 Stub
+**Legend**: ✅ Working · ⚠️ Code present but incomplete/not wired · ❌ Missing
+
+See [`docs/POSITIONING.md`](docs/POSITIONING.md) for the authoritative product scope and [`AGENTS.md`](AGENTS.md) for engineering guidance.
 
 ## Resource Targets
 

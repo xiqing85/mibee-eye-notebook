@@ -55,6 +55,7 @@ pub struct AudioConfigResponse {
 ///
 /// The enumeration is offloaded to a blocking thread because the underlying
 /// V4L2 ioctl calls are synchronous.
+#[tracing::instrument(skip_all)]
 pub async fn list_video_devices(
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
@@ -89,6 +90,7 @@ pub async fn list_video_devices(
 ///
 /// The enumeration is offloaded to a blocking thread because the underlying
 /// cpal host queries are synchronous.
+#[tracing::instrument(skip_all)]
 pub async fn list_audio_devices(
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {

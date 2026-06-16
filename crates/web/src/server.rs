@@ -1,3 +1,4 @@
+use crate::errors::ApiError;
 use axum::http::{HeaderValue, Method, Request, header};
 use axum::middleware;
 use axum::middleware::Next;
@@ -17,6 +18,8 @@ use tower_http::cors::CorsLayer;
 use crate::assets;
 use crate::routes;
 use crate::stream_manager::StreamManager;
+use opentelemetry::propagation::Extractor;
+use tracing::Instrument;
 
 // ---------------------------------------------------------------------------
 // Shared state types
@@ -33,6 +36,7 @@ pub struct AppRouterState {
     pub stream_manager: Arc<StreamManager>,
     pub rtsp_server: Arc<RtspServer>,
     pub protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    pub advertised_host: Arc<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +80,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let stream_manager = state.stream_manager.clone();
     let rtsp_server = state.rtsp_server.clone();
     let protocol_configs = state.protocol_configs.clone();
+    let advertised_host = state.advertised_host.clone();
 
     // -- Auth routes (public, rate-limited) --
     let auth_routes = Router::new()
@@ -104,6 +109,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         )
         .route("/api/cameras/{id}/stop", post(routes::streams::stop_stream))
         .route("/api/cameras/{id}/snapshot", get(routes::streams::snapshot))
+        // Live preview (MJPEG stream for <img>)
+        .route("/api/cameras/{id}/live", get(routes::streams::live_preview))
         // Settings
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
@@ -164,12 +171,17 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(active))
         .layer(Extension(db))
         .layer(Extension(protocol_configs))
-        // HSTS — inject Strict-Transport-Security on all HTTPS responses
+        .layer(Extension(advertised_host))
+        // CSP — strict Content-Security-Policy
+        .layer(middleware::from_fn(csp_middleware))
+        // HSTS
         .layer(middleware::from_fn(hsts_middleware))
-        // CORS — restrictive, not permissive
+        // CSRF — double-submit cookie verification
+        .layer(middleware::from_fn(csrf_middleware))
         .layer(cors_layer())
+        // W3C trace context — extract traceparent from incoming requests
+        .layer(middleware::from_fn(trace_middleware))
 }
-
 /// Convenience builder that creates a default `ActiveStreams`, `StreamManager`,
 /// and `RtspServer`.
 ///
@@ -181,6 +193,7 @@ pub fn build_app(db: Arc<Mutex<Connection>>) -> Router {
         stream_manager: Arc::new(StreamManager::new()),
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
+        advertised_host: Arc::new("localhost".to_string()),
     })
 }
 
@@ -196,6 +209,66 @@ async fn hsts_middleware(request: Request<axum::body::Body>, next: Next) -> Resp
         HeaderValue::from_static("max-age=31536000; includeSubDomains"),
     );
     response
+}
+
+/// Content-Security-Policy middleware. Inline scripts/styles allowed because
+/// the SPA is self-contained in index.html; a future build step will
+/// externalize and tighten to 'self' only.
+async fn csp_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        ),
+    );
+    response
+}
+
+/// CSRF double-submit cookie middleware.
+/// For GET/HEAD/OPTIONS: exempt from CSRF check.
+/// For POST/PUT/DELETE/PATCH: requires csrf-token cookie AND matching X-CSRF-Token header.
+/// Missing cookie or mismatched header -> 403 Forbidden.
+async fn csrf_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
+    use axum::http::Method;
+    let method = request.method().clone();
+    let is_state_changing = matches!(
+        method,
+        Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+    );
+    if is_state_changing {
+        let cookie_csrf = request
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| {
+                s.split(';')
+                    .map(|c| c.trim())
+                    .find(|c| c.starts_with("csrf-token="))
+                    .map(|c| c.trim_start_matches("csrf-token=").to_string())
+            });
+        match cookie_csrf {
+            Some(ref expected) => {
+                let header_csrf = request
+                    .headers()
+                    .get("x-csrf-token")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                match header_csrf {
+                    Some(ref actual) if actual == expected => {}
+                    _ => {
+                        tracing::warn!(method = %method, path = %request.uri().path(), "CSRF token mismatch — rejecting");
+                        return ApiError::bad_request("CSRF token missing or invalid").into_response();
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(method = %method, path = %request.uri().path(), "CSRF cookie missing on state-changing request — rejecting");
+                return ApiError::bad_request("CSRF token missing or invalid").into_response();
+            }
+        }
+    }
+    next.run(request).await
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +308,44 @@ fn cors_layer() -> CorsLayer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Trace context extraction middleware (W3C TraceContext)
+// ---------------------------------------------------------------------------
+
+/// Adapter to read HTTP headers as an OpenTelemetry `Extractor`.
+struct HeaderExtractor<'a>(&'a axum::http::HeaderMap);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+/// Extracts `traceparent` header from incoming requests and sets the
+/// extracted OpenTelemetry context as the parent of the request span,
+/// enabling distributed trace continuation from upstream callers.
+async fn trace_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    let extracted = opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.extract_with_context(
+            &opentelemetry::Context::current(),
+            &HeaderExtractor(request.headers()),
+        )
+    });
+
+    let span = tracing::info_span!("http_request",
+        method = %request.method(),
+        uri = %request.uri(),
+    );
+    let _ = span.set_parent(extracted);
+
+    next.run(request).instrument(span).await
+}
+
 /// Initialise the observability layer, build the TLS config, construct the app
 /// router, and start serving.
 ///
@@ -246,8 +357,8 @@ pub async fn run(
     stream_manager: Arc<StreamManager>,
     rtsp_server: Arc<RtspServer>,
     protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    advertised_host: String,
 ) -> anyhow::Result<()> {
-    // Register Prometheus metrics
     observability::register_metrics()?;
 
     let db = Arc::new(Mutex::new(db));
@@ -257,6 +368,7 @@ pub async fn run(
         stream_manager,
         rtsp_server,
         protocol_configs,
+        advertised_host: Arc::new(advertised_host),
     };
     let app = build_app_with_state(state);
 
@@ -299,6 +411,7 @@ pub async fn run(
 ///
 /// When the `shutdown_rx` watch channel receives `true`, the server stops
 /// accepting new connections, finishes in-flight requests, and returns.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_with_shutdown(
     host: &str,
     port: u16,
@@ -307,6 +420,7 @@ pub async fn run_with_shutdown(
     rtsp_server: Arc<RtspServer>,
     protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     mut shutdown_rx: watch::Receiver<bool>,
+    advertised_host: String,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -318,6 +432,7 @@ pub async fn run_with_shutdown(
         stream_manager,
         rtsp_server,
         protocol_configs,
+        advertised_host: Arc::new(advertised_host),
     };
     let app = build_app_with_state(state);
 

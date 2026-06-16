@@ -15,9 +15,11 @@
 use anyhow::{Result, bail};
 use observability::metrics;
 use std::collections::HashMap;
+use base64::engine::Engine;
 use std::fmt;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -122,6 +124,7 @@ impl TransportInfo {
     /// Parse a Transport header value.
     ///
     /// Example: `RTP/AVP/TCP;interleaved=0-1;ssrc=ABCD1234`
+    #[tracing::instrument(skip_all)]
     pub fn parse(header: &str) -> Result<Self> {
         let params: Vec<&str> = header.split(';').collect();
         let mut interleaved: Option<(u8, u8)> = None;
@@ -196,6 +199,7 @@ impl TransportInfo {
     }
 
     /// Serialize to Transport header value string.
+    #[tracing::instrument(skip_all)]
     pub fn serialize(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
 
@@ -432,6 +436,7 @@ pub struct StreamConfig {
 
 impl StreamConfig {
     /// Create a new stream configuration.
+    #[tracing::instrument(skip_all)]
     pub fn new(path: &str, sdp_body: &str, ssrc: u32) -> Self {
         Self {
             path: path.to_string(),
@@ -515,19 +520,17 @@ impl Session {
 
 /// Generate a random nonce string for Digest auth challenges.
 fn generate_nonce() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::RngCore;
     let mut bytes = [0u8; 16];
-    rng.fill(&mut bytes);
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex_encode(&bytes)
 }
 
 /// Generate a random session ID string.
 fn generate_session_id() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::RngCore;
     let mut bytes = [0u8; 8];
-    rng.fill(&mut bytes);
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex_encode(&bytes)
 }
 
@@ -829,12 +832,14 @@ async fn send_interleaved_rtp<W: AsyncWrite + Unpin>(
 }
 
 /// Options response: advertise supported methods.
+#[tracing::instrument(skip_all)]
 fn handle_options(cseq: u32) -> Vec<u8> {
     let public = "DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE, OPTIONS, GET_PARAMETER";
     build_ok_response(cseq, &[("Public", public)], b"")
 }
 
 /// Describe response: return SDP for the matched stream.
+#[tracing::instrument(skip_all)]
 fn handle_describe(
     cseq: u32,
     uri: &str,
@@ -861,6 +866,7 @@ fn handle_describe(
 }
 
 /// Setup response: negotiate transport and create session.
+#[tracing::instrument(skip_all)]
 fn handle_setup(
     cseq: u32,
     uri: &str,
@@ -922,6 +928,7 @@ fn handle_setup(
 }
 
 /// Play response: started sending RTP data.
+#[tracing::instrument(skip_all)]
 fn handle_play(
     cseq: u32,
     session_id: &str,
@@ -961,12 +968,14 @@ fn handle_play(
 }
 
 /// Teardown response: cleanup session.
+#[tracing::instrument(skip_all)]
 fn handle_teardown(cseq: u32, session_id: &str, session: &mut Session) -> Vec<u8> {
     session.state = SessionState::Teardown;
     build_ok_response(cseq, &[("Session", session_id)], b"")
 }
 
 /// Handle PAUSE request.
+#[tracing::instrument(skip_all)]
 fn handle_pause(cseq: u32, session_id: &str, session: &Session) -> Vec<u8> {
     match &session.state {
         SessionState::Playing { .. } => build_ok_response(cseq, &[("Session", session_id)], b""),
@@ -975,6 +984,7 @@ fn handle_pause(cseq: u32, session_id: &str, session: &Session) -> Vec<u8> {
 }
 
 /// Handle GET_PARAMETER request.
+#[tracing::instrument(skip_all)]
 fn handle_get_parameter(cseq: u32) -> Vec<u8> {
     build_ok_response(cseq, &[], b"")
 }
@@ -1033,6 +1043,7 @@ fn check_auth(req: &ParsedRequest, config: &RtspServerConfig) -> Result<bool> {
 }
 
 /// Handle a single RTSP connection.
+#[tracing::instrument(skip_all)]
 async fn handle_connection(
     mut stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
     server: Arc<RtspServerInner>,
@@ -1087,9 +1098,12 @@ async fn handle_connection(
                     None => {
                         // Fallback: check live streams (scope lock to avoid holding across await)
                         let live_found = {
-                            let live_map = server.live_streams.lock().unwrap();
+                            let live_map = server.live_streams.lock();
                             find_live_stream(&request.uri, &live_map).map(|(path, entry)| {
-                                StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
+                                // Build SDP dynamically — includes sprop-parameter-sets
+                                // when SPS/PPS are available from the capture pipeline.
+                                let sdp = RtspServer::build_live_sdp(entry);
+                                StreamConfig::new(&path, &sdp, entry.ssrc)
                             })
                         };
                         match live_found {
@@ -1131,7 +1145,7 @@ async fn handle_connection(
                 let stream_config = find_stream_by_uri(&request.uri, streams)
                     .cloned()
                     .or_else(|| {
-                        let live_map = server.live_streams.lock().unwrap();
+                        let live_map = server.live_streams.lock();
                         find_live_stream(&request.uri, &live_map).map(|(path, entry)| {
                             StreamConfig::new(&path, &entry.sdp_body, entry.ssrc)
                         })
@@ -1140,7 +1154,7 @@ async fn handle_connection(
                         // Fallback: use the stream path saved during DESCRIBE
                         if let SessionState::Described { stream_path } = &session.state {
                             let path = stream_path.clone();
-                            let live_map = server.live_streams.lock().unwrap();
+                            let live_map = server.live_streams.lock();
                             live_map
                                 .get(&path)
                                 .map(|entry| StreamConfig::new(&path, &entry.sdp_body, entry.ssrc))
@@ -1208,7 +1222,7 @@ async fn handle_connection(
                     // Scope the lock to avoid holding MutexGuard (not Send) across await
                     // Subscribe to the broadcast channel (supports multiple concurrent clients)
                     let live_result = {
-                        let live_map = server.live_streams.lock().unwrap();
+                        let live_map = server.live_streams.lock();
                         live_map
                             .get(&live_path)
                             .map(|entry| (entry.frame_tx.subscribe(), entry.ssrc))
@@ -1384,9 +1398,14 @@ struct LiveStreamEntry {
     /// Each RTSP client calls `subscribe()` to get its own receiver.
     frame_tx: broadcast::Sender<Vec<u8>>,
     /// SDP body describing the stream (codec, payload type, etc.).
+    /// Built dynamically when SPS/PPS become available.
     sdp_body: String,
     /// SSRC for RTP packets.
     ssrc: u32,
+    /// Cached SPS NAL (type 7) for SDP sprop-parameter-sets.
+    cached_sps: Option<Vec<u8>>,
+    /// Cached PPS NAL (type 8) for SDP sprop-parameter-sets.
+    cached_pps: Option<Vec<u8>>,
 }
 
 /// Internal server state shared across connections.
@@ -1422,12 +1441,14 @@ struct RtspServerInner {
 /// let server = RtspServer::new(config)
 ///     .with_stream(StreamConfig::new("webcam", &sdp, 0x12345678));
 /// ```
+#[derive(Clone)]
 pub struct RtspServer {
     inner: Arc<RtspServerInner>,
 }
 
 impl RtspServer {
     /// Create a new RTSP server with the given configuration.
+    #[tracing::instrument(skip_all)]
     pub fn new(config: RtspServerConfig) -> Self {
         Self {
             inner: Arc::new(RtspServerInner {
@@ -1439,6 +1460,7 @@ impl RtspServer {
     }
 
     /// Add a stream to the server.
+    #[tracing::instrument(skip_all)]
     pub fn with_stream(mut self, stream: StreamConfig) -> Self {
         Arc::get_mut(&mut self.inner)
             .expect("RtspServer::with_stream called after sharing")
@@ -1448,6 +1470,7 @@ impl RtspServer {
     }
 
     /// Add a stream to the server by mutating self.
+    #[tracing::instrument(skip_all)]
     pub fn add_stream(&mut self, stream: StreamConfig) {
         Arc::get_mut(&mut self.inner)
             .expect("RtspServer::add_stream called after sharing")
@@ -1459,6 +1482,7 @@ impl RtspServer {
     ///
     /// Returns a `Sender` that [`RtspOutput`] can use to push video frames.
     /// The server will deliver frames to any RTSP client that PLAYS this stream.
+    #[tracing::instrument(skip_all, fields(stream_name = path))]
     pub fn register_live_stream(
         &self,
         path: String,
@@ -1470,15 +1494,53 @@ impl RtspServer {
             frame_tx: tx.clone(),
             sdp_body,
             ssrc,
+            cached_sps: None,
+            cached_pps: None,
         };
-        self.inner.live_streams.lock().unwrap().insert(path, entry);
+        self.inner.live_streams.lock().insert(path, entry);
         tx
+    }
+
+    /// Update the SPS/PPS NAL units for a live stream.
+    /// This enables the server to build a complete SDP with sprop-parameter-sets.
+    pub fn update_sps_pps(&self, path: &str, sps: Vec<u8>, pps: Vec<u8>) {
+        if let Some(entry) = self.inner.live_streams.lock().get_mut(path) {
+            entry.cached_sps = Some(sps);
+            entry.cached_pps = Some(pps);
+        }
+    }
+
+    /// Build a complete SDP string with sprop-parameter-sets if available.
+    fn build_live_sdp(entry: &LiveStreamEntry) -> String {
+        let base_sdp = &entry.sdp_body;
+        if let (Some(sps), Some(pps)) = (&entry.cached_sps, &entry.cached_pps) {
+            // Build SDP with sprop-parameter-sets so ffmpeg clients can
+            // determine H.264 codec parameters (resolution, profile) without
+            // waiting for the first keyframe from the RTP stream.
+            let sps_b64 = base64::engine::general_purpose::STANDARD.encode(sps);
+            let pps_b64 = base64::engine::general_purpose::STANDARD.encode(pps);
+            // Replace the minimal fmtp line with one that includes sprop-parameter-sets
+            let fmtp_with_sprop = format!(
+                "a=fmtp:96 packetization-mode=1; sprop-parameter-sets={},{}\r\n",
+                sps_b64, pps_b64
+            );
+            // Find and replace the existing fmtp line
+            if let Some(idx) = base_sdp.find("a=fmtp:96") {
+                let line_end = base_sdp[idx..].find("\r\n").map(|e| idx + e + 2).unwrap_or(base_sdp.len());
+                let mut sdp = base_sdp[..idx].to_string();
+                sdp.push_str(&fmtp_with_sprop);
+                sdp.push_str(&base_sdp[line_end..]);
+                return sdp;
+            }
+        }
+        base_sdp.to_string()
     }
 
     /// Start the server and listen for connections.
     ///
     /// Binds to the configured port and accepts incoming RTSP connections.
     /// Each connection is handled in a separate tokio task.
+    #[tracing::instrument(skip_all)]
     pub async fn run(&self) -> Result<()> {
         let addr = format!("0.0.0.0:{}", self.inner.config.port);
         let listener = TcpListener::bind(&addr).await?;
@@ -1511,6 +1573,7 @@ impl RtspServer {
 ///
 /// This can be used by external pipelines to inject RTP data into an active RTSP
 /// session's TCP stream.
+#[tracing::instrument(skip_all)]
 pub fn build_interleaved_frame(channel: u8, rtp_data: &[u8]) -> Result<Vec<u8>> {
     let len = rtp_data.len();
     if len > u16::MAX as usize {
@@ -2492,7 +2555,7 @@ mod tests {
             "Should be able to send to live stream channel"
         );
         // Verify entry is stored in server
-        let live_map = server.inner.live_streams.lock().unwrap();
+        let live_map = server.inner.live_streams.lock();
         assert!(live_map.contains_key("livecam"));
         let entry = live_map.get("livecam").unwrap();
         assert_eq!(entry.ssrc, 0x12345678);
