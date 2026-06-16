@@ -83,32 +83,31 @@ async fn main() -> anyhow::Result<()> {
         loki_labels,
     )?;
 
-    // Initialise database
-    let db_path = args.db_path.to_string_lossy().to_string();
-    let conn = web::db::init_db(&db_path)?;
-
+    // Initialise database - create SqlitePool for web CRUD and Connection for security calls
+    let db_path_str = args.db_path.to_string_lossy().to_string();
+    let pool = web::db::init_pool(&db_path_str).await?;
+    let auth_db_conn = web::db::init_auth_db(&db_path_str)?;
+    let auth_db = Arc::new(tokio::sync::Mutex::new(auth_db_conn));
     // Seed protocol_configs table from config.toml on first run (when empty).
     // Subsequent runs use the persisted values; users' Web UI edits survive restart.
-    if web::db::protocol_configs_is_empty(&conn)? {
+    if web::db::protocol_configs_is_empty(&pool).await? {
         tracing::info!("seeding protocol_configs from config.toml (first run)");
-        web::db::set_protocol_config(&conn, "onvif", &serde_json::to_value(&config.onvif)?)?;
-        web::db::set_protocol_config(&conn, "gb28181", &serde_json::to_value(&config.gb28181)?)?;
+        web::db::set_protocol_config(&pool, "onvif", &serde_json::to_value(&config.onvif)?).await?;
+        web::db::set_protocol_config(&pool, "gb28181", &serde_json::to_value(&config.gb28181)?).await?;
         web::db::set_protocol_config(
-            &conn,
+            &pool,
             "rtmp_push",
             &serde_json::to_value(&config.rtmp_push)?,
-        )?;
+        ).await?;
         web::db::set_protocol_config(
-            &conn,
+            &pool,
             "recording",
             &serde_json::to_value(&config.recording)?,
-        )?;
+        ).await?;
     } else {
         tracing::debug!("protocol_configs table already populated; keeping persisted values");
     }
-
-    // Auto-discover physically attached cameras (USB webcams etc.)
-    let discovered = web::db::auto_discover_cameras(&conn)?;
+    let discovered = web::db::auto_discover_cameras(&pool).await?;
     if discovered > 0 {
         tracing::info!(count = discovered, "auto-discovered cameras on startup");
     }
@@ -135,12 +134,14 @@ async fn main() -> anyhow::Result<()> {
     // truth (seeded from config.toml on first run, mutated via Web UI).
     // Fall back to config.toml if the DB lookup fails (e.g., fresh install
     // before seeding has run).
-    let onvif_enabled = web::db::get_protocol_config(&conn, "onvif")
+    let onvif_enabled = web::db::get_protocol_config(&pool, "onvif")
+        .await
         .ok()
         .flatten()
         .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
         .unwrap_or(config.onvif.enabled);
-    let gb28181_enabled = web::db::get_protocol_config(&conn, "gb28181")
+    let gb28181_enabled = web::db::get_protocol_config(&pool, "gb28181")
+        .await
         .ok()
         .flatten()
         .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
@@ -182,8 +183,7 @@ async fn main() -> anyhow::Result<()> {
     // Open a second DB connection for StreamManager (WAL mode supports
     // concurrent readers; this lets StreamManager read protocol configs at
     // stream-creation time without contending with the web server's lock).
-    let streamer_db_conn = web::db::init_db(&db_path)?;
-    let streamer_db = Arc::new(tokio::sync::Mutex::new(streamer_db_conn));
+    let streamer_db = pool.clone();
     let stream_manager = Arc::new(web::stream_manager::StreamManager::with_host_and_db(
         advertised_host.clone(),
         streamer_db,
@@ -193,11 +193,8 @@ async fn main() -> anyhow::Result<()> {
     // This ensures the in-memory StreamManager state matches the persistent DB state.
     {
         let running_cameras = {
-            let conn = web::db::init_db(&db_path)?;
-            let all = web::db::list_cameras(&conn)?;
-            all.into_iter()
-                .filter(|c| c.status == "running")
-                .collect::<Vec<_>>()
+            let all = web::db::list_cameras(&pool).await?;
+            all.into_iter().filter(|c| c.status == "running").collect::<Vec<_>>()
         };
         let count = running_cameras.len();
         if count > 0 {
@@ -231,16 +228,14 @@ async fn main() -> anyhow::Result<()> {
                         "failed to auto-start stream; marking as stopped"
                     );
                     // Update DB status to "stopped" since stream cannot start.
-                    if let Ok(conn) = web::db::init_db(&db_path) {
-                        let _ = web::db::update_camera(
-                            &conn,
-                            &web::db::CameraRow {
-                                status: "stopped".to_string(),
-                                updated_at: now,
-                                ..camera
-                            },
-                        );
-                    }
+                    let _ = web::db::update_camera(
+                        &pool,
+                        &web::db::CameraRow {
+                            status: "stopped".to_string(),
+                            updated_at: now,
+                            ..camera
+                        },
+                    ).await;
                 }
             }
         }
@@ -634,14 +629,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Periodic session cleanup — runs every 5 minutes to purge expired auth sessions
-    let cleanup_db_path = db_path.clone();
+    let cleanup_db_path = db_path_str.clone();
     let cleanup_handle = tokio::spawn(async move {
         let interval = tokio::time::Duration::from_secs(300);
         loop {
             tokio::time::sleep(interval).await;
             let path = cleanup_db_path.clone();
             if let Err(e) = tokio::task::spawn_blocking(move || {
-                let conn = web::db::init_db(&path)?;
+                let conn = web::db::init_auth_db(&path)?;
                 let removed = security::auth::cleanup_expired_sessions(&conn)?;
                 if removed > 0 {
                     tracing::info!(expired_sessions = removed, "Cleaned up expired sessions");
@@ -707,7 +702,8 @@ async fn main() -> anyhow::Result<()> {
     web::server::run_with_shutdown(
         &config.web.host,
         config.web.port,
-        conn,
+        pool,
+        auth_db,
         stream_manager.clone(),
         rtsp_server,
         protocol_configs,
@@ -736,7 +732,7 @@ async fn main() -> anyhow::Result<()> {
 /// [`security::auth::reset_password`] and prints the result.
 async fn reset_password_cli(args: &Args) -> anyhow::Result<()> {
     let db_path = args.db_path.to_string_lossy().to_string();
-    let conn = web::db::init_db(&db_path)?;
+    let conn = web::db::init_auth_db(&db_path)?;
 
     let mut input = String::new();
 

@@ -6,10 +6,12 @@ use axum::Json;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use rusqlite::Connection;
+
 
 use crate::db::{self, CameraRow};
 use crate::errors::ApiError;
@@ -74,11 +76,10 @@ impl From<CameraRow> for CameraResponse {
 /// GET /api/cameras — list all cameras.
 #[tracing::instrument(skip_all)]
 pub async fn list_cameras(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> std::result::Result<impl IntoResponse, ApiError> {
-    let conn = db.lock().await;
-    match db::list_cameras(&conn) {
+    match db::list_cameras(&db).await {
         Ok(rows) => {
             let cameras: Vec<CameraResponse> = rows.into_iter().map(CameraResponse::from).collect();
             let value = serde_json::to_value(cameras)?;
@@ -94,12 +95,11 @@ pub async fn list_cameras(
 /// GET /api/cameras/{id} — get a single camera.
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn get_camera(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
 ) -> std::result::Result<impl IntoResponse, ApiError> {
-    let conn = db.lock().await;
-    match db::get_camera(&conn, &id) {
+    match db::get_camera(&db, &id).await {
         Ok(Some(row)) => {
             let value = serde_json::to_value(CameraResponse::from(row))?;
             Ok((StatusCode::OK, Json(value)))
@@ -115,7 +115,7 @@ pub async fn get_camera(
 /// POST /api/cameras — create a new camera.
 #[tracing::instrument(skip_all, fields(name = %body.name))]
 pub async fn create_camera(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     Json(body): Json<CreateCameraRequest>,
 ) -> std::result::Result<impl IntoResponse, ApiError> {
@@ -132,8 +132,7 @@ pub async fn create_camera(
         updated_at: now,
     };
 
-    let conn = db.lock().await;
-    match db::create_camera(&conn, &row) {
+    match db::create_camera(&db, &row).await {
         Ok(()) => {
             let value = serde_json::to_value(CameraResponse::from(row))?;
             Ok((StatusCode::CREATED, Json(value)))
@@ -148,15 +147,13 @@ pub async fn create_camera(
 /// PUT /api/cameras/{id} — update an existing camera.
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn update_camera(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
     Json(body): Json<UpdateCameraRequest>,
 ) -> std::result::Result<impl IntoResponse, ApiError> {
-    let conn = db.lock().await;
-
     // Fetch existing camera, or return 404.
-    let existing = match db::get_camera(&conn, &id) {
+    let existing = match db::get_camera(&db, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return Err(ApiError::not_found("camera not found")),
         Err(e) => {
@@ -176,7 +173,7 @@ pub async fn update_camera(
         updated_at: now,
     };
 
-    match db::update_camera(&conn, &updated) {
+    match db::update_camera(&db, &updated).await {
         Ok(()) => {
             let value = serde_json::to_value(CameraResponse::from(updated))?;
             Ok((StatusCode::OK, Json(value)))
@@ -191,12 +188,11 @@ pub async fn update_camera(
 /// DELETE /api/cameras/{id} — delete a camera.
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn delete_camera(
-    Extension(db): Extension<Arc<Mutex<Connection>>>,
+    Extension(db): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let conn = db.lock().await;
-    match db::delete_camera(&conn, &id) {
+    match db::delete_camera(&db, &id).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response(),
         Err(e) => {
             if e.downcast_ref::<rusqlite::Error>().is_some() {
