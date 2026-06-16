@@ -253,7 +253,8 @@ pub async fn snapshot(
     };
 
     // RTSP URL for the camera's stream
-    let rtsp_url = format!("rtsp://{}:8554/live/{}", advertised_host.as_str(), id);
+    let rtsp_host = if advertised_host.is_empty() { "127.0.0.1" } else { advertised_host.as_str() };
+    let rtsp_url = format!("rtsp://{}:8554/live/{}", rtsp_host, id);
 
     // Use ffmpeg to capture a single JPEG frame
     let capture_result = timeout(Duration::from_secs(30), async move {
@@ -385,7 +386,8 @@ pub async fn live_preview(
     // Live preview: pull from RTSP and convert to MJPEG via ffmpeg.
     // This single ffmpeg approach works for ALL camera types (USB, RTSP, ONVIF,
     // GB28181) because every camera's stream is available through the RTSP server.
-    let rtsp_url = format!("rtsp://{}:8554/live/{}", advertised_host.as_str(), id);
+    let rtsp_host = if advertised_host.is_empty() { "127.0.0.1" } else { advertised_host.as_str() };
+    let rtsp_url = format!("rtsp://{}:8554/live/{}", rtsp_host, id);
 
     let mut cmd = Command::new("ffmpeg");
     cmd.stdin(Stdio::null())
