@@ -28,6 +28,8 @@ pub struct OnvifConfig {
     pub serial: String,
     #[serde(default = "default_onvif_firmware")]
     pub firmware_version: String,
+    #[serde(default = "default_onvif_port")]
+    pub port: u16,
 }
 
 fn default_onvif_device_name() -> String {
@@ -45,6 +47,9 @@ fn default_onvif_serial() -> String {
 fn default_onvif_firmware() -> String {
     "1.0.0".into()
 }
+fn default_onvif_port() -> u16 {
+    3702
+}
 
 impl Default for OnvifConfig {
     fn default() -> Self {
@@ -55,6 +60,7 @@ impl Default for OnvifConfig {
             model: "Rec-01".into(),
             serial: "NC00000001".into(),
             firmware_version: "1.0.0".into(),
+            port: 3702,
         }
     }
 }
