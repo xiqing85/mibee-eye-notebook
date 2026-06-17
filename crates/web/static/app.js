@@ -1403,6 +1403,13 @@ document.addEventListener('DOMContentLoaded', function() {
   initSSE();
 });
 
+// Password show/hide toggle
+function togglePw(id) {
+  var inp = document.getElementById(id);
+  if (!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
 // Expose functions for onclick handlers in HTML
 window.G = G;
 window.wa = wa;
@@ -1427,6 +1434,7 @@ window.translatePage = translatePage;
 window.vY = vY;
 window.K = K;
 window.switchTab = switchTab;
+window.togglePw = togglePw;
 window.takeSnapshot = takeSnapshot;
 window.startRecording = startRecording;
 window.stopRecording = stopRecording;

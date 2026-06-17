@@ -248,6 +248,7 @@ a:hover { color: var(--ah); }
    ============================================================ */
 .pg { display: none; padding: var(--s24); max-width: 1200px; margin: 0 auto; width: 100%; }
 .pg.a { display: block; }
+.pg.a.ap { display: flex; justify-content: center; align-items: center; min-height: 100vh; }
 
 .ph {
   display: flex;
@@ -393,8 +394,14 @@ select {
   letter-spacing: -0.02em;
 }
 
-.ac h1 { font-size: 1.429rem; font-weight: 700; margin-bottom: var(--s4); }
-.ac .st { color: var(--t2); font-size: 0.929rem; margin-bottom: var(--s32); }
+.ac .st { color: var(--t2); font-size: 0.929rem; margin-bottom: var(--s32); width: auto; height: auto; background: none; border-radius: 0; position: static; }
+.ac .st::before { content: none; }
+
+/* Password input with show/hide toggle */
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 44px; }
+.pw-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: var(--t3); padding: 4px; display: flex; align-items: center; justify-content: center; border-radius: var(--r4); }
+.pw-toggle:hover { color: var(--t1); background: var(--ho); }
 
 .ae {
   background: var(--dd);
