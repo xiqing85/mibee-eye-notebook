@@ -19,6 +19,7 @@ use tower_http::cors::CorsLayer;
 use crate::assets;
 use crate::routes;
 use crate::stream_manager::StreamManager;
+use crate::protocol_runtime::ProtocolRuntime;
 use opentelemetry::propagation::Extractor;
 use tracing::Instrument;
 
@@ -40,6 +41,7 @@ pub struct AppRouterState {
     pub stream_manager: Arc<StreamManager>,
     pub rtsp_server: Arc<RtspServer>,
     pub protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    pub protocol_runtime: Arc<Mutex<ProtocolRuntime>>,
     pub advertised_host: Arc<String>,
 }
 
@@ -87,6 +89,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let stream_manager = state.stream_manager.clone();
     let rtsp_server = state.rtsp_server.clone();
     let protocol_configs = state.protocol_configs.clone();
+    let protocol_runtime = state.protocol_runtime.clone();
     let advertised_host = state.advertised_host.clone();
 
     // -- Auth routes (public, rate-limited) --
@@ -147,7 +150,13 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             "/api/protocols/rtmp",
             put(routes::protocols::update_protocols_rtmp),
         )
-        // ONVIF
+        .route(
+            "/api/protocols/runtime-status",
+            get(routes::protocols::get_protocols_runtime_status),
+        )
+        // SSE events
+        .route("/api/events", get(routes::events::sse_events))
+        // Device enumeration
         // Device enumeration
         .route(
             "/api/devices/video",
@@ -180,6 +189,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(active))
         .layer(Extension(db))
         .layer(Extension(protocol_configs))
+        .layer(Extension(protocol_runtime))
         .layer(Extension(advertised_host))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
@@ -207,6 +217,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         stream_manager: Arc::new(StreamManager::new()),
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
+        protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
         advertised_host: Arc::new("localhost".to_string()),
     })
 }
@@ -219,7 +230,7 @@ pub fn test_app_with_user() -> Router {
     let _ = crate::db::run_migrations(&pool).blocking_expect("Failed to run migrations");
     // Seed a test user in auth_db
     let conn = auth_db.lock().expect("Failed to lock auth_db");
-    let password_hash = security::auth::hash_password("test_password")
+    let password_hash = security::password::hash_password("test_password")
         .expect("Failed to hash password");
     conn.execute(
         "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
@@ -234,6 +245,7 @@ pub fn test_app_with_user() -> Router {
         stream_manager: Arc::new(StreamManager::new()),
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
+        protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
         advertised_host: Arc::new("localhost".to_string()),
     })
 }
@@ -415,6 +427,7 @@ pub async fn run(
     stream_manager: Arc<StreamManager>,
     rtsp_server: Arc<RtspServer>,
     protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    protocol_runtime: Arc<Mutex<ProtocolRuntime>>,
     advertised_host: String,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
@@ -427,6 +440,7 @@ pub async fn run(
         stream_manager,
         rtsp_server,
         protocol_configs,
+        protocol_runtime,
         advertised_host: Arc::new(advertised_host),
     };
     let app = build_app_with_state(state);
@@ -479,8 +493,10 @@ pub async fn run_with_shutdown(
     stream_manager: Arc<StreamManager>,
     rtsp_server: Arc<RtspServer>,
     protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    protocol_runtime: Arc<Mutex<ProtocolRuntime>>,
     mut shutdown_rx: watch::Receiver<bool>,
     advertised_host: String,
+    event_tx: Arc<routes::events::EventBus>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -492,9 +508,11 @@ pub async fn run_with_shutdown(
         stream_manager,
         rtsp_server,
         protocol_configs,
+        protocol_runtime,
         advertised_host: Arc::new(advertised_host),
     };
     let app = build_app_with_state(state);
+    let app = app.layer(Extension(event_tx));
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
 
@@ -552,9 +570,11 @@ pub async fn run_with_shutdown(
 /// Create a DB with a pre-seeded admin user (setup already completed).
 /// Accessible as `crate::server::test_db_with_user()`.
 #[cfg(test)]
-pub(crate) fn test_db_with_user() -> (SqlitePool, Arc<Mutex<Connection>>) {
+pub(crate) fn test_db_with_user() -> (sqlx::SqlitePool, Arc<Mutex<Connection>>) {
     let (pool, auth_db) = crate::db::create_test_dbs();
-    let _ = crate::db::run_migrations(&pool).blocking_expect("Failed to run migrations");
+    let _ = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(crate::db::run_migrations(&pool))
+    }).expect("Failed to run migrations");
     // Seed admin user in auth_db
     let conn = auth_db.lock().expect("Failed to lock auth_db");
     let hash = security::password::hash_password("test_pass").unwrap();

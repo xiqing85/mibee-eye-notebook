@@ -76,6 +76,7 @@ pub async fn update_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -110,6 +111,7 @@ mod tests {
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         let token = {
             let c = state.db.lock().await;
@@ -146,6 +148,7 @@ mod tests {
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         let token = {
             let c = state.db.lock().await;
@@ -234,6 +237,7 @@ mod tests {
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         let app = crate::server::build_app_with_state(state);
 
