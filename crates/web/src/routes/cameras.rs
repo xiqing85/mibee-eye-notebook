@@ -53,6 +53,8 @@ pub struct CameraResponse {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offline_since: Option<String>,
 }
 
 impl From<CameraRow> for CameraResponse {
@@ -65,6 +67,7 @@ impl From<CameraRow> for CameraResponse {
             status: row.status,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            offline_since: row.offline_since,
         }
     }
 }
@@ -130,6 +133,7 @@ pub async fn create_camera(
         status: "stopped".to_string(),
         created_at: now.clone(),
         updated_at: now,
+        offline_since: None,
     };
 
     match db::create_camera(&db, &row).await {
@@ -171,6 +175,7 @@ pub async fn update_camera(
         status: body.status.unwrap_or(existing.status),
         created_at: existing.created_at,
         updated_at: now,
+        offline_since: existing.offline_since,
     };
 
     match db::update_camera(&db, &updated).await {
@@ -245,6 +250,7 @@ mod tests {
             rtsp_server,
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         (state, token)
     }
@@ -272,6 +278,7 @@ mod tests {
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         let token = {
             let c = state.db.lock().await;
@@ -476,6 +483,7 @@ mod tests {
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         let app = crate::server::build_app_with_state(state);
 

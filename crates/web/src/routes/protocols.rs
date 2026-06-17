@@ -11,48 +11,32 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::errors::ApiError;
+use crate::protocol_runtime::{ProtocolRuntime, build_onvif_config_from_json, extract_gb28181_config};
+use crate::stream_manager::StreamManager;
 use security::middleware::AuthenticatedUser;
 /// Type alias for the shared DB pool (for web CRUD operations).
 type Db = SqlitePool;
 // ---------------------------------------------------------------------------
-// Schema definitions — used to validate PUT payloads field-by-field.
+// Schema definitions — generated from Rust config structs via `schemars`.
 // Numeric / boolean fields sent as strings are coerced (for backward
 // compatibility with older frontends). Unknown fields are rejected.
 // ---------------------------------------------------------------------------
 
-/// Field type for protocol config schema validation.
-enum FieldType {
-    Bool,
-    U16,
-    U32,
-    String_,
-}
-
-impl FieldType {
-    /// Coerce a JSON value into this field type, or reject.
-    /// Returns Ok(coerced) if the value matches or can be coerced;
-    /// returns Err(message) if the value cannot be coerced.
-    fn coerce(&self, v: serde_json::Value) -> Result<serde_json::Value, String> {
-        match self {
-            FieldType::Bool => match v {
-                serde_json::Value::Bool(_) => Ok(v),
-                // Accept string "true" / "false" from legacy frontends.
-                serde_json::Value::String(s) => match s.parse::<bool>() {
-                    Ok(b) => Ok(serde_json::Value::Bool(b)),
-                    Err(_) => Err(format!("expected bool, got string {:?}", s)),
-                },
-                other => Err(format!("expected bool, got {}", type_name(&other))),
-            },
-            FieldType::U16 => coerce_uint(v, 0, u16::MAX as u64).map(serde_json::Value::from),
-            FieldType::U32 => coerce_uint(v, 0, u32::MAX as u64).map(serde_json::Value::from),
-            FieldType::String_ => match v {
-                serde_json::Value::String(_) => Ok(v),
-                other => Err(format!("expected string, got {}", type_name(&other))),
-            },
-        }
-    }
+/// Generate a JSON Schema for the given protocol's config struct.
+/// The schema is derived at compile time from the Rust type definitions,
+/// eliminating the need for a hand-maintained field table.
+fn schema_for(protocol: &str) -> serde_json::Value {
+    let schema = match protocol {
+        "onvif" => schemars::schema_for!(crate::config::OnvifConfig),
+        "gb28181" => schemars::schema_for!(crate::config::Gb28181Config),
+        "rtmp_push" => schemars::schema_for!(crate::config::RtmpPushConfig),
+        "recording" => schemars::schema_for!(crate::config::RecordingConfig),
+        _ => return serde_json::json!({}),
+    };
+    serde_json::to_value(&schema).unwrap_or_else(|_| serde_json::json!({}))
 }
 
 fn type_name(v: &serde_json::Value) -> &'static str {
@@ -86,53 +70,67 @@ fn coerce_uint(v: serde_json::Value, min: u64, max: u64) -> Result<u64, String> 
             let parsed: i64 = s
                 .parse()
                 .map_err(|_| format!("expected integer, got string {:?}", s))?;
-            if parsed < min as i64 || parsed > max as i64 {
+            if parsed < 0 {
                 return Err(format!(
                     "integer {} out of range [{}, {}]",
                     parsed, min, max
                 ));
             }
-            Ok(parsed as u64)
+            let parsed_u64 = parsed as u64;
+            if parsed_u64 < min || parsed_u64 > max {
+                return Err(format!(
+                    "integer {} out of range [{}, {}]",
+                    parsed_u64, min, max
+                ));
+            }
+            Ok(parsed_u64)
         }
         other => Err(format!("expected integer, got {}", type_name(&other))),
     }
 }
 
-/// Per-protocol schema: maps each known field to its expected type.
-/// Unknown keys are rejected on update (forces explicit schema evolution).
-fn schema_for(protocol: &str) -> &'static [(&'static str, FieldType)] {
-    match protocol {
-        "onvif" => &[
-            ("enabled", FieldType::Bool),
-            ("device_name", FieldType::String_),
-            ("manufacturer", FieldType::String_),
-            ("model", FieldType::String_),
-            ("serial", FieldType::String_),
-            ("firmware_version", FieldType::String_),
-        ],
-        "gb28181" => &[
-            ("enabled", FieldType::Bool),
-            ("platform_sip_address", FieldType::String_),
-            ("platform_sip_port", FieldType::U16),
-            ("device_id", FieldType::String_),
-            ("username", FieldType::String_),
-            ("password", FieldType::String_),
-            ("sip_domain", FieldType::String_),
-            ("register_interval_secs", FieldType::U32),
-        ],
-        "rtmp_push" => &[
-            ("enabled", FieldType::Bool),
-            ("push_url", FieldType::String_),
-            ("app_name", FieldType::String_),
-            ("stream_name", FieldType::String_),
-            ("reconnect_interval_secs", FieldType::U32),
-            ("max_reconnect_attempts", FieldType::U32),
-        ],
-        _ => &[],
+/// Extract a u64 from a JSON Schema constraint value, handling both integer
+/// and float representations that schemars may emit (e.g. `65535` vs `65535.0`).
+fn schema_u64(v: Option<&serde_json::Value>, default: u64) -> u64 {
+    v.and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+        .unwrap_or(default)
+}
+
+/// Coerce a JSON value to match the type declared in the JSON Schema property.
+/// Boolean and numeric fields sent as strings are coerced for backward
+/// compatibility with legacy frontends.
+fn coerce_from_schema(
+    prop_schema: &serde_json::Value,
+    v: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let ty = prop_schema
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    match ty {
+        "boolean" => match v {
+            serde_json::Value::Bool(_) => Ok(v),
+            // Accept string "true" / "false" from legacy frontends.
+            serde_json::Value::String(s) => match s.parse::<bool>() {
+                Ok(b) => Ok(serde_json::Value::Bool(b)),
+                Err(_) => Err(format!("expected bool, got string {:?}", s)),
+            },
+            other => Err(format!("expected bool, got {}", type_name(&other))),
+        },
+        "integer" => {
+            let min = schema_u64(prop_schema.get("minimum"), 0);
+            let max = schema_u64(prop_schema.get("maximum"), u64::MAX);
+            coerce_uint(v, min, max).map(serde_json::Value::from)
+        }
+        "string" => match v {
+            serde_json::Value::String(_) => Ok(v),
+            other => Err(format!("expected string, got {}", type_name(&other))),
+        },
+        _ => Ok(v),
     }
 }
 
-/// Validate + coerce a partial update payload against the schema.
+/// Validate + coerce a partial update payload against the generated JSON Schema.
 /// Returns the coerced object containing only known fields.
 /// Unknown fields trigger an error.
 fn validate_and_coerce(
@@ -151,13 +149,17 @@ fn validate_and_coerce(
     };
 
     let schema = schema_for(protocol);
-    let schema_keys: std::collections::HashSet<&str> = schema.iter().map(|(k, _)| *k).collect();
+    let empty_map = serde_json::Map::new();
+    let properties = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .unwrap_or(&empty_map);
 
     // Reject unknown keys (forces explicit schema evolution).
     for k in obj.keys() {
-        if !schema_keys.contains(k.as_str()) {
+        if !properties.contains_key(k) {
             return Err(format!(
-                "unknown field {:?} for {} config; if this is a new setting, add it to schema_for() first",
+                "unknown field {:?} for {} config; if this is a new setting, add it to the struct in config.rs first",
                 k, protocol
             ));
         }
@@ -165,29 +167,15 @@ fn validate_and_coerce(
 
     let mut out = serde_json::Map::new();
     for (k, v) in obj {
-        // Find the field's expected type.
-        let field_type = schema
-            .iter()
-            .find(|(name, _)| name == k)
-            .map(|(_, t)| t)
-            .expect("schema lookup after unknown-key check");
-        let coerced = field_type
-            .coerce(v.clone())
+        let prop_schema = properties
+            .get(k)
+            .expect("checked in unknown-key pass above");
+        let coerced = coerce_from_schema(prop_schema, v.clone())
             .map_err(|e| format!("field {:?}: {}", k, e))?;
         out.insert(k.clone(), coerced);
     }
     Ok(serde_json::Value::Object(out))
 }
-
-/// Shallow-merge: for each key in `update`, set/overwrite in `target`.
-fn merge_into(target: &mut serde_json::Value, update: serde_json::Value) {
-    if let (serde_json::Value::Object(t), serde_json::Value::Object(u)) = (target, update) {
-        for (k, v) in u {
-            t.insert(k, v);
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Generic handler helpers
 // ---------------------------------------------------------------------------
@@ -202,16 +190,21 @@ async fn handle_get(db: &Db, protocol: &str) -> axum::response::Response {
         }
     }
 }
-async fn handle_put(
+/**
+ * Validate, merge, and persist a protocol config update.
+ * Returns the merged config JSON on success so the caller can check
+ * the `enabled` flag and act on the ProtocolRuntime.
+ */
+async fn handle_put_and_get(
     db: &Db,
     protocol: &str,
     payload: serde_json::Value,
-) -> axum::response::Response {
+) -> Result<serde_json::Value, axum::response::Response> {
     // 1. Validate + coerce types field-by-field.
     let validated = match validate_and_coerce(protocol, &payload) {
         Ok(v) => v,
         Err(msg) => {
-            return ApiError::bad_request(&msg).into_response();
+            return Err(ApiError::bad_request(&msg).into_response());
         }
     };
     // 2. Merge with existing config (partial update).
@@ -220,23 +213,22 @@ async fn handle_put(
         Ok(None) => serde_json::json!({}),
         Err(e) => {
             tracing::error!(error = %e, protocol, "failed to read protocol config");
-            return ApiError::internal("database error").into_response();
+            return Err(ApiError::internal("database error").into_response());
         }
     };
-    // Merge validated fields into current config.
-if let Some(obj) = validated.as_object() {
-for (key, value) in obj {
-current[key] = value.clone();
+    if let Some(obj) = validated.as_object() {
+        for (key, value) in obj {
+            current[key] = value.clone();
         }
     }
-// 3. Persist merged config.
-if let Err(e) = crate::db::set_protocol_config(db, protocol, &current).await {
+    // 3. Persist merged config.
+    if let Err(e) = crate::db::set_protocol_config(db, protocol, &current).await {
         tracing::error!(error = %e, protocol, "failed to persist protocol config");
-        return ApiError::internal("database error").into_response();
+        return Err(ApiError::internal("database error").into_response());
     }
 
     tracing::info!(protocol, "protocol config updated via Web UI");
-    (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+    Ok(current)
 }
 // ---------------------------------------------------------------------------
 // ONVIF config
@@ -252,13 +244,33 @@ pub async fn get_protocols_onvif(
 }
 
 /// PUT /api/protocols/onvif — update ONVIF device config (partial, validated).
+///
+/// After persisting to DB, hot-toggles the ONVIF WS-Discovery server
+/// based on the `enabled` flag — no server restart needed.
 #[tracing::instrument(skip_all)]
 pub async fn update_protocols_onvif(
     Extension(db): Extension<Db>,
+    Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
+    Extension(advertised_host): Extension<Arc<String>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Json(payload): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    handle_put(&db, "onvif", payload).await
+) -> axum::response::Response {
+    match handle_put_and_get(&db, "onvif", payload).await {
+        Ok(config) => {
+            let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut rt = protocol_runtime.lock().await;
+            if enabled {
+                let onvif_config = build_onvif_config_from_json(&config, &advertised_host);
+                if let Err(e) = rt.start_onvif(onvif_config).await {
+                    tracing::warn!(error = %e, "failed to start ONVIF after config update");
+                }
+            } else {
+                rt.stop_onvif().await;
+            }
+            (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+        }
+        Err(resp) => resp,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,13 +287,33 @@ pub async fn get_protocols_gb28181(
 }
 
 /// PUT /api/protocols/gb28181 — update GB28181 device config (partial, validated).
+///
+/// After persisting to DB, hot-toggles the GB28181 SIP device loop
+/// based on the `enabled` flag — no server restart needed.
 #[tracing::instrument(skip_all)]
 pub async fn update_protocols_gb28181(
     Extension(db): Extension<Db>,
+    Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Json(payload): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    handle_put(&db, "gb28181", payload).await
+) -> axum::response::Response {
+    match handle_put_and_get(&db, "gb28181", payload).await {
+        Ok(config) => {
+            let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut rt = protocol_runtime.lock().await;
+            if enabled {
+                let gb_config = extract_gb28181_config(&config);
+                if let Err(e) = rt.start_gb28181(&gb_config, stream_manager).await {
+                    tracing::warn!(error = %e, "failed to start GB28181 after config update");
+                }
+            } else {
+                rt.stop_gb28181().await;
+            }
+            (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+        }
+        Err(resp) => resp,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,13 +330,48 @@ pub async fn get_protocols_rtmp(
 }
 
 /// PUT /api/protocols/rtmp — update RTMP push config (partial, validated).
+///
+/// After persisting to DB, hot-toggles the RTMP push flag
+/// based on the `enabled` flag. New streams will auto-attach RTMP output
+/// when enabled; existing streams keep their RTMP output until stopped.
 #[tracing::instrument(skip_all)]
 pub async fn update_protocols_rtmp(
     Extension(db): Extension<Db>,
+    Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Json(payload): Json<serde_json::Value>,
+) -> axum::response::Response {
+    match handle_put_and_get(&db, "rtmp_push", payload).await {
+        Ok(config) => {
+            let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut rt = protocol_runtime.lock().await;
+            if enabled {
+                if let Err(e) = rt.start_rtmp().await {
+                    tracing::warn!(error = %e, "failed to enable RTMP after config update");
+                }
+            } else {
+                rt.stop_rtmp().await;
+            }
+            (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+        }
+        Err(resp) => resp,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime status
+// ---------------------------------------------------------------------------
+
+/// GET /api/protocols/runtime-status — return running/stopped status for
+/// each protocol.
+#[tracing::instrument(skip_all)]
+pub async fn get_protocols_runtime_status(
+    Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
+    Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
-    handle_put(&db, "rtmp_push", payload).await
+    let rt = protocol_runtime.lock().await;
+    let status = rt.status();
+    (StatusCode::OK, Json(status)).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -318,43 +385,66 @@ mod tests {
 
     #[test]
     fn test_coerce_bool_accepts_native() {
-        assert_eq!(FieldType::Bool.coerce(json!(true)).unwrap(), json!(true));
+        let schema = json!({"type": "boolean"});
+        assert_eq!(coerce_from_schema(&schema, json!(true)).unwrap(), json!(true));
     }
 
     #[test]
     fn test_coerce_bool_coerces_string() {
         // Legacy frontend sends "true"/"false" strings.
-        assert_eq!(FieldType::Bool.coerce(json!("true")).unwrap(), json!(true));
+        let schema = json!({"type": "boolean"});
         assert_eq!(
-            FieldType::Bool.coerce(json!("false")).unwrap(),
+            coerce_from_schema(&schema, json!("true")).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            coerce_from_schema(&schema, json!("false")).unwrap(),
             json!(false)
         );
     }
 
     #[test]
     fn test_coerce_bool_rejects_invalid() {
-        assert!(FieldType::Bool.coerce(json!("yes")).is_err());
-        assert!(FieldType::Bool.coerce(json!(1)).is_err());
-        assert!(FieldType::Bool.coerce(json!("null")).is_err());
+        let schema = json!({"type": "boolean"});
+        assert!(coerce_from_schema(&schema, json!("yes")).is_err());
+        assert!(coerce_from_schema(&schema, json!(1)).is_err());
+        assert!(coerce_from_schema(&schema, json!("null")).is_err());
     }
 
     #[test]
-    fn test_coerce_u16_native() {
-        assert_eq!(FieldType::U16.coerce(json!(5060)).unwrap(), json!(5060));
-        assert_eq!(FieldType::U16.coerce(json!(0)).unwrap(), json!(0));
-        assert_eq!(FieldType::U16.coerce(json!(65535)).unwrap(), json!(65535));
+    fn test_coerce_integer_native() {
+        let schema = json!({"type": "integer", "minimum": 0, "maximum": 65535});
+        assert_eq!(coerce_from_schema(&schema, json!(5060)).unwrap(), json!(5060));
+        assert_eq!(coerce_from_schema(&schema, json!(0)).unwrap(), json!(0));
+        assert_eq!(
+            coerce_from_schema(&schema, json!(65535)).unwrap(),
+            json!(65535)
+        );
     }
 
     #[test]
-    fn test_coerce_u16_coerces_numeric_string() {
+    fn test_coerce_integer_coerces_numeric_string() {
         // Legacy frontend sends port as "5060".
-        assert_eq!(FieldType::U16.coerce(json!("5060")).unwrap(), json!(5060));
+        let schema = json!({"type": "integer", "minimum": 0, "maximum": 65535});
+        assert_eq!(
+            coerce_from_schema(&schema, json!("5060")).unwrap(),
+            json!(5060)
+        );
     }
 
     #[test]
-    fn test_coerce_u16_rejects_out_of_range() {
-        assert!(FieldType::U16.coerce(json!(65536)).is_err());
-        assert!(FieldType::U16.coerce(json!(-1)).is_err());
+    fn test_coerce_integer_rejects_out_of_range() {
+        let schema = json!({"type": "integer", "minimum": 0, "maximum": 65535});
+        assert!(coerce_from_schema(&schema, json!(65536)).is_err());
+        assert!(coerce_from_schema(&schema, json!(-1)).is_err());
+    }
+
+    #[test]
+    fn test_coerce_integer_handles_float_constraints() {
+        // schemars emits minimum/maximum as floats (e.g. 65535.0).
+        let schema = json!({"type": "integer", "minimum": 0.0, "maximum": 65535.0});
+        assert_eq!(coerce_from_schema(&schema, json!(5060)).unwrap(), json!(5060));
+        assert!(coerce_from_schema(&schema, json!(65536)).is_err());
     }
 
     #[test]
@@ -401,6 +491,36 @@ mod tests {
 
     #[test]
     fn test_schema_for_unknown_protocol_is_empty() {
-        assert!(schema_for("nonexistent").is_empty());
+        let schema = schema_for("nonexistent");
+        assert!(schema.as_object().map(|o| o.is_empty()).unwrap_or(true));
+    }
+
+    #[test]
+    fn test_schema_for_onvif_has_expected_properties() {
+        let schema = schema_for("onvif");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("schema must have properties");
+        assert!(props.contains_key("enabled"));
+        assert!(props.contains_key("device_name"));
+        assert!(props.contains_key("manufacturer"));
+        assert!(props.contains_key("model"));
+        assert!(props.contains_key("serial"));
+        assert!(props.contains_key("firmware_version"));
+    }
+
+    #[test]
+    fn test_schema_for_gb28181_has_expected_properties() {
+        let schema = schema_for("gb28181");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("schema must have properties");
+        assert!(props.contains_key("enabled"));
+        assert!(props.contains_key("platform_sip_address"));
+        assert!(props.contains_key("platform_sip_port"));
+        assert!(props.contains_key("device_id"));
+        assert!(props.contains_key("register_interval_secs"));
     }
 }

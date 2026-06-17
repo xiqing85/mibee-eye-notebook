@@ -16,6 +16,10 @@ pub struct CameraRow {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    /// When the physical device went offline (NULL when online).
+    /// Set by the hot-plug monitor when udev detects device removal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offline_since: Option<String>,
 }
 
 /// Initialize the SQLite pool at `path` with WAL mode and busy timeout.
@@ -66,7 +70,7 @@ pub fn init_auth_db(path: &str) -> Result<Connection> {
 
 /// Ensure the schema_version table exists, read current version, apply pending
 /// migrations, and update the version.
-async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // Create version tracking table if it doesn't exist
     sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
         .execute(pool)
@@ -144,8 +148,8 @@ pub async fn create_camera(pool: &SqlitePool, camera: &CameraRow) -> Result<()> 
     let config_str = serde_json::to_string(&camera.config).context("Failed to serialize config")?;
 
     sqlx::query(
-        "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at, offline_since)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(&camera.id)
     .bind(&camera.name)
@@ -154,6 +158,7 @@ pub async fn create_camera(pool: &SqlitePool, camera: &CameraRow) -> Result<()> 
     .bind(&camera.status)
     .bind(&camera.created_at)
     .bind(&camera.updated_at)
+    .bind(&camera.offline_since)
     .execute(pool)
     .await
     .context("Failed to create camera")?;
@@ -162,8 +167,8 @@ pub async fn create_camera(pool: &SqlitePool, camera: &CameraRow) -> Result<()> 
 }
 
 pub async fn get_camera(pool: &SqlitePool, id: &str) -> Result<Option<CameraRow>> {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-        "SELECT id, name, camera_type, config, status, created_at, updated_at
+    let row = sqlx::query_as::<_, (String, String, String, String, String, String, String, Option<String>)>(
+        "SELECT id, name, camera_type, config, status, created_at, updated_at, offline_since
          FROM cameras WHERE id = ?1",
     )
     .bind(id)
@@ -172,7 +177,7 @@ pub async fn get_camera(pool: &SqlitePool, id: &str) -> Result<Option<CameraRow>
     .context("Failed to get camera")?;
 
     match row {
-        Some((id, name, camera_type, config_str, status, created_at, updated_at)) => {
+        Some((id, name, camera_type, config_str, status, created_at, updated_at, offline_since)) => {
             let config: serde_json::Value =
                 serde_json::from_str(&config_str).context("Failed to parse camera config JSON")?;
             Ok(Some(CameraRow {
@@ -183,6 +188,7 @@ pub async fn get_camera(pool: &SqlitePool, id: &str) -> Result<Option<CameraRow>
                 status,
                 created_at,
                 updated_at,
+                offline_since,
             }))
         }
         None => Ok(None),
@@ -190,8 +196,8 @@ pub async fn get_camera(pool: &SqlitePool, id: &str) -> Result<Option<CameraRow>
 }
 
 pub async fn list_cameras(pool: &SqlitePool) -> Result<Vec<CameraRow>> {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-        "SELECT id, name, camera_type, config, status, created_at, updated_at
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String, Option<String>)>(
+        "SELECT id, name, camera_type, config, status, created_at, updated_at, offline_since
          FROM cameras ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -199,7 +205,7 @@ pub async fn list_cameras(pool: &SqlitePool) -> Result<Vec<CameraRow>> {
     .context("Failed to list cameras")?;
 
     let mut cameras = Vec::new();
-    for (id, name, camera_type, config_str, status, created_at, updated_at) in rows {
+    for (id, name, camera_type, config_str, status, created_at, updated_at, offline_since) in rows {
         let config: serde_json::Value = serde_json::from_str(&config_str)
             .context("Failed to parse camera config JSON")?;
         cameras.push(CameraRow {
@@ -210,6 +216,7 @@ pub async fn list_cameras(pool: &SqlitePool) -> Result<Vec<CameraRow>> {
             status,
             created_at,
             updated_at,
+            offline_since,
         });
     }
 
@@ -269,6 +276,7 @@ pub async fn auto_discover_cameras(pool: &SqlitePool) -> Result<usize> {
             status: "stopped".to_string(),
             created_at: now.clone(),
             updated_at: now,
+            offline_since: None,
         };
 
         match create_camera(pool, &camera).await {
@@ -297,19 +305,106 @@ fn chrono_epoch_secs() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
+/// Mark all USB cameras with the given device index as offline.
+///
+/// Called by the hot-plug monitor when udev detects device removal.
+/// Sets `status = 'offline'` and `offline_since = datetime('now')`.
+/// Returns the IDs of the affected cameras so the caller can stop
+/// their active streams (if any) and broadcast SSE events.
+pub async fn mark_cameras_offline_by_device_index(
+    pool: &SqlitePool,
+    device_index: i64,
+) -> Result<Vec<String>> {
+    // First fetch matching camera IDs so the caller can stop streams.
+    let cameras = list_cameras(pool).await?;
+    let affected: Vec<String> = cameras
+        .into_iter()
+        .filter(|c| {
+            c.camera_type == "usb"
+                && c.status != "offline"
+                && c.config.get("device_index").and_then(|v| v.as_i64()) == Some(device_index)
+        })
+        .map(|c| c.id)
+        .collect();
+
+    if affected.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Bulk-update via json_extract (SQLite ≥ 3.38) or config LIKE.
+    // We already know the IDs, so update them individually for clarity.
+    let now = chrono_epoch_secs();
+    for id in &affected {
+        sqlx::query(
+            "UPDATE cameras SET status = 'offline', offline_since = ?1, updated_at = ?1
+             WHERE id = ?2",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to mark camera offline")?;
+    }
+
+    tracing::info!(device_index, count = affected.len(), "marked cameras offline");
+    Ok(affected)
+}
+
+/// Clear the offline flag for cameras with the given device index.
+///
+/// Called by the hot-plug monitor when a device is plugged back in.
+/// Resets `status` to `'stopped'` (does NOT auto-start) and clears
+/// `offline_since`. Returns the IDs of the re-activated cameras.
+pub async fn clear_offline_by_device_index(
+    pool: &SqlitePool,
+    device_index: i64,
+) -> Result<Vec<String>> {
+    let cameras = list_cameras(pool).await?;
+    let affected: Vec<String> = cameras
+        .into_iter()
+        .filter(|c| {
+            c.camera_type == "usb"
+                && c.status == "offline"
+                && c.config.get("device_index").and_then(|v| v.as_i64()) == Some(device_index)
+        })
+        .map(|c| c.id)
+        .collect();
+
+    if affected.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let now = chrono_epoch_secs();
+    for id in &affected {
+        sqlx::query(
+            "UPDATE cameras SET status = 'stopped', offline_since = NULL, updated_at = ?1
+             WHERE id = ?2",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("Failed to clear offline status")?;
+    }
+
+    tracing::info!(device_index, count = affected.len(), "cleared offline status");
+    Ok(affected)
+}
+
 pub async fn update_camera(pool: &SqlitePool, camera: &CameraRow) -> Result<()> {
     let config_str = serde_json::to_string(&camera.config).context("Failed to serialize config")?;
 
     let result = sqlx::query(
         "UPDATE cameras SET name = ?1, camera_type = ?2, config = ?3,
-                status = ?4, updated_at = ?5
-         WHERE id = ?6",
+                status = ?4, updated_at = ?5, offline_since = ?6
+         WHERE id = ?7",
     )
     .bind(&camera.name)
     .bind(&camera.camera_type)
     .bind(&config_str)
     .bind(&camera.status)
     .bind(&camera.updated_at)
+    .bind(&camera.offline_since)
     .bind(&camera.id)
     .execute(pool)
     .await
@@ -496,6 +591,7 @@ pub async fn finalize_stream_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Executor;
 
     /// Create an in-memory database pool for testing.
     async fn test_pool() -> SqlitePool {
@@ -505,14 +601,16 @@ mod tests {
             .await
             .unwrap();
 
-        // Run migrations manually
-        pool.execute(include_str!("../../../migrations/001_initial.sql"))
+        // Run migrations manually (001 for schema, 004 for offline_since column)
+        sqlx::query(include_str!("../../../migrations/001_initial.sql"))
             .await
             .unwrap();
-        pool.execute("INSERT INTO schema_version (version) VALUES (1)")
+        sqlx::query(include_str!("../../../migrations/004__add_offline_since.sql"))
             .await
             .unwrap();
-        
+        sqlx::query("INSERT INTO schema_version (version) VALUES (4)")
+            .await
+            .unwrap();
         pool
     }
 
@@ -552,6 +650,7 @@ mod tests {
             status: "stopped".to_string(),
             created_at: "2025-01-01T00:00:00".to_string(),
             updated_at: "2025-01-01T00:00:00".to_string(),
+            offline_since: None,
         };
 
         // Create
@@ -641,6 +740,7 @@ mod tests {
             status: "stopped".to_string(),
             created_at: "".to_string(),
             updated_at: "".to_string(),
+            offline_since: None,
         };
         let result = update_camera(&pool, &camera).await;
         assert!(result.is_err(), "Updating nonexistent camera should fail");
@@ -669,7 +769,7 @@ mod tests {
         let pool = test_pool().await;
 
         // Create a camera first (FK constraint)
-        pool.execute(
+        sqlx::query(
             concat!(
             "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at) ",
             "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -725,7 +825,7 @@ mod tests {
         let pool = test_pool().await;
 
         // Create a camera first (FK constraint)
-        pool.execute(
+        sqlx::query(
             concat!(
             "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at) ",
             "VALUES ('cam-002', 'Test', 'usb', '{}', 'stopped', datetime('now'), datetime('now'));",
@@ -756,7 +856,7 @@ mod tests {
         let pool = test_pool().await;
 
         // Create a camera first (FK constraint)
-        pool.execute(
+        sqlx::query(
             concat!(
             "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at) ",
             "VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
@@ -772,7 +872,7 @@ mod tests {
         .unwrap();
 
         // Insert two open sessions with explicit timestamps to ensure ordering
-        pool.execute(
+        sqlx::query(
             concat!(
                 "INSERT INTO stream_sessions (id, camera_id, started_at) ",
                 "VALUES (?1, ?2, ?3)",
@@ -785,7 +885,7 @@ mod tests {
         .await
         .unwrap();
         
-        pool.execute(
+        sqlx::query(
             concat!(
                 "INSERT INTO stream_sessions (id, camera_id, started_at) ",
                 "VALUES (?1, ?2, ?3)",
@@ -832,13 +932,18 @@ mod tests {
 /// Test helper: creates in-memory SqlitePool and auth_db for testing
 /// Returns (pool, auth_db) where pool is for web CRUD and auth_db is for security operations
 #[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use tokio::sync::Mutex;
+
+#[cfg(test)]
 pub fn create_test_dbs() -> (SqlitePool, Arc<Mutex<rusqlite::Connection>>) {
-    // Create in-memory pool for web CRUD
-    let pool = SqlitePool::connect_with(
-        SqliteConnectOptions::from_str("sqlite::memory:").unwrap()
-            .create_if_missing(true)
-    )
-    .blocking_expect("Failed to create test pool");
+    let pool = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(SqlitePool::connect_with(
+            SqliteConnectOptions::from("sqlite::memory:")
+                .create_if_missing(true)
+        ))
+    }).expect("Failed to create test pool");
     
     // Create in-memory connection for auth operations
     let auth_db = Arc::new(Mutex::new(
