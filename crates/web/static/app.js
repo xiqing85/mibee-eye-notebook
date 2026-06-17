@@ -492,6 +492,7 @@ async function D() {
       return;
     }
     S.c = Array.isArray(r.data) ? r.data : [];
+    if (Array.isArray(r.data)) r.data.forEach(function(c) { if (c.rtsp_url) S.urls[c.id] = c.rtsp_url; });
     V();
     spoll();
   } catch (_) {
@@ -1089,7 +1090,8 @@ async function loadDevices() {
         ah += '<div class="device-card">' +
               '<div class="device-name">' + E(d.name) + '</div>';
         if (d.supported_configs && d.supported_configs.length > 0) {
-          ah += '<div class="device-info">' + t('devices.configs') + E(d.supported_configs.join(', ')) + '</div>';
+          var cfgs = d.supported_configs.map(function(c) { return c.channels + 'ch ' + Math.round(c.min_sample_rate) + '-' + Math.round(c.max_sample_rate) + 'Hz ' + c.sample_format; }).join(', ');
+          ah += '<div class="device-info">' + t('devices.configs') + E(cfgs) + '</div>';
         }
         ah += '</div>';
       });
@@ -1329,6 +1331,7 @@ function spoll() {
       let r = await A('GET', '/api/cameras');
       if (r.ok && Array.isArray(r.data)) {
         S.c = r.data;
+        r.data.forEach(function(c) { if (c.rtsp_url) S.urls[c.id] = c.rtsp_url; });
         V();
       }
     } catch (_) {}
@@ -1357,11 +1360,8 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('sf').addEventListener('submit', H);
   document.getElementById('lo').addEventListener('click', O);
 
-  // Theme/language toggles
-  let tt = document.getElementById('theme-toggle');
-  if (tt) tt.addEventListener('click', toggleTheme);
-  let lt = document.getElementById('lang-toggle');
-  if (lt) lt.addEventListener('click', toggleLang);
+  // Theme/language toggles — handled via onclick= in HTML template
+  // (double-registration with addEventListener causes toggle to fire twice, canceling itself)
 
   document.getElementById('mo').addEventListener('click', function(e) {
     if (e.target === this) cm();

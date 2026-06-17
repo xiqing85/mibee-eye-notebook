@@ -9,8 +9,11 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use std::sync::Arc;
+
 use crate::db::{self, CameraRow};
 use crate::errors::ApiError;
+use crate::stream_manager::StreamManager;
 use security::middleware::AuthenticatedUser;
 
 // ---------------------------------------------------------------------------
@@ -51,10 +54,13 @@ pub struct CameraResponse {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offline_since: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtsp_url: Option<String>,
 }
 
-impl From<CameraRow> for CameraResponse {
-    fn from(row: CameraRow) -> Self {
+impl CameraResponse {
+    /// Build a CameraResponse from a DB row, enriching with rtsp_url from active streams.
+    fn from_row(row: CameraRow, rtsp_url: Option<String>) -> Self {
         Self {
             id: row.id,
             name: row.name,
@@ -64,6 +70,7 @@ impl From<CameraRow> for CameraResponse {
             created_at: row.created_at,
             updated_at: row.updated_at,
             offline_since: row.offline_since,
+            rtsp_url,
         }
     }
 }
@@ -76,11 +83,23 @@ impl From<CameraRow> for CameraResponse {
 #[tracing::instrument(skip_all)]
 pub async fn list_cameras(
     Extension(db): Extension<SqlitePool>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> std::result::Result<impl IntoResponse, ApiError> {
     match db::list_cameras(&db).await {
         Ok(rows) => {
-            let cameras: Vec<CameraResponse> = rows.into_iter().map(CameraResponse::from).collect();
+            let active_streams = stream_manager.list_active_streams().await;
+            let url_map: std::collections::HashMap<String, String> = active_streams
+                .into_iter()
+                .filter_map(|s| s.rtsp_url.map(|u| (s.camera_id, u)))
+                .collect();
+            let cameras: Vec<CameraResponse> = rows
+                .into_iter()
+                .map(|row| {
+                    let url = url_map.get(&row.id).cloned();
+                    CameraResponse::from_row(row, url)
+                })
+                .collect();
             let value = serde_json::to_value(cameras)?;
             Ok((StatusCode::OK, Json(value)))
         }
@@ -95,12 +114,19 @@ pub async fn list_cameras(
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn get_camera(
     Extension(db): Extension<SqlitePool>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
 ) -> std::result::Result<impl IntoResponse, ApiError> {
     match db::get_camera(&db, &id).await {
         Ok(Some(row)) => {
-            let value = serde_json::to_value(CameraResponse::from(row))?;
+            let url = stream_manager
+                .list_active_streams()
+                .await
+                .into_iter()
+                .find(|s| s.camera_id == id)
+                .and_then(|s| s.rtsp_url);
+            let value = serde_json::to_value(CameraResponse::from_row(row, url))?;
             Ok((StatusCode::OK, Json(value)))
         }
         Ok(None) => Err(ApiError::not_found("camera not found")),
@@ -134,7 +160,7 @@ pub async fn create_camera(
 
     match db::create_camera(&db, &row).await {
         Ok(()) => {
-            let value = serde_json::to_value(CameraResponse::from(row))?;
+            let value = serde_json::to_value(CameraResponse::from_row(row, None))?;
             Ok((StatusCode::CREATED, Json(value)))
         }
         Err(e) => {
@@ -176,7 +202,7 @@ pub async fn update_camera(
 
     match db::update_camera(&db, &updated).await {
         Ok(()) => {
-            let value = serde_json::to_value(CameraResponse::from(updated))?;
+            let value = serde_json::to_value(CameraResponse::from_row(updated, None))?;
             Ok((StatusCode::OK, Json(value)))
         }
         Err(e) => {
