@@ -572,6 +572,7 @@ mod tests {
             rtsp_server,
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         (state, token, id)
     }
@@ -721,6 +722,7 @@ mod tests {
             rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
         };
         let app = crate::server::build_app_with_state(state);
 

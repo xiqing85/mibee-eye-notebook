@@ -51,6 +51,8 @@ futures-core = "0.3"
 base64 = "0.22"
 libc = "0.2"
 parking_lot = "0.12"
+udev = "0.9"
+schemars = { version = "0.8", features = ["chrono"] }
 
 [package]
 name = "mibee-rec"
@@ -77,5 +79,6 @@ security = { path = "crates/security" }
 rustls.workspace = true
 
 streaming = { path = "crates/streaming" }
+capture = { path = "crates/capture" }
 dirs = "6"
 libc.workspace = true
