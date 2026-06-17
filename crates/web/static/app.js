@@ -123,6 +123,7 @@ const I18N = {
     'camera.error_name': 'Name required.','camera.error_type': 'Type required.','camera.error_json': 'Invalid JSON.',
     'camera.device_label': 'USB Device','camera.use_as_camera': 'Use as Camera','camera.device_prefix': 'Device ',
     'camera.type_usb': 'USB','camera.type_rtsp': 'RTSP','camera.type_onvif': 'ONVIF','camera.type_gb28181': 'GB/T 28181','camera.type_rtmp': 'RTMP',
+    'camera.offline': 'Offline','camera.offline_since': 'Offline since',
     'camera_view.title': 'Camera','camera_view.loading': 'Loading...','camera_view.load_failed': 'Failed to load camera',
     'camera_view.no_stream': 'No Stream Available','camera_view.start_stream': 'Start the stream to see live preview',
     'camera_view.url_copied': 'RTSP URL copied','camera_view.url_copied_short': 'URL copied',
@@ -130,6 +131,7 @@ const I18N = {
     'caminfo.id': 'ID','caminfo.type': 'Type','caminfo.status': 'Status','caminfo.created': 'Created',
     'stream.started': 'Stream started','stream.stopped': 'Stream stopped',
     'stream.start': 'Start','stream.stop': 'Stop','stream.view': 'View','stream.edit': 'Edit','stream.delete': 'Delete','stream.copy': 'Copy',
+    'sse.camera_added': 'Camera came online','sse.camera_removed': 'Camera removed','sse.camera_offline': 'Camera went offline',
     'settings.title': 'Settings','settings.subtitle': 'Configure system settings','settings.save': 'Save Changes','settings.saving': 'Saving...',
     'settings.saved': 'Settings saved','settings.loading': 'Loading settings...','settings.load_failed': 'Failed to load settings',
     'settings.server': 'Server','settings.web_port': 'Web UI Port','settings.rtsp_port': 'RTSP Port','settings.mibee': 'MiBee NVR',
@@ -138,6 +140,8 @@ const I18N = {
     'settings.change_password': 'Change Password','settings.current_password': 'Current Password','settings.new_password': 'New Password','settings.confirm_new_password': 'Confirm New Password',
     'settings.change_password_btn': 'Change Password','settings.changing': 'Changing...','settings.password_changed': 'Password changed. Please sign in again.',
     'settings.password_mismatch': 'Passwords do not match.','settings.password_length': 'Password must be at least 8 characters.','settings.fields_required': 'All fields are required.',
+    'settings.tab_server': 'Server','settings.tab_recording': 'Recording','settings.tab_protocols': 'Protocols','settings.tab_security': 'Security',
+    'a11y.skip_to_content': 'Skip to content',
     'protocol.onvif': 'ONVIF Configuration','protocol.gb28181': 'GB28181 Configuration','protocol.rtmp': 'RTMP Push Configuration',
     'protocol.enabled': 'Enabled','protocol.port': 'Port','protocol.device_name': 'Device Name','protocol.device_id': 'Device ID',
     'protocol.server_ip': 'Server IP','protocol.server_port': 'Server Port','protocol.url': 'Push URL',
@@ -163,6 +167,9 @@ const I18N = {
     'protocol.device_id_ph': '34020000001320000101','protocol.server_ip_ph': '192.168.1.100','protocol.server_port_ph': '5060','protocol.url_ph': 'rtmp://nvr-host:1935/live/stream',
     'protocol.save_onvif': 'Save ONVIF','protocol.save_gb28181': 'Save GB28181','protocol.save_rtmp': 'Save RTMP',
     'theme.toggle': 'Toggle theme','lang.toggle': 'Switch language','lang.en': 'EN','lang.zh': '\u4e2d',
+    'snapshot.btn': 'Snapshot','snapshot.saving': 'Capturing...','snapshot.saved': 'Snapshot saved',
+    'record.start': 'Start Recording','record.stop': 'Stop Recording','record.started': 'Recording started','record.stopped': 'Recording stopped',
+    'protocols.enable': 'Enable','protocols.toggle_on': '{name} enabled','protocols.toggle_off': '{name} disabled',
   },
   'zh': {
     'nav.brand': 'mibee-rec','nav.cameras': '\u6444\u50cf\u5934','nav.settings': '\u8bbe\u7f6e',
@@ -189,6 +196,7 @@ const I18N = {
     'camera.error_name': '\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002','camera.error_type': '\u7c7b\u578b\u4e0d\u80fd\u4e3a\u7a7a\u3002','camera.error_json': 'JSON\u683c\u5f0f\u65e0\u6548\u3002',
     'camera.device_label': 'USB\u8bbe\u5907','camera.use_as_camera': '\u4f5c\u4e3a\u6444\u50cf\u5934','camera.device_prefix': '\u8bbe\u5907 ',
     'camera.type_usb': 'USB','camera.type_rtsp': 'RTSP','camera.type_onvif': 'ONVIF','camera.type_gb28181': 'GB/T 28181','camera.type_rtmp': 'RTMP',
+    'camera.offline': '离线','camera.offline_since': '离线时间',
     'camera_view.title': '\u6444\u50cf\u5934','camera_view.loading': '\u52a0\u8f7d\u4e2d...','camera_view.load_failed': '\u52a0\u8f7d\u6444\u50cf\u5934\u5931\u8d25',
     'camera_view.no_stream': '\u65e0\u53ef\u7528\u6d41','camera_view.start_stream': '\u542f\u52a8\u6d41\u540e\u53ef\u67e5\u770b\u5b9e\u65f6\u9884\u89c8',
     'camera_view.url_copied': 'RTSP\u5730\u5740\u5df2\u590d\u5236','camera_view.url_copied_short': '\u94fe\u63a5\u5df2\u590d\u5236',
@@ -196,6 +204,7 @@ const I18N = {
     'caminfo.id': '\u7f16\u53f7','caminfo.type': '\u7c7b\u578b','caminfo.status': '\u72b6\u6001','caminfo.created': '\u521b\u5efa\u65f6\u95f4',
     'stream.started': '\u6d41\u5df2\u542f\u52a8','stream.stopped': '\u6d41\u5df2\u505c\u6b62',
     'stream.start': '\u542f\u52a8','stream.stop': '\u505c\u6b62','stream.view': '\u67e5\u770b','stream.edit': '\u7f16\u8f91','stream.delete': '\u5220\u9664','stream.copy': '\u590d\u5236',
+    'sse.camera_added': '摄像头已上线','sse.camera_removed': '摄像头已移除','sse.camera_offline': '摄像头已离线',
     'settings.title': '\u8bbe\u7f6e','settings.subtitle': '\u914d\u7f6e\u7cfb\u7edf\u53c2\u6570','settings.save': '\u4fdd\u5b58\u8bbe\u7f6e','settings.saving': '\u4fdd\u5b58\u4e2d...',
     'settings.saved': '\u8bbe\u7f6e\u5df2\u4fdd\u5b58','settings.loading': '\u52a0\u8f7d\u8bbe\u7f6e...','settings.load_failed': '\u52a0\u8f7d\u8bbe\u7f6e\u5931\u8d25',
     'settings.server': '\u670d\u52a1\u5668','settings.web_port': 'Web UI\u7aef\u53e3','settings.rtsp_port': 'RTSP\u7aef\u53e3','settings.mibee': 'MiBee \u786c\u76d8\u5f55\u50cf\u673a',
@@ -204,6 +213,8 @@ const I18N = {
     'settings.change_password': '\u4fee\u6539\u5bc6\u7801','settings.current_password': '\u5f53\u524d\u5bc6\u7801','settings.new_password': '\u65b0\u5bc6\u7801','settings.confirm_new_password': '\u786e\u8ba4\u65b0\u5bc6\u7801',
     'settings.change_password_btn': '\u4fee\u6539\u5bc6\u7801','settings.changing': '\u4fee\u6539\u4e2d...','settings.password_changed': '\u5bc6\u7801\u5df2\u4fee\u6539\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002',
     'settings.password_mismatch': '\u5bc6\u7801\u4e0d\u5339\u914d\u3002','settings.password_length': '\u5bc6\u7801\u81f3\u5c11\u9700\u89818\u4e2a\u5b57\u7b26\u3002','settings.fields_required': '\u6240\u6709\u5b57\u6bb5\u5747\u4e3a\u5fc5\u586b\u3002',
+    'settings.tab_server': '\u670d\u52a1\u5668','settings.tab_recording': '\u5f55\u5236','settings.tab_protocols': '\u534f\u8bae','settings.tab_security': '\u5b89\u5168',
+    'a11y.skip_to_content': '\u8df3\u5230\u4e3b\u8981\u5185\u5bb9',
     'protocol.onvif': 'ONVIF \u914d\u7f6e','protocol.gb28181': 'GB28181 \u914d\u7f6e','protocol.rtmp': 'RTMP \u63a8\u6d41\u914d\u7f6e',
     'protocol.enabled': '\u542f\u7528','protocol.port': '\u7aef\u53e3','protocol.device_name': '\u8bbe\u5907\u540d\u79f0','protocol.device_id': '\u8bbe\u5907\u7f16\u53f7',
     'protocol.server_ip': '\u670d\u52a1\u5668IP','protocol.server_port': '\u670d\u52a1\u5668\u7aef\u53e3','protocol.url': '\u63a8\u6d41\u5730\u5740',
@@ -229,13 +240,16 @@ const I18N = {
     'protocol.device_id_ph': '34020000001320000101','protocol.server_ip_ph': '192.168.1.100','protocol.server_port_ph': '5060','protocol.url_ph': 'rtmp://nvr-host:1935/live/stream',
     'protocol.save_onvif': '保存ONVIF','protocol.save_gb28181': '保存GB28181','protocol.save_rtmp': '保存RTMP',
     'theme.toggle': '\u5207\u6362\u4e3b\u9898','lang.toggle': '\u5207\u6362\u8bed\u8a00','lang.en': 'EN','lang.zh': '\u4e2d',
+    'snapshot.btn': '截图','snapshot.saving': '截图中...','snapshot.saved': '截图已保存',
+    'record.start': '开始录像','record.stop': '停止录像','record.started': '录像已开始','record.stopped': '录像已停止',
+    'protocols.enable': '启用','protocols.toggle_on': '{name} 已启用','protocols.toggle_off': '{name} 已禁用',
   }
 };
 
 // ============================================================
 // STATE
 // ============================================================
-let S = { a: 0, c: [], s: {}, dc: null, urls: {}, lf: null };
+let S = { a: 0, c: [], s: {}, dc: null, urls: {}, lf: null, cc: null, rec: false };
 // Toast queue for FIFO capping (F12)
 let q = [];
 
@@ -502,13 +516,16 @@ function V() {
     let bc = 'bg-' + (
       c.status === 'running' ? 'r' :
       c.status === 'stopped'  ? 'p' :
+      c.status === 'offline'  ? 'off' :
       'e'
     );
+    let sl = c.status === 'offline' ? t('camera.offline') : c.status;
+    let ost = c.status === 'offline' && c.offline_since ? ' title="' + t('camera.offline_since') + ': ' + E(c.offline_since) + '"' : '';
     let id = encodeURIComponent(c.id);
     tr.innerHTML =
       '<td data-label="' + t('table.name') + '"><a href="#/c/' + id + '" style=font-weight:500>' + E(c.name) + '</a></td>' +
       '<td data-label="' + t('table.type') + '"><span class=tm style="font-family:var(--mo);font-size:.857rem">' + E(F(c.camera_type)) + '</span></td>' +
-      '<td data-label="' + t('table.status') + '"><span class="bg ' + bc + '">' + E(c.status) + '</span></td>' +
+      '<td data-label="' + t('table.status') + '"><span class="bg ' + bc + '"' + ost + '>' + E(sl) + '</span></td>' +
       '<td data-label="' + t('table.stream_url') + '">' + (
         c.status === 'running'
           ? '<div style="display:flex;align-items:center;gap:var(--s4)">' +
@@ -516,17 +533,17 @@ function V() {
             E(S.urls[c.id] || t('table.url_unavailable')) +
             '</code>' +
             '<button class="b bsm bs" data-url="' + J(S.urls[c.id] || '') + '" ' +
-            'onclick="copyUrl(this.dataset.url)" aria-label="' + t('stream.copy') + '">' + t('stream.copy') + '</button></div>'
+            'onclick="copyUrl(this.dataset.url)" aria-label="' + t('stream.copy') + ' ' + E(c.name) + '">' + t('stream.copy') + '</button></div>'
           : '-'
       ) + '</td>' +
       '<td data-label="' + t('table.actions') + '" class=ca>' +
         (c.status === 'running'
-          ? '<button class="b bd bsm" onclick=w("' + id + '") aria-label="' + t('stream.stop') + '">' + t('stream.stop') + '</button>'
-          : '<button class="b bp bsm" onclick=Y("' + id + '") aria-label="' + t('stream.start') + '">' + t('stream.start') + '</button>'
+          ? '<button class="b bd bsm" onclick=w("' + id + '") aria-label="' + t('stream.stop') + ' ' + E(c.name) + '">' + t('stream.stop') + '</button>'
+          : '<button class="b bp bsm" onclick=Y("' + id + '") aria-label="' + t('stream.start') + ' ' + E(c.name) + '">' + t('stream.start') + '</button>'
         ) +
-        '<button class="b bs bsm" onclick=K("' + id + '") aria-label="' + t('stream.view') + '">' + t('stream.view') + '</button>' +
-        '<button class="b bs bsm" onclick=ec(' + id + ') aria-label="' + t('stream.edit') + '">' + t('stream.edit') + '</button>' +
-        '<button class="b bd bsm" onclick=x("' + id + '","' + J(c.name) + '") aria-label="' + t('stream.delete') + '">' + t('stream.delete') + '</button>' +
+        '<button class="b bs bsm" onclick=K("' + id + '") aria-label="' + t('stream.view') + ' ' + E(c.name) + '">' + t('stream.view') + '</button>' +
+        '<button class="b bs bsm" onclick=ec(' + id + ') aria-label="' + t('stream.edit') + ' ' + E(c.name) + '">' + t('stream.edit') + '</button>' +
+        '<button class="b bd bsm" onclick=x("' + id + '","' + J(c.name) + '") aria-label="' + t('stream.delete') + ' ' + E(c.name) + '">' + t('stream.delete') + '</button>' +
       '</td>';
     b.appendChild(tr);
   });
@@ -735,6 +752,7 @@ async function K(id) {
       return;
     }
     let c = r.data;
+    S.cc = c.id;
     // Re-assert camera view after fetch — something may have reverted to dashboard during await
     P('cam');
     setText('cn', c.name);
@@ -756,6 +774,10 @@ async function K(id) {
         pv.innerHTML = '<div class=vi>&#x25B6;</div><h3>' + t('camera_view.no_stream') + '</h3><p class=tm>' + t('camera_view.start_stream') + '</p><button class="b bp" onclick=vY("' + encodeURIComponent(c.id) + '") style=margin-top:var(--s16) data-i18n="stream.start">' + t('stream.start') + '</button>';
       }
     }
+    // Enable snapshot only when stream is running; sync recording controls.
+    let snap = document.getElementById('snap-btn');
+    if (snap) snap.disabled = (c.status !== 'running');
+    loadRecState();
     // Re-assert camera view at the end of try block
     P('cam');
     _k = false;
@@ -773,6 +795,94 @@ function kE(id) {
   if (pv) {
     pv.innerHTML = '<div class=vi>&#x25B6;</div><h3>' + t('camera_view.no_stream') + '</h3><p class=tm>' + t('camera_view.start_stream') + '</p><button class="b bp" onclick=vY("' + id + '") style=margin-top:var(--s16) data-i18n="stream.start">' + t('stream.start') + '</button>';
   }
+}
+
+// ============================================================
+// SNAPSHOT & RECORDING CONTROLS
+// ============================================================
+async function takeSnapshot() {
+  let id = S.cc;
+  if (!id) return;
+  let btn = document.getElementById('snap-btn');
+  if (btn) { btn.disabled = 1; btn.textContent = t('snapshot.saving'); }
+  try {
+    let res = await fetch('/api/cameras/' + encodeURIComponent(id) + '/snapshot', {
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }
+    });
+    if (res.status === 401 && S.a) {
+      S.a = 0; T(t('session.expired'), 'i');
+      setTimeout(function() { N(0); P('login'); window.location.hash = '#login'; }, 1500);
+      return;
+    }
+    if (!res.ok) {
+      let d = null;
+      try { d = await res.json(); } catch (_) {}
+      T((d && d.error) ? d.error : t('error.failed'), 'e');
+      return;
+    }
+    let blob = await res.blob();
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement('a');
+    a.href = url;
+    a.download = 'snapshot-' + id + '-' + Date.now() + '.jpg';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    T(t('snapshot.saved'), 's');
+  } catch (_) {
+    T(t('error.network'), 'e');
+  } finally {
+    if (btn) { btn.disabled = 0; btn.textContent = t('snapshot.btn'); }
+  }
+}
+
+async function startRecording() { await toggleRecording(true); }
+async function stopRecording() { await toggleRecording(false); }
+
+async function toggleRecording(en) {
+  let id = S.cc;
+  if (!id) return;
+  let startBtn = document.getElementById('rec-start');
+  let stopBtn = document.getElementById('rec-stop');
+  let active = en ? startBtn : stopBtn;
+  if (active) active.disabled = 1;
+  try {
+    let r = await A('PUT', '/api/protocols/recording', { enabled: en });
+    if (r.ok) {
+      S.rec = en;
+      syncRecButtons();
+      T(en ? t('record.started') : t('record.stopped'), 's');
+    } else {
+      T(r.data && r.data.error ? r.data.error : t('error.failed'), 'e');
+    }
+  } catch (_) {
+    T(t('error.network'), 'e');
+  } finally {
+    if (startBtn) startBtn.disabled = 0;
+    if (stopBtn) stopBtn.disabled = 0;
+  }
+}
+
+function syncRecButtons() {
+  let s = document.getElementById('rec-start');
+  let p = document.getElementById('rec-stop');
+  if (s) s.classList.toggle('h', S.rec);
+  if (p) p.classList.toggle('h', !S.rec);
+}
+
+async function loadRecState() {
+  S.rec = false;
+  syncRecButtons();
+  if (!S.cc) return;
+  try {
+    let r = await A('GET', '/api/protocols/recording');
+    if (r.ok && r.data) {
+      S.rec = (r.data.enabled === true || r.data.enabled === 'true');
+    }
+  } catch (_) {}
+  syncRecButtons();
 }
 
 function cr() {
@@ -847,6 +957,21 @@ function setupDeviceSelector() {
     } else {
       dg.classList.add('h');
     }
+  });
+}
+
+// ============================================================
+// SETTINGS TABS
+// ============================================================
+function switchTab(name) {
+  document.querySelectorAll('[role="tab"]').forEach(function(tab) {
+    let active = tab.dataset.tab === name;
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    tab.classList.toggle('active', active);
+    tab.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('[role="tabpanel"]').forEach(function(panel) {
+    panel.classList.toggle('h', panel.dataset.panel !== name);
   });
 }
 
@@ -1140,6 +1265,9 @@ async function lp() {
           let el = document.getElementById(prefix + (map[k] || k));
           if (el) el.value = r.data[k];
         });
+        // Sync the quick-toggle switch from the loaded enabled flag.
+        let tog = document.getElementById(p + '-toggle');
+        if (tog) tog.checked = (r.data.enabled === true || r.data.enabled === 'true');
       }
     } catch (_) {}
   });
@@ -1165,6 +1293,32 @@ async function sp(p) {
 }
 
 // ============================================================
+// PROTOCOL HOT-TOGGLE
+// ============================================================
+async function toggleProtocol(name, checked) {
+  let toggle = document.getElementById(name + '-toggle');
+  if (toggle) toggle.disabled = 1;
+  try {
+    let r = await A('PUT', '/api/protocols/' + name, { enabled: checked });
+    if (r.ok) {
+      T(t(checked ? 'protocols.toggle_on' : 'protocols.toggle_off').replace('{name}', name.toUpperCase()), 's');
+      // Keep the legacy Enabled dropdown in sync.
+      let prefix = { onvif: 'onv-', gb28181: 'gb-', rtmp: 'rtmp-' }[name];
+      let sel = document.getElementById(prefix + 'enabled');
+      if (sel) sel.value = String(checked);
+    } else {
+      if (toggle) toggle.checked = !checked;
+      T(r.data && r.data.error ? r.data.error : t('error.failed'), 'e');
+    }
+  } catch (_) {
+    if (toggle) toggle.checked = !checked;
+    T(t('error.network'), 'e');
+  } finally {
+    if (toggle) toggle.disabled = 0;
+  }
+}
+
+// ============================================================
 // AUTO-REFRESH DASHBOARD (F11)
 // ============================================================
 function spoll() {
@@ -1182,6 +1336,19 @@ function spoll() {
 }
 
 function spoll_stop() { if (pi) { clearInterval(pi); pi = null; } }
+
+// ============================================================
+// SSE — real-time camera events (reconnect on error)
+// ============================================================
+let _es = null;
+function initSSE() {
+  try { if (_es) _es.close(); } catch (_) {}
+  _es = new EventSource('/api/events');
+  _es.addEventListener('camera_added', function() { D(); T(t('sse.camera_added'), 's'); });
+  _es.addEventListener('camera_removed', function() { D(); T(t('sse.camera_removed'), 'i'); });
+  _es.addEventListener('camera_offline', function() { D(); T(t('sse.camera_offline'), 'e'); });
+  _es.onerror = function() { try { _es.close(); } catch (_) {} setTimeout(initSSE, 5000); };
+}
 
 // EVENT BINDING
 // ============================================================
@@ -1224,10 +1391,16 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 
+  // Settings tab switching
+  document.querySelectorAll('[role="tab"]').forEach(function(tab) {
+    tab.addEventListener('click', function() { switchTab(tab.dataset.tab); });
+  });
+
   window.addEventListener('hashchange', r);
   setupDeviceSelector();
   initThemeAndLang();
   i();
+  initSSE();
 });
 
 // Expose functions for onclick handlers in HTML
@@ -1253,5 +1426,10 @@ window.toggleLang = toggleLang;
 window.translatePage = translatePage;
 window.vY = vY;
 window.K = K;
+window.switchTab = switchTab;
+window.takeSnapshot = takeSnapshot;
+window.startRecording = startRecording;
+window.stopRecording = stopRecording;
+window.toggleProtocol = toggleProtocol;
 
 })();

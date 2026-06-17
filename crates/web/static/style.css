@@ -469,6 +469,8 @@ tr:last-child td { border-bottom: none; }
 .bg-r::before { background: var(--ac); }
 .bg-e { background: var(--dd); color: var(--da); }
 .bg-e::before { background: var(--da); }
+.bg-off { background: var(--t2); color: var(--sf); }
+.bg-off::before { background: var(--sf); }
 
 /* ============================================================
    MODAL
@@ -598,6 +600,51 @@ tr:last-child td { border-bottom: none; }
   border-bottom: 1px solid var(--bd);
 }
 
+/* Skip-nav link (accessibility) */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--ac);
+  color: var(--bg);
+  padding: var(--s8) var(--s16);
+  z-index: 100;
+  border-radius: 0 0 var(--r6) 0;
+  font-weight: 500;
+  font-size: 0.929rem;
+  transition: top var(--tr);
+}
+.skip-link:focus { top: 0; }
+
+/* Settings tabs (ARIA tablist) */
+.tabs {
+  display: flex;
+  gap: var(--s4);
+  border-bottom: 2px solid var(--bd);
+  margin-bottom: var(--s24);
+  flex-wrap: wrap;
+}
+.tab {
+  padding: var(--s8) var(--s16);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  color: var(--t2);
+  font-family: var(--ss);
+  font-size: 0.929rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--tr);
+  border-radius: var(--r6) var(--r6) 0 0;
+}
+.tab:hover { color: var(--t1); background: var(--ho); }
+.tab.active {
+  color: var(--ac);
+  border-bottom-color: var(--ac);
+}
+.tabpanel { display: flex; flex-direction: column; gap: var(--s24); }
+
 /* ============================================================
    SPINNER
    ============================================================ */
@@ -670,6 +717,20 @@ tr:last-child td { border-bottom: none; }
    ============================================================ */
 .cs { background: var(--sf); border-radius: var(--r10); padding: var(--s24); margin-bottom: var(--s24); }
 .cs.col .cs-body { display: none; }
+
+/* ============================================================
+   TOGGLE SWITCH & CAMERA CONTROL BAR
+   ============================================================ */
+.ccb { display: flex; gap: var(--s8); flex-wrap: wrap; margin-top: var(--s16); }
+.tr { margin-bottom: var(--s16); }
+.sw { display: inline-flex; align-items: center; gap: var(--s8); cursor: pointer; user-select: none; font-size: 0.929rem; font-weight: 500; color: var(--t1); }
+.sw input { position: absolute; opacity: 0; width: 0; height: 0; }
+.st { position: relative; width: 40px; height: 22px; background: var(--bd); border-radius: 11px; transition: background var(--tr); flex-shrink: 0; }
+.st::before { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; background: var(--t1); border-radius: 50%; transition: transform var(--tr); }
+.sw input:checked + .st { background: var(--ok); }
+.sw input:checked + .st::before { transform: translateX(18px); }
+.sw input:focus-visible + .st { outline: 2px solid var(--ac); outline-offset: 2px; }
+.sw input:disabled + .st { opacity: 0.5; }
 
 /* ============================================================
    RESPONSIVE (1024px+ optimized)
