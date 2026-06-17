@@ -477,6 +477,8 @@ tr:last-child td { border-bottom: none; }
 .bg-r::before { background: var(--ac); }
 .bg-e { background: var(--dd); color: var(--da); }
 .bg-e::before { background: var(--da); }
+.bg-off { background: var(--t2); color: var(--sf); }
+.bg-off::before { background: var(--sf); }
 
 /* ============================================================
    MODAL
@@ -606,6 +608,51 @@ tr:last-child td { border-bottom: none; }
   border-bottom: 1px solid var(--bd);
 }
 
+/* Skip-nav link (accessibility) */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--ac);
+  color: var(--bg);
+  padding: var(--s8) var(--s16);
+  z-index: 100;
+  border-radius: 0 0 var(--r6) 0;
+  font-weight: 500;
+  font-size: 0.929rem;
+  transition: top var(--tr);
+}
+.skip-link:focus { top: 0; }
+
+/* Settings tabs (ARIA tablist) */
+.tabs {
+  display: flex;
+  gap: var(--s4);
+  border-bottom: 2px solid var(--bd);
+  margin-bottom: var(--s24);
+  flex-wrap: wrap;
+}
+.tab {
+  padding: var(--s8) var(--s16);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  color: var(--t2);
+  font-family: var(--ss);
+  font-size: 0.929rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--tr);
+  border-radius: var(--r6) var(--r6) 0 0;
+}
+.tab:hover { color: var(--t1); background: var(--ho); }
+.tab.active {
+  color: var(--ac);
+  border-bottom-color: var(--ac);
+}
+.tabpanel { display: flex; flex-direction: column; gap: var(--s24); }
+
 /* ============================================================
    SPINNER
    ============================================================ */
@@ -680,6 +727,20 @@ tr:last-child td { border-bottom: none; }
 .cs.col .cs-body { display: none; }
 
 /* ============================================================
+   TOGGLE SWITCH & CAMERA CONTROL BAR
+   ============================================================ */
+.ccb { display: flex; gap: var(--s8); flex-wrap: wrap; margin-top: var(--s16); }
+.tr { margin-bottom: var(--s16); }
+.sw { display: inline-flex; align-items: center; gap: var(--s8); cursor: pointer; user-select: none; font-size: 0.929rem; font-weight: 500; color: var(--t1); }
+.sw input { position: absolute; opacity: 0; width: 0; height: 0; }
+.st { position: relative; width: 40px; height: 22px; background: var(--bd); border-radius: 11px; transition: background var(--tr); flex-shrink: 0; }
+.st::before { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; background: var(--t1); border-radius: 50%; transition: transform var(--tr); }
+.sw input:checked + .st { background: var(--ok); }
+.sw input:checked + .st::before { transform: translateX(18px); }
+.sw input:focus-visible + .st { outline: 2px solid var(--ac); outline-offset: 2px; }
+.sw input:disabled + .st { opacity: 0.5; }
+
+/* ============================================================
    RESPONSIVE (1024px+ optimized)
    ============================================================ */
 @media (min-width: 1024px) {
@@ -712,9 +773,10 @@ td::before { content: attr(data-label); color: var(--t3); font-weight: 600; marg
 </style>
 </head>
 <body>
-<div id=to class=to></div>
+<a href="#main" class="skip-link" data-i18n="a11y.skip_to_content">Skip to content</a>
+<div id=to class=to role="status" aria-live="polite"></div>
 <nav id=nv class="nv h" aria-label="Main navigation"><div class=nb>mibee-rec</div><button class=hb id=hbtn aria-label="Toggle navigation menu" aria-expanded="false"><svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg></button><div class=nl><a href="#db" class=nl data-i18n="nav.cameras">Cameras</a><a href="#st" class=nl data-i18n="nav.settings">Settings</a><a href="#dv" class=nl data-i18n="nav.devices">Devices</a></div><div class=nr><button id=theme-toggle aria-label="Toggle theme" onclick=toggleTheme()><svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg></button><button id=lang-toggle aria-label="Switch language" onclick=toggleLang() style="font-family:var(--mo);font-weight:600">\u4e2d</button><button id=lo aria-label="Logout" data-i18n="nav.logout">Logout</button></div></nav>
-<main>
+<main id="main">
 
 <section id=pg-login class="pg ap">
 <div class=ac><div class=lg>mibee-rec</div><h1 data-i18n="login.title">Sign In</h1><p class=st data-i18n="login.subtitle">Camera surveillance management</p><div id=le class=ae></div>
@@ -739,25 +801,34 @@ td::before { content: attr(data-label); color: var(--t3); font-weight: 600; marg
 
 <section id=pg-cam class=pg>
 <div class=ph><div><h1 id=cn data-i18n="camera_view.title">Camera</h1><p id=cs data-i18n="camera_view.loading">Loading...</p></div><button class="b bs" onclick=G("#db") aria-label="Back to dashboard" data-i18n="camera_view.back">&larr; Back</button></div>
-<div class=lv><div class=vp id=pv><div class=vi>&#x25B6;</div><h3 data-i18n="camera_view.no_stream">No Stream Available</h3><p class=tm data-i18n="camera_view.ext_player">Use external RTSP player</p></div><code id=ru style="font-family:var(--mo);font-size:.857rem;background:var(--in);padding:var(--s8) var(--s16);border-radius:var(--r6);border:1px solid var(--bd)"></code><button class="b bs bsm" onclick=cr() style=margin-top:var(--s8) aria-label="Copy RTSP URL to clipboard" data-i18n="camera_view.copy_rtsp">Copy RTSP URL</button></div>
+<div class=lv><div class=vp id=pv><div class=vi>&#x25B6;</div><h3 data-i18n="camera_view.no_stream">No Stream Available</h3><p class=tm data-i18n="camera_view.ext_player">Use external RTSP player</p></div><div class=ccb id=cam-ctrl><button id=snap-btn class="b bs" onclick=takeSnapshot() aria-label="Take snapshot" data-i18n="snapshot.btn">Snapshot</button><button id=rec-start class="b bp" onclick=startRecording() aria-label="Start recording" data-i18n="record.start">Start Recording</button><button id=rec-stop class="b bd h" onclick=stopRecording() aria-label="Stop recording" data-i18n="record.stop">Stop Recording</button></div><code id=ru style="font-family:var(--mo);font-size:.857rem;background:var(--in);padding:var(--s8) var(--s16);border-radius:var(--r6);border:1px solid var(--bd)"></code><button class="b bs bsm" onclick=cr() style=margin-top:var(--s8) aria-label="Copy RTSP URL to clipboard" data-i18n="camera_view.copy_rtsp">Copy RTSP URL</button></div>
 <div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=ig><div class=ii><span class=l data-i18n="caminfo.id">ID</span><span class=v id=ci->-</span></div><div class=ii><span class=l data-i18n="caminfo.type">Type</span><span class=v id=cit>-</span></div><div class=ii><span class=l data-i18n="caminfo.status">Status</span><span class=v id=cis>-</span></div><div class=ii><span class=l data-i18n="caminfo.created">Created</span><span class=v id=cic>-</span></div></div></div></div></section>
 
 <section id=pg-st class=pg>
 <div class=ph><div><h1 data-i18n="settings.title">Settings</h1><p class=tm data-i18n="settings.subtitle">Configure system settings</p></div><button class="b bp" onclick=Q() id=sb data-i18n="settings.save">Save Changes</button></div>
 <div id=sl class=ld><div class=sp></div><span data-i18n="settings.loading">Loading settings...</span></div>
-<form id=sfm class="sg h"><div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3 data-i18n="settings.server">Server</h3></div>
+<form id=sfm class="sg h"><div role="tablist" class="tabs"><button type="button" role="tab" id="tab-server" data-tab="server" aria-selected="true" aria-controls="panel-server" class="tab active" data-i18n="settings.tab_server">Server</button><button type="button" role="tab" id="tab-recording" data-tab="recording" aria-selected="false" aria-controls="panel-recording" class="tab" tabindex="-1" data-i18n="settings.tab_recording">Recording</button><button type="button" role="tab" id="tab-protocols" data-tab="protocols" aria-selected="false" aria-controls="panel-protocols" class="tab" tabindex="-1" data-i18n="settings.tab_protocols">Protocols</button><button type="button" role="tab" id="tab-security" data-tab="security" aria-selected="false" aria-controls="panel-security" class="tab" tabindex="-1" data-i18n="settings.tab_security">Security</button></div>
+<div role="tabpanel" id="panel-server" data-panel="server" aria-labelledby="tab-server" class="tabpanel">
+<div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3 data-i18n="settings.server">Server</h3></div>
 <div class=fg><label for=swp data-i18n="settings.web_port">Web UI Port</label><input type=number id=swp data-i18n-placeholder="settings.web_port_ph" placeholder=9090></div>
 <div class=fg><label for=srp data-i18n="settings.rtsp_port">RTSP Port</label><input type=number id=srp data-i18n-placeholder="settings.rtsp_port_ph" placeholder=8554></div></div>
 <div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3 data-i18n="settings.mibee">MiBee NVR</h3></div>
 <div class=fg><label for=smu data-i18n="settings.mibee_url">MiBee URL</label><input type=url id=smu data-i18n-placeholder="settings.mibee_url_ph" placeholder="http://192.168.1.100:9090"></div>
 <div class=fg><label for=smk data-i18n="settings.mibee_api_key">MiBee API Key</label><input type=password id=smk data-i18n-placeholder="settings.mibee_api_key_ph" placeholder=Optional></div></div>
+</div>
+<div role="tabpanel" id="panel-recording" data-panel="recording" aria-labelledby="tab-recording" class="tabpanel h">
 <div style=background:var(--sf);border:1px solid var(--bd);border-radius:var(--r10);padding:var(--s24)><div class=sh><h3 data-i18n="settings.recording">Recording</h3></div>
 <div class=fg><label for=srp2 data-i18n="settings.recordings_path">Recordings Path</label><input type=text id=srp2 data-i18n-placeholder="settings.recordings_path_ph" placeholder=/var/lib/mibee-rec/recordings></div>
 <div class=fg><label for=smd data-i18n="settings.max_segment_duration">Max Segment Duration (s)</label><input type=number id=smd data-i18n-placeholder="settings.max_segment_ph" placeholder=300></div></div>
+</div>
+<div role="tabpanel" id="panel-protocols" data-panel="protocols" aria-labelledby="tab-protocols" class="tabpanel h">
+<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.onvif">ONVIF Configuration</h3><div class=cs-body id=onvif-cfg><div class="tr"><label class=sw><input type=checkbox id=onvif-toggle onchange="toggleProtocol('onvif',this.checked)"><span class=st aria-hidden=true></span><span data-i18n="protocols.enable">Enable</span></label></div><div class=fg><label for=onv-enabled data-i18n="protocol.enabled">Enabled</label><select id=onv-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=onv-port data-i18n="protocol.port">Port</label><input type=number id=onv-port data-i18n-placeholder="protocol.port_ph" placeholder=3702></div><div class=fg><label for=onv-device-name data-i18n="protocol.device_name">Device Name</label><input id=onv-device-name data-i18n-placeholder="protocol.device_name_ph" placeholder=mibee-rec></div><button class="b bp" onclick=sp('onvif') data-i18n="protocol.save_onvif">Save ONVIF</button></div></div>
+<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.gb28181">GB28181 Configuration</h3><div class=cs-body id=gb-cfg><div class="tr"><label class=sw><input type=checkbox id=gb28181-toggle onchange="toggleProtocol('gb28181',this.checked)"><span class=st aria-hidden=true></span><span data-i18n="protocols.enable">Enable</span></label></div><div class=fg><label for=gb-enabled data-i18n="protocol.enabled">Enabled</label><select id=gb-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=gb-device-id data-i18n="protocol.device_id">Device ID</label><input id=gb-device-id data-i18n-placeholder="protocol.device_id_ph" placeholder="34020000001320000101"></div><div class=fg><label for=gb-server-ip data-i18n="protocol.server_ip">Server IP</label><input id=gb-server-ip data-i18n-placeholder="protocol.server_ip_ph" placeholder="192.168.1.100"></div><div class=fg><label for=gb-server-port data-i18n="protocol.server_port">Server Port</label><input type=number id=gb-server-port data-i18n-placeholder="protocol.server_port_ph" placeholder=5060></div><button class="b bp" onclick=sp('gb28181') data-i18n="protocol.save_gb28181">Save GB28181</button></div></div>
+<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.rtmp">RTMP Push Configuration</h3><div class=cs-body id=rtmp-cfg><div class="tr"><label class=sw><input type=checkbox id=rtmp-toggle onchange="toggleProtocol('rtmp',this.checked)"><span class=st aria-hidden=true></span><span data-i18n="protocols.enable">Enable</span></label></div><div class=fg><label for=rtmp-enabled data-i18n="protocol.enabled">Enabled</label><select id=rtmp-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=rtmp-url data-i18n="protocol.url">Push URL</label><input id=rtmp-url data-i18n-placeholder="protocol.url_ph" placeholder="rtmp://nvr-host:1935/live/stream"></div><button class="b bp" onclick=sp('rtmp') data-i18n="protocol.save_rtmp">Save RTMP</button></div></div>
+</div>
+<div role="tabpanel" id="panel-security" data-panel="security" aria-labelledby="tab-security" class="tabpanel h">
 <div class=cs><h3 data-i18n="settings.change_password">Change Password</h3><div class=fg><label for=cpw data-i18n="settings.current_password">Current Password</label><input type=password id=cpw data-i18n-placeholder="settings.current_password_ph" placeholder="Current password" autocomplete=current-password></div><div class=fg><label for=npw data-i18n="settings.new_password">New Password</label><input type=password id=npw data-i18n-placeholder="settings.new_password_ph" placeholder="New password (min 8 chars)" autocomplete=new-password></div><div class=fg><label for=cnpw data-i18n="settings.confirm_new_password">Confirm New Password</label><input type=password id=cnpw data-i18n-placeholder="settings.confirm_new_password_ph" placeholder="Repeat new password" autocomplete=new-password></div><button class="b bp" id=cpbtn onclick=cp() data-i18n="settings.change_password_btn">Change Password</button></div>
-<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.onvif">ONVIF Configuration</h3><div class=cs-body id=onvif-cfg><div class=fg><label for=onv-enabled data-i18n="protocol.enabled">Enabled</label><select id=onv-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=onv-port data-i18n="protocol.port">Port</label><input type=number id=onv-port data-i18n-placeholder="protocol.port_ph" placeholder=3702></div><div class=fg><label for=onv-device-name data-i18n="protocol.device_name">Device Name</label><input id=onv-device-name data-i18n-placeholder="protocol.device_name_ph" placeholder=mibee-rec></div><button class="b bp" onclick=sp('onvif') data-i18n="protocol.save_onvif">Save ONVIF</button></div></div>
-<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.gb28181">GB28181 Configuration</h3><div class=cs-body id=gb-cfg><div class=fg><label for=gb-enabled data-i18n="protocol.enabled">Enabled</label><select id=gb-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=gb-device-id data-i18n="protocol.device_id">Device ID</label><input id=gb-device-id data-i18n-placeholder="protocol.device_id_ph" placeholder="34020000001320000101"></div><div class=fg><label for=gb-server-ip data-i18n="protocol.server_ip">Server IP</label><input id=gb-server-ip data-i18n-placeholder="protocol.server_ip_ph" placeholder="192.168.1.100"></div><div class=fg><label for=gb-server-port data-i18n="protocol.server_port">Server Port</label><input type=number id=gb-server-port data-i18n-placeholder="protocol.server_port_ph" placeholder=5060></div><button class="b bp" onclick=sp('gb28181') data-i18n="protocol.save_gb28181">Save GB28181</button></div></div>
-<div class=cs><h3 onclick="this.parentElement.classList.toggle('col')" style=cursor:pointer data-i18n="protocol.rtmp">RTMP Push Configuration</h3><div class=cs-body id=rtmp-cfg><div class=fg><label for=rtmp-enabled data-i18n="protocol.enabled">Enabled</label><select id=rtmp-enabled><option value=true data-i18n="protocol.yes">Yes</option><option value=false data-i18n="protocol.no">No</option></select></div><div class=fg><label for=rtmp-url data-i18n="protocol.url">Push URL</label><input id=rtmp-url data-i18n-placeholder="protocol.url_ph" placeholder="rtmp://nvr-host:1935/live/stream"></div><button class="b bp" onclick=sp('rtmp') data-i18n="protocol.save_rtmp">Save RTMP</button></div></div>
+</div>
 </form></section>
 
 <section id=pg-dv class=pg>
@@ -904,6 +975,7 @@ const I18N = {
     'camera.error_name': 'Name required.','camera.error_type': 'Type required.','camera.error_json': 'Invalid JSON.',
     'camera.device_label': 'USB Device','camera.use_as_camera': 'Use as Camera','camera.device_prefix': 'Device ',
     'camera.type_usb': 'USB','camera.type_rtsp': 'RTSP','camera.type_onvif': 'ONVIF','camera.type_gb28181': 'GB/T 28181','camera.type_rtmp': 'RTMP',
+    'camera.offline': 'Offline','camera.offline_since': 'Offline since',
     'camera_view.title': 'Camera','camera_view.loading': 'Loading...','camera_view.load_failed': 'Failed to load camera',
     'camera_view.no_stream': 'No Stream Available','camera_view.start_stream': 'Start the stream to see live preview',
     'camera_view.url_copied': 'RTSP URL copied','camera_view.url_copied_short': 'URL copied',
@@ -911,6 +983,7 @@ const I18N = {
     'caminfo.id': 'ID','caminfo.type': 'Type','caminfo.status': 'Status','caminfo.created': 'Created',
     'stream.started': 'Stream started','stream.stopped': 'Stream stopped',
     'stream.start': 'Start','stream.stop': 'Stop','stream.view': 'View','stream.edit': 'Edit','stream.delete': 'Delete','stream.copy': 'Copy',
+    'sse.camera_added': 'Camera came online','sse.camera_removed': 'Camera removed','sse.camera_offline': 'Camera went offline',
     'settings.title': 'Settings','settings.subtitle': 'Configure system settings','settings.save': 'Save Changes','settings.saving': 'Saving...',
     'settings.saved': 'Settings saved','settings.loading': 'Loading settings...','settings.load_failed': 'Failed to load settings',
     'settings.server': 'Server','settings.web_port': 'Web UI Port','settings.rtsp_port': 'RTSP Port','settings.mibee': 'MiBee NVR',
@@ -919,6 +992,8 @@ const I18N = {
     'settings.change_password': 'Change Password','settings.current_password': 'Current Password','settings.new_password': 'New Password','settings.confirm_new_password': 'Confirm New Password',
     'settings.change_password_btn': 'Change Password','settings.changing': 'Changing...','settings.password_changed': 'Password changed. Please sign in again.',
     'settings.password_mismatch': 'Passwords do not match.','settings.password_length': 'Password must be at least 8 characters.','settings.fields_required': 'All fields are required.',
+    'settings.tab_server': 'Server','settings.tab_recording': 'Recording','settings.tab_protocols': 'Protocols','settings.tab_security': 'Security',
+    'a11y.skip_to_content': 'Skip to content',
     'protocol.onvif': 'ONVIF Configuration','protocol.gb28181': 'GB28181 Configuration','protocol.rtmp': 'RTMP Push Configuration',
     'protocol.enabled': 'Enabled','protocol.port': 'Port','protocol.device_name': 'Device Name','protocol.device_id': 'Device ID',
     'protocol.server_ip': 'Server IP','protocol.server_port': 'Server Port','protocol.url': 'Push URL',
@@ -944,6 +1019,9 @@ const I18N = {
     'protocol.device_id_ph': '34020000001320000101','protocol.server_ip_ph': '192.168.1.100','protocol.server_port_ph': '5060','protocol.url_ph': 'rtmp://nvr-host:1935/live/stream',
     'protocol.save_onvif': 'Save ONVIF','protocol.save_gb28181': 'Save GB28181','protocol.save_rtmp': 'Save RTMP',
     'theme.toggle': 'Toggle theme','lang.toggle': 'Switch language','lang.en': 'EN','lang.zh': '\u4e2d',
+    'snapshot.btn': 'Snapshot','snapshot.saving': 'Capturing...','snapshot.saved': 'Snapshot saved',
+    'record.start': 'Start Recording','record.stop': 'Stop Recording','record.started': 'Recording started','record.stopped': 'Recording stopped',
+    'protocols.enable': 'Enable','protocols.toggle_on': '{name} enabled','protocols.toggle_off': '{name} disabled',
   },
   'zh': {
     'nav.brand': 'mibee-rec','nav.cameras': '\u6444\u50cf\u5934','nav.settings': '\u8bbe\u7f6e',
@@ -970,6 +1048,7 @@ const I18N = {
     'camera.error_name': '\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002','camera.error_type': '\u7c7b\u578b\u4e0d\u80fd\u4e3a\u7a7a\u3002','camera.error_json': 'JSON\u683c\u5f0f\u65e0\u6548\u3002',
     'camera.device_label': 'USB\u8bbe\u5907','camera.use_as_camera': '\u4f5c\u4e3a\u6444\u50cf\u5934','camera.device_prefix': '\u8bbe\u5907 ',
     'camera.type_usb': 'USB','camera.type_rtsp': 'RTSP','camera.type_onvif': 'ONVIF','camera.type_gb28181': 'GB/T 28181','camera.type_rtmp': 'RTMP',
+    'camera.offline': '离线','camera.offline_since': '离线时间',
     'camera_view.title': '\u6444\u50cf\u5934','camera_view.loading': '\u52a0\u8f7d\u4e2d...','camera_view.load_failed': '\u52a0\u8f7d\u6444\u50cf\u5934\u5931\u8d25',
     'camera_view.no_stream': '\u65e0\u53ef\u7528\u6d41','camera_view.start_stream': '\u542f\u52a8\u6d41\u540e\u53ef\u67e5\u770b\u5b9e\u65f6\u9884\u89c8',
     'camera_view.url_copied': 'RTSP\u5730\u5740\u5df2\u590d\u5236','camera_view.url_copied_short': '\u94fe\u63a5\u5df2\u590d\u5236',
@@ -977,6 +1056,7 @@ const I18N = {
     'caminfo.id': '\u7f16\u53f7','caminfo.type': '\u7c7b\u578b','caminfo.status': '\u72b6\u6001','caminfo.created': '\u521b\u5efa\u65f6\u95f4',
     'stream.started': '\u6d41\u5df2\u542f\u52a8','stream.stopped': '\u6d41\u5df2\u505c\u6b62',
     'stream.start': '\u542f\u52a8','stream.stop': '\u505c\u6b62','stream.view': '\u67e5\u770b','stream.edit': '\u7f16\u8f91','stream.delete': '\u5220\u9664','stream.copy': '\u590d\u5236',
+    'sse.camera_added': '摄像头已上线','sse.camera_removed': '摄像头已移除','sse.camera_offline': '摄像头已离线',
     'settings.title': '\u8bbe\u7f6e','settings.subtitle': '\u914d\u7f6e\u7cfb\u7edf\u53c2\u6570','settings.save': '\u4fdd\u5b58\u8bbe\u7f6e','settings.saving': '\u4fdd\u5b58\u4e2d...',
     'settings.saved': '\u8bbe\u7f6e\u5df2\u4fdd\u5b58','settings.loading': '\u52a0\u8f7d\u8bbe\u7f6e...','settings.load_failed': '\u52a0\u8f7d\u8bbe\u7f6e\u5931\u8d25',
     'settings.server': '\u670d\u52a1\u5668','settings.web_port': 'Web UI\u7aef\u53e3','settings.rtsp_port': 'RTSP\u7aef\u53e3','settings.mibee': 'MiBee \u786c\u76d8\u5f55\u50cf\u673a',
@@ -985,6 +1065,8 @@ const I18N = {
     'settings.change_password': '\u4fee\u6539\u5bc6\u7801','settings.current_password': '\u5f53\u524d\u5bc6\u7801','settings.new_password': '\u65b0\u5bc6\u7801','settings.confirm_new_password': '\u786e\u8ba4\u65b0\u5bc6\u7801',
     'settings.change_password_btn': '\u4fee\u6539\u5bc6\u7801','settings.changing': '\u4fee\u6539\u4e2d...','settings.password_changed': '\u5bc6\u7801\u5df2\u4fee\u6539\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002',
     'settings.password_mismatch': '\u5bc6\u7801\u4e0d\u5339\u914d\u3002','settings.password_length': '\u5bc6\u7801\u81f3\u5c11\u9700\u89818\u4e2a\u5b57\u7b26\u3002','settings.fields_required': '\u6240\u6709\u5b57\u6bb5\u5747\u4e3a\u5fc5\u586b\u3002',
+    'settings.tab_server': '\u670d\u52a1\u5668','settings.tab_recording': '\u5f55\u5236','settings.tab_protocols': '\u534f\u8bae','settings.tab_security': '\u5b89\u5168',
+    'a11y.skip_to_content': '\u8df3\u5230\u4e3b\u8981\u5185\u5bb9',
     'protocol.onvif': 'ONVIF \u914d\u7f6e','protocol.gb28181': 'GB28181 \u914d\u7f6e','protocol.rtmp': 'RTMP \u63a8\u6d41\u914d\u7f6e',
     'protocol.enabled': '\u542f\u7528','protocol.port': '\u7aef\u53e3','protocol.device_name': '\u8bbe\u5907\u540d\u79f0','protocol.device_id': '\u8bbe\u5907\u7f16\u53f7',
     'protocol.server_ip': '\u670d\u52a1\u5668IP','protocol.server_port': '\u670d\u52a1\u5668\u7aef\u53e3','protocol.url': '\u63a8\u6d41\u5730\u5740',
@@ -1010,13 +1092,16 @@ const I18N = {
     'protocol.device_id_ph': '34020000001320000101','protocol.server_ip_ph': '192.168.1.100','protocol.server_port_ph': '5060','protocol.url_ph': 'rtmp://nvr-host:1935/live/stream',
     'protocol.save_onvif': '保存ONVIF','protocol.save_gb28181': '保存GB28181','protocol.save_rtmp': '保存RTMP',
     'theme.toggle': '\u5207\u6362\u4e3b\u9898','lang.toggle': '\u5207\u6362\u8bed\u8a00','lang.en': 'EN','lang.zh': '\u4e2d',
+    'snapshot.btn': '截图','snapshot.saving': '截图中...','snapshot.saved': '截图已保存',
+    'record.start': '开始录像','record.stop': '停止录像','record.started': '录像已开始','record.stopped': '录像已停止',
+    'protocols.enable': '启用','protocols.toggle_on': '{name} 已启用','protocols.toggle_off': '{name} 已禁用',
   }
 };
 
 // ============================================================
 // STATE
 // ============================================================
-let S = { a: 0, c: [], s: {}, dc: null, urls: {}, lf: null };
+let S = { a: 0, c: [], s: {}, dc: null, urls: {}, lf: null, cc: null, rec: false };
 // Toast queue for FIFO capping (F12)
 let q = [];
 
@@ -1283,13 +1368,16 @@ function V() {
     let bc = 'bg-' + (
       c.status === 'running' ? 'r' :
       c.status === 'stopped'  ? 'p' :
+      c.status === 'offline'  ? 'off' :
       'e'
     );
+    let sl = c.status === 'offline' ? t('camera.offline') : c.status;
+    let ost = c.status === 'offline' && c.offline_since ? ' title="' + t('camera.offline_since') + ': ' + E(c.offline_since) + '"' : '';
     let id = encodeURIComponent(c.id);
     tr.innerHTML =
       '<td data-label="' + t('table.name') + '"><a href="#/c/' + id + '" style=font-weight:500>' + E(c.name) + '</a></td>' +
       '<td data-label="' + t('table.type') + '"><span class=tm style="font-family:var(--mo);font-size:.857rem">' + E(F(c.camera_type)) + '</span></td>' +
-      '<td data-label="' + t('table.status') + '"><span class="bg ' + bc + '">' + E(c.status) + '</span></td>' +
+      '<td data-label="' + t('table.status') + '"><span class="bg ' + bc + '"' + ost + '>' + E(sl) + '</span></td>' +
       '<td data-label="' + t('table.stream_url') + '">' + (
         c.status === 'running'
           ? '<div style="display:flex;align-items:center;gap:var(--s4)">' +
@@ -1297,17 +1385,17 @@ function V() {
             E(S.urls[c.id] || t('table.url_unavailable')) +
             '</code>' +
             '<button class="b bsm bs" data-url="' + J(S.urls[c.id] || '') + '" ' +
-            'onclick="copyUrl(this.dataset.url)" aria-label="' + t('stream.copy') + '">' + t('stream.copy') + '</button></div>'
+            'onclick="copyUrl(this.dataset.url)" aria-label="' + t('stream.copy') + ' ' + E(c.name) + '">' + t('stream.copy') + '</button></div>'
           : '-'
       ) + '</td>' +
       '<td data-label="' + t('table.actions') + '" class=ca>' +
         (c.status === 'running'
-          ? '<button class="b bd bsm" onclick=w("' + id + '") aria-label="' + t('stream.stop') + '">' + t('stream.stop') + '</button>'
-          : '<button class="b bp bsm" onclick=Y("' + id + '") aria-label="' + t('stream.start') + '">' + t('stream.start') + '</button>'
+          ? '<button class="b bd bsm" onclick=w("' + id + '") aria-label="' + t('stream.stop') + ' ' + E(c.name) + '">' + t('stream.stop') + '</button>'
+          : '<button class="b bp bsm" onclick=Y("' + id + '") aria-label="' + t('stream.start') + ' ' + E(c.name) + '">' + t('stream.start') + '</button>'
         ) +
-        '<button class="b bs bsm" onclick=K("' + id + '") aria-label="' + t('stream.view') + '">' + t('stream.view') + '</button>' +
-        '<button class="b bs bsm" onclick=ec(' + id + ') aria-label="' + t('stream.edit') + '">' + t('stream.edit') + '</button>' +
-        '<button class="b bd bsm" onclick=x("' + id + '","' + J(c.name) + '") aria-label="' + t('stream.delete') + '">' + t('stream.delete') + '</button>' +
+        '<button class="b bs bsm" onclick=K("' + id + '") aria-label="' + t('stream.view') + ' ' + E(c.name) + '">' + t('stream.view') + '</button>' +
+        '<button class="b bs bsm" onclick=ec(' + id + ') aria-label="' + t('stream.edit') + ' ' + E(c.name) + '">' + t('stream.edit') + '</button>' +
+        '<button class="b bd bsm" onclick=x("' + id + '","' + J(c.name) + '") aria-label="' + t('stream.delete') + ' ' + E(c.name) + '">' + t('stream.delete') + '</button>' +
       '</td>';
     b.appendChild(tr);
   });
@@ -1516,6 +1604,7 @@ async function K(id) {
       return;
     }
     let c = r.data;
+    S.cc = c.id;
     // Re-assert camera view after fetch — something may have reverted to dashboard during await
     P('cam');
     setText('cn', c.name);
@@ -1537,6 +1626,10 @@ async function K(id) {
         pv.innerHTML = '<div class=vi>&#x25B6;</div><h3>' + t('camera_view.no_stream') + '</h3><p class=tm>' + t('camera_view.start_stream') + '</p><button class="b bp" onclick=vY("' + encodeURIComponent(c.id) + '") style=margin-top:var(--s16) data-i18n="stream.start">' + t('stream.start') + '</button>';
       }
     }
+    // Enable snapshot only when stream is running; sync recording controls.
+    let snap = document.getElementById('snap-btn');
+    if (snap) snap.disabled = (c.status !== 'running');
+    loadRecState();
     // Re-assert camera view at the end of try block
     P('cam');
     _k = false;
@@ -1554,6 +1647,94 @@ function kE(id) {
   if (pv) {
     pv.innerHTML = '<div class=vi>&#x25B6;</div><h3>' + t('camera_view.no_stream') + '</h3><p class=tm>' + t('camera_view.start_stream') + '</p><button class="b bp" onclick=vY("' + id + '") style=margin-top:var(--s16) data-i18n="stream.start">' + t('stream.start') + '</button>';
   }
+}
+
+// ============================================================
+// SNAPSHOT & RECORDING CONTROLS
+// ============================================================
+async function takeSnapshot() {
+  let id = S.cc;
+  if (!id) return;
+  let btn = document.getElementById('snap-btn');
+  if (btn) { btn.disabled = 1; btn.textContent = t('snapshot.saving'); }
+  try {
+    let res = await fetch('/api/cameras/' + encodeURIComponent(id) + '/snapshot', {
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }
+    });
+    if (res.status === 401 && S.a) {
+      S.a = 0; T(t('session.expired'), 'i');
+      setTimeout(function() { N(0); P('login'); window.location.hash = '#login'; }, 1500);
+      return;
+    }
+    if (!res.ok) {
+      let d = null;
+      try { d = await res.json(); } catch (_) {}
+      T((d && d.error) ? d.error : t('error.failed'), 'e');
+      return;
+    }
+    let blob = await res.blob();
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement('a');
+    a.href = url;
+    a.download = 'snapshot-' + id + '-' + Date.now() + '.jpg';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    T(t('snapshot.saved'), 's');
+  } catch (_) {
+    T(t('error.network'), 'e');
+  } finally {
+    if (btn) { btn.disabled = 0; btn.textContent = t('snapshot.btn'); }
+  }
+}
+
+async function startRecording() { await toggleRecording(true); }
+async function stopRecording() { await toggleRecording(false); }
+
+async function toggleRecording(en) {
+  let id = S.cc;
+  if (!id) return;
+  let startBtn = document.getElementById('rec-start');
+  let stopBtn = document.getElementById('rec-stop');
+  let active = en ? startBtn : stopBtn;
+  if (active) active.disabled = 1;
+  try {
+    let r = await A('PUT', '/api/protocols/recording', { enabled: en });
+    if (r.ok) {
+      S.rec = en;
+      syncRecButtons();
+      T(en ? t('record.started') : t('record.stopped'), 's');
+    } else {
+      T(r.data && r.data.error ? r.data.error : t('error.failed'), 'e');
+    }
+  } catch (_) {
+    T(t('error.network'), 'e');
+  } finally {
+    if (startBtn) startBtn.disabled = 0;
+    if (stopBtn) stopBtn.disabled = 0;
+  }
+}
+
+function syncRecButtons() {
+  let s = document.getElementById('rec-start');
+  let p = document.getElementById('rec-stop');
+  if (s) s.classList.toggle('h', S.rec);
+  if (p) p.classList.toggle('h', !S.rec);
+}
+
+async function loadRecState() {
+  S.rec = false;
+  syncRecButtons();
+  if (!S.cc) return;
+  try {
+    let r = await A('GET', '/api/protocols/recording');
+    if (r.ok && r.data) {
+      S.rec = (r.data.enabled === true || r.data.enabled === 'true');
+    }
+  } catch (_) {}
+  syncRecButtons();
 }
 
 function cr() {
@@ -1628,6 +1809,21 @@ function setupDeviceSelector() {
     } else {
       dg.classList.add('h');
     }
+  });
+}
+
+// ============================================================
+// SETTINGS TABS
+// ============================================================
+function switchTab(name) {
+  document.querySelectorAll('[role="tab"]').forEach(function(tab) {
+    let active = tab.dataset.tab === name;
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    tab.classList.toggle('active', active);
+    tab.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('[role="tabpanel"]').forEach(function(panel) {
+    panel.classList.toggle('h', panel.dataset.panel !== name);
   });
 }
 
@@ -1921,6 +2117,9 @@ async function lp() {
           let el = document.getElementById(prefix + (map[k] || k));
           if (el) el.value = r.data[k];
         });
+        // Sync the quick-toggle switch from the loaded enabled flag.
+        let tog = document.getElementById(p + '-toggle');
+        if (tog) tog.checked = (r.data.enabled === true || r.data.enabled === 'true');
       }
     } catch (_) {}
   });
@@ -1946,6 +2145,32 @@ async function sp(p) {
 }
 
 // ============================================================
+// PROTOCOL HOT-TOGGLE
+// ============================================================
+async function toggleProtocol(name, checked) {
+  let toggle = document.getElementById(name + '-toggle');
+  if (toggle) toggle.disabled = 1;
+  try {
+    let r = await A('PUT', '/api/protocols/' + name, { enabled: checked });
+    if (r.ok) {
+      T(t(checked ? 'protocols.toggle_on' : 'protocols.toggle_off').replace('{name}', name.toUpperCase()), 's');
+      // Keep the legacy Enabled dropdown in sync.
+      let prefix = { onvif: 'onv-', gb28181: 'gb-', rtmp: 'rtmp-' }[name];
+      let sel = document.getElementById(prefix + 'enabled');
+      if (sel) sel.value = String(checked);
+    } else {
+      if (toggle) toggle.checked = !checked;
+      T(r.data && r.data.error ? r.data.error : t('error.failed'), 'e');
+    }
+  } catch (_) {
+    if (toggle) toggle.checked = !checked;
+    T(t('error.network'), 'e');
+  } finally {
+    if (toggle) toggle.disabled = 0;
+  }
+}
+
+// ============================================================
 // AUTO-REFRESH DASHBOARD (F11)
 // ============================================================
 function spoll() {
@@ -1963,6 +2188,19 @@ function spoll() {
 }
 
 function spoll_stop() { if (pi) { clearInterval(pi); pi = null; } }
+
+// ============================================================
+// SSE — real-time camera events (reconnect on error)
+// ============================================================
+let _es = null;
+function initSSE() {
+  try { if (_es) _es.close(); } catch (_) {}
+  _es = new EventSource('/api/events');
+  _es.addEventListener('camera_added', function() { D(); T(t('sse.camera_added'), 's'); });
+  _es.addEventListener('camera_removed', function() { D(); T(t('sse.camera_removed'), 'i'); });
+  _es.addEventListener('camera_offline', function() { D(); T(t('sse.camera_offline'), 'e'); });
+  _es.onerror = function() { try { _es.close(); } catch (_) {} setTimeout(initSSE, 5000); };
+}
 
 // EVENT BINDING
 // ============================================================
@@ -2005,10 +2243,16 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 
+  // Settings tab switching
+  document.querySelectorAll('[role="tab"]').forEach(function(tab) {
+    tab.addEventListener('click', function() { switchTab(tab.dataset.tab); });
+  });
+
   window.addEventListener('hashchange', r);
   setupDeviceSelector();
   initThemeAndLang();
   i();
+  initSSE();
 });
 
 // Expose functions for onclick handlers in HTML
@@ -2034,6 +2278,11 @@ window.toggleLang = toggleLang;
 window.translatePage = translatePage;
 window.vY = vY;
 window.K = K;
+window.switchTab = switchTab;
+window.takeSnapshot = takeSnapshot;
+window.startRecording = startRecording;
+window.stopRecording = stopRecording;
+window.toggleProtocol = toggleProtocol;
 
 })();
 
