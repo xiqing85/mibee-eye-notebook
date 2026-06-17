@@ -132,7 +132,9 @@ impl Output for RtspOutput {
                                 self.cached_sps = Some(data.clone());
                                 if self.cached_pps.is_some() {
                                     if let Some(tx) = self.sps_pps_tx.take() {
-                                        if let (Some(sps), Some(pps)) = (self.cached_sps.clone(), self.cached_pps.clone()) {
+                                        if let (Some(sps), Some(pps)) =
+                                            (self.cached_sps.clone(), self.cached_pps.clone())
+                                        {
                                             let _ = tx.send((sps, pps));
                                         }
                                     }
@@ -141,7 +143,9 @@ impl Output for RtspOutput {
                                 self.cached_pps = Some(data.clone());
                                 if self.cached_sps.is_some() {
                                     if let Some(tx) = self.sps_pps_tx.take() {
-                                        if let (Some(sps), Some(pps)) = (self.cached_sps.clone(), self.cached_pps.clone()) {
+                                        if let (Some(sps), Some(pps)) =
+                                            (self.cached_sps.clone(), self.cached_pps.clone())
+                                        {
                                             let _ = tx.send((sps, pps));
                                         }
                                     }

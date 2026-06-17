@@ -91,17 +91,20 @@ async fn main() -> anyhow::Result<()> {
     if web::db::protocol_configs_is_empty(&pool).await? {
         tracing::info!("seeding protocol_configs from config.toml (first run)");
         web::db::set_protocol_config(&pool, "onvif", &serde_json::to_value(&config.onvif)?).await?;
-        web::db::set_protocol_config(&pool, "gb28181", &serde_json::to_value(&config.gb28181)?).await?;
+        web::db::set_protocol_config(&pool, "gb28181", &serde_json::to_value(&config.gb28181)?)
+            .await?;
         web::db::set_protocol_config(
             &pool,
             "rtmp_push",
             &serde_json::to_value(&config.rtmp_push)?,
-        ).await?;
+        )
+        .await?;
         web::db::set_protocol_config(
             &pool,
             "recording",
             &serde_json::to_value(&config.recording)?,
-        ).await?;
+        )
+        .await?;
     } else {
         tracing::debug!("protocol_configs table already populated; keeping persisted values");
     }
@@ -148,7 +151,9 @@ async fn main() -> anyhow::Result<()> {
     {
         let running_cameras = {
             let all = web::db::list_cameras(&pool).await?;
-            all.into_iter().filter(|c| c.status == "running").collect::<Vec<_>>()
+            all.into_iter()
+                .filter(|c| c.status == "running")
+                .collect::<Vec<_>>()
         };
         let count = running_cameras.len();
         if count > 0 {
@@ -189,7 +194,8 @@ async fn main() -> anyhow::Result<()> {
                             updated_at: now,
                             ..camera
                         },
-                    ).await;
+                    )
+                    .await;
                 }
             }
         }
@@ -207,13 +213,17 @@ async fn main() -> anyhow::Result<()> {
     // ONVIF
     {
         let cfg = web::db::get_protocol_config(&pool, "onvif")
-            .await.ok().flatten()
+            .await
+            .ok()
+            .flatten()
             .unwrap_or_else(|| serde_json::to_value(&config.onvif).unwrap_or_default());
-        let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = cfg
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if enabled {
-            let onvif_config = web::protocol_runtime::build_onvif_config_from_json(
-                &cfg, &advertised_host,
-            );
+            let onvif_config =
+                web::protocol_runtime::build_onvif_config_from_json(&cfg, &advertised_host);
             if let Err(e) = protocol_runtime.start_onvif(onvif_config).await {
                 tracing::warn!(error = %e, "failed to start ONVIF at startup");
             }
@@ -223,9 +233,14 @@ async fn main() -> anyhow::Result<()> {
     // GB28181
     {
         let cfg = web::db::get_protocol_config(&pool, "gb28181")
-            .await.ok().flatten()
+            .await
+            .ok()
+            .flatten()
             .unwrap_or_else(|| serde_json::to_value(&config.gb28181).unwrap_or_default());
-        let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = cfg
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if enabled {
             let gb_config = web::protocol_runtime::extract_gb28181_config(&cfg);
             if let Err(e) = protocol_runtime
@@ -240,9 +255,14 @@ async fn main() -> anyhow::Result<()> {
     // RTMP (per-stream; just track enabled state)
     {
         let cfg = web::db::get_protocol_config(&pool, "rtmp_push")
-            .await.ok().flatten()
+            .await
+            .ok()
+            .flatten()
             .unwrap_or_else(|| serde_json::to_value(&config.rtmp_push).unwrap_or_default());
-        let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = cfg
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if enabled {
             if let Err(e) = protocol_runtime.start_rtmp().await {
                 tracing::warn!(error = %e, "failed to enable RTMP at startup");
@@ -284,21 +304,26 @@ async fn main() -> anyhow::Result<()> {
                     match web::db::auto_discover_cameras(&hotplug_db).await {
                         Ok(n) if n > 0 => {
                             // Find the newly-added camera to broadcast event.
-                            let cameras = web::db::list_cameras(&hotplug_db).await.unwrap_or_default();
+                            let cameras =
+                                web::db::list_cameras(&hotplug_db).await.unwrap_or_default();
                             for cam in cameras.iter().filter(|c| {
                                 c.camera_type == "usb"
                                     && c.config.get("device_index").and_then(|v| v.as_u64())
                                         == Some(device_index as u64)
                             }) {
-                                let _ = hotplug_tx.send(web::routes::events::CameraEvent::CameraAdded {
-                                    camera_id: cam.id.clone(),
-                                    device_index,
-                                    name: cam.name.clone(),
-                                });
+                                let _ = hotplug_tx.send(
+                                    web::routes::events::CameraEvent::CameraAdded {
+                                        camera_id: cam.id.clone(),
+                                        device_index,
+                                        name: cam.name.clone(),
+                                    },
+                                );
                             }
                         }
                         Ok(_) => {}
-                        Err(e) => tracing::warn!(error = %e, "auto-discovery after hot-plug failed"),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "auto-discovery after hot-plug failed")
+                        }
                     }
                 }
                 capture::hotplug::HotplugEvent::Removed { device_index } => {
@@ -306,21 +331,26 @@ async fn main() -> anyhow::Result<()> {
                     match web::db::mark_cameras_offline_by_device_index(
                         &hotplug_db,
                         device_index as i64,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(camera_ids) => {
                             for cam_id in &camera_ids {
                                 // Gracefully stop the active stream (flushes FileOutput).
                                 if hotplug_stream_manager.has_stream(cam_id).await {
                                     tracing::info!(camera_id = %cam_id, "stopping stream for unplugged camera");
-                                    if let Err(e) = hotplug_stream_manager.stop_stream(cam_id).await {
+                                    if let Err(e) = hotplug_stream_manager.stop_stream(cam_id).await
+                                    {
                                         tracing::warn!(camera_id = %cam_id, error = %e, "failed to stop stream for unplugged camera");
                                     }
                                 }
                                 // Broadcast SSE event.
-                                let _ = hotplug_tx.send(web::routes::events::CameraEvent::CameraOfflined {
-                                    camera_id: cam_id.clone(),
-                                    device_index,
-                                });
+                                let _ = hotplug_tx.send(
+                                    web::routes::events::CameraEvent::CameraOfflined {
+                                        camera_id: cam_id.clone(),
+                                        device_index,
+                                    },
+                                );
                             }
                         }
                         Err(e) => {
@@ -488,7 +518,6 @@ async fn reset_password_cli(args: &Args) -> anyhow::Result<()> {
     }
 }
 
-
 /// Get the first non-loopback IPv4 address via interface enumeration.
 /// Falls back to "127.0.0.1" if no suitable interface is found.
 fn get_first_non_loopback_ipv4() -> Option<String> {
@@ -517,5 +546,3 @@ fn get_first_non_loopback_ipv4() -> Option<String> {
         ip
     }
 }
-
-

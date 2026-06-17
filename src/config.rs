@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 // Re-export protocol config types from the web crate.
 // These types live in `web::config` so the protocol REST API can derive
 // JSON Schemas via `schemars` without a circular dependency.
-pub use web::config::{Gb28181Config, OnvifConfig, RecordingConfig, RtmpPushConfig};
 use std::path::Path;
+pub use web::config::{Gb28181Config, OnvifConfig, RecordingConfig, RtmpPushConfig};
 
 // ---------------------------------------------------------------------------
 // Web

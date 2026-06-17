@@ -286,10 +286,10 @@ impl RtspServer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::auth::*;
     use super::framing::*;
     use super::server::*;
+    use super::*;
     use std::collections::HashMap;
     use std::time::Duration;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
