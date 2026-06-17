@@ -19,10 +19,12 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-use super::auth::{build_digest_challenge, generate_nonce, generate_session_id, verify_digest_auth};
+use super::auth::{
+    build_digest_challenge, generate_nonce, generate_session_id, verify_digest_auth,
+};
 use super::framing::{
-    TransportInfo, build_interleaved_frame, get_header, parse_rtp_header_for_tracking,
-    SequenceTracker,
+    SequenceTracker, TransportInfo, build_interleaved_frame, get_header,
+    parse_rtp_header_for_tracking,
 };
 use super::{LiveStreamEntry, RtspServer, RtspServerConfig, RtspServerInner, StreamConfig};
 
