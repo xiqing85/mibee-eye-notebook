@@ -403,7 +403,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_metrics_handler_returns_text() {
-        // register_metrics may already be called by another test — that's fine.
         let _ = observability::register_metrics();
 
         let resp = metrics_handler().await.into_response();
@@ -422,15 +421,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_not_implemented_called_directly() {
-        // Directly test the handler returns 501
         let resp = not_implemented_handler().await.into_response();
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
     async fn test_login_rejects_wrong_credentials() {
-        // Use a DB with a seeded user so setup is complete
-        let app = crate::server::build_app(crate::server::test_db_with_user());
+        let (pool, auth_db) = crate::server::test_db_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/login")
@@ -450,11 +448,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_public_routes_do_not_require_auth() {
-        let app = crate::server::build_app(std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        )));
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let app = crate::server::build_app(pool, auth_db);
 
-        // Auth routes should not return 401 (they are the login/setup endpoints)
         for path in &["/api/auth/login", "/api/auth/setup", "/api/auth/logout"] {
             let req = Request::builder()
                 .uri(*path)
@@ -472,20 +468,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_and_metrics_are_public() {
-        // register_metrics must be called before the handler runs.
         let _ = observability::register_metrics();
-        let app = crate::server::test_app_with_user();
+        let app = crate::server::test_app_with_user().await;
 
         for path in &["/health", "/metrics"] {
             let req = Request::builder().uri(*path).body(Body::empty()).unwrap();
             let res = app.clone().oneshot(req).await.unwrap();
-            assert_ne!(res.status(), StatusCode::UNAUTHORIZED, "public route {path} should not require auth");
+            assert_ne!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "public route {path} should not require auth"
+            );
         }
     }
+
     #[tokio::test]
     async fn test_unknown_route_returns_404() {
-        // Use a seeded DB so setup is complete and the request reaches the router
-        let app = crate::server::build_app(crate::server::test_db_with_user());
+        let (pool, auth_db) = crate::server::test_db_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
         let req = Request::builder()
             .uri("/nonexistent")
             .body(Body::empty())
@@ -500,10 +500,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_creates_admin_user() {
-        let db = std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        ));
-        let app = crate::server::build_app(db.clone());
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let app = crate::server::build_app(pool, auth_db.clone());
 
         let req = Request::builder()
             .uri("/api/auth/setup")
@@ -521,28 +519,26 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
 
         // Verify the user was actually created
-        let conn = db.lock().await;
+        let conn = auth_db.lock().await;
         assert!(!security::auth::is_first_run(&conn).unwrap());
     }
 
     #[tokio::test]
     async fn test_setup_rejects_after_configured() {
-        let db = std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        ));
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
         // Seed a user
         {
-            let conn = db.lock().await;
+            let conn = auth_db.lock().await;
             security::auth::init_users_table(&conn).unwrap();
             let hash = security::password::hash_password("existing_pass").unwrap();
             conn.execute(
                 "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
                 rusqlite::params!["admin", hash],
             )
-                .unwrap();
+            .unwrap();
         }
 
-        let app = crate::server::build_app(db);
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/setup")
@@ -562,10 +558,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_rejects_short_password() {
-        let db = std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        ));
-        let app = crate::server::build_app(db.clone());
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let app = crate::server::build_app(pool, auth_db.clone());
 
         let req = Request::builder()
             .uri("/api/auth/setup")
@@ -583,16 +577,14 @@ mod tests {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
         // Verify no user was created
-        let conn = db.lock().await;
+        let conn = auth_db.lock().await;
         assert!(security::auth::is_first_run(&conn).unwrap());
     }
 
     #[tokio::test]
     async fn test_setup_rejects_empty_username() {
-        let db = std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        ));
-        let app = crate::server::build_app(db);
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/setup")
@@ -612,9 +604,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_blocks_protected_routes_before_setup() {
-        let app = crate::server::build_app(std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        )));
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/cameras")
@@ -626,9 +617,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_allows_health_before_setup() {
-        let app = crate::server::build_app(std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        )));
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/health")
@@ -640,11 +630,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_allows_setup_endpoint_before_setup() {
-        let app = crate::server::build_app(std::sync::Arc::new(tokio::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        )));
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let app = crate::server::build_app(pool, auth_db);
 
-        // With empty body it returns 422 (deserialization failure), not 503
         let req = Request::builder()
             .uri("/api/auth/setup")
             .method("POST")
@@ -666,34 +654,26 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Helper to set up a test app with an in-memory DB that has a seeded user.
-    fn test_app_with_user() -> (std::sync::Arc<Mutex<Connection>>, String) {
-        let conn = Connection::open_in_memory().unwrap();
-        let hash = security::password::hash_password("current_pass").unwrap();
-        conn.execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS users (
-                username TEXT PRIMARY KEY,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            INSERT INTO users (username, password_hash) VALUES ('admin', '{hash}');
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL
-            );"
-        ))
-        .unwrap();
-        let token = security::auth::create_session(&conn, "admin").unwrap();
-        let db = std::sync::Arc::new(Mutex::new(conn));
-        (db, token)
+    async fn test_app_with_user() -> (sqlx::SqlitePool, Arc<Mutex<Connection>>, String) {
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        let token = {
+            let conn = auth_db.lock().await;
+            security::auth::init_users_table(&conn).unwrap();
+            let hash = security::password::hash_password("current_pass").unwrap();
+            conn.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
+                rusqlite::params!["admin", hash],
+            )
+            .unwrap();
+            security::auth::create_session(&conn, "admin").unwrap()
+        };
+        (pool, auth_db, token)
     }
 
     #[tokio::test]
     async fn test_login_success() {
-        let (db, _token) = test_app_with_user();
-        let app = crate::server::build_app(db);
+        let (pool, auth_db, _token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/login")
@@ -726,8 +706,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_login_nonexistent_user() {
-        let (db, _token) = test_app_with_user();
-        let app = crate::server::build_app(db);
+        let (pool, auth_db, _token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/login")
@@ -747,8 +727,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_logout_clears_cookie() {
-        let (db, _token) = test_app_with_user();
-        let app = crate::server::build_app(db);
+        let (pool, auth_db, _token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/logout")
@@ -775,9 +755,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reset_password_requires_auth() {
-        // Use a seeded DB so setup is complete
-        let (db, _token) = test_app_with_user();
-        let app = crate::server::build_app(db);
+        let (pool, auth_db, _token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/reset")
@@ -797,8 +776,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reset_password_success() {
-        let (db, token) = test_app_with_user();
-        let app = crate::server::build_app(db);
+        let (pool, auth_db, token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/reset")
@@ -819,8 +798,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reset_password_wrong_old_password() {
-        let (db, token) = test_app_with_user();
-        let app = crate::server::build_app(db);
+        let (pool, auth_db, token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db);
 
         let req = Request::builder()
             .uri("/api/auth/reset")

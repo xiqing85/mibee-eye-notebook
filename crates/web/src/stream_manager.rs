@@ -30,12 +30,11 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::Result;
-use sqlx::SqlitePool;
 use serde::Serialize;
-use tokio::sync::{Mutex, RwLock, oneshot, watch};
+use sqlx::SqlitePool;
+use tokio::sync::{RwLock, oneshot, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
 

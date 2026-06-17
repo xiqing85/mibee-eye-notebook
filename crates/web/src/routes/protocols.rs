@@ -14,7 +14,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::errors::ApiError;
-use crate::protocol_runtime::{ProtocolRuntime, build_onvif_config_from_json, extract_gb28181_config};
+use crate::protocol_runtime::{
+    ProtocolRuntime, build_onvif_config_from_json, extract_gb28181_config,
+};
 use crate::stream_manager::StreamManager;
 use security::middleware::AuthenticatedUser;
 /// Type alias for the shared DB pool (for web CRUD operations).
@@ -257,7 +259,10 @@ pub async fn update_protocols_onvif(
 ) -> axum::response::Response {
     match handle_put_and_get(&db, "onvif", payload).await {
         Ok(config) => {
-            let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let enabled = config
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut rt = protocol_runtime.lock().await;
             if enabled {
                 let onvif_config = build_onvif_config_from_json(&config, &advertised_host);
@@ -300,7 +305,10 @@ pub async fn update_protocols_gb28181(
 ) -> axum::response::Response {
     match handle_put_and_get(&db, "gb28181", payload).await {
         Ok(config) => {
-            let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let enabled = config
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut rt = protocol_runtime.lock().await;
             if enabled {
                 let gb_config = extract_gb28181_config(&config);
@@ -343,7 +351,10 @@ pub async fn update_protocols_rtmp(
 ) -> axum::response::Response {
     match handle_put_and_get(&db, "rtmp_push", payload).await {
         Ok(config) => {
-            let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let enabled = config
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut rt = protocol_runtime.lock().await;
             if enabled {
                 if let Err(e) = rt.start_rtmp().await {
@@ -386,7 +397,10 @@ mod tests {
     #[test]
     fn test_coerce_bool_accepts_native() {
         let schema = json!({"type": "boolean"});
-        assert_eq!(coerce_from_schema(&schema, json!(true)).unwrap(), json!(true));
+        assert_eq!(
+            coerce_from_schema(&schema, json!(true)).unwrap(),
+            json!(true)
+        );
     }
 
     #[test]
@@ -414,7 +428,10 @@ mod tests {
     #[test]
     fn test_coerce_integer_native() {
         let schema = json!({"type": "integer", "minimum": 0, "maximum": 65535});
-        assert_eq!(coerce_from_schema(&schema, json!(5060)).unwrap(), json!(5060));
+        assert_eq!(
+            coerce_from_schema(&schema, json!(5060)).unwrap(),
+            json!(5060)
+        );
         assert_eq!(coerce_from_schema(&schema, json!(0)).unwrap(), json!(0));
         assert_eq!(
             coerce_from_schema(&schema, json!(65535)).unwrap(),
@@ -443,7 +460,10 @@ mod tests {
     fn test_coerce_integer_handles_float_constraints() {
         // schemars emits minimum/maximum as floats (e.g. 65535.0).
         let schema = json!({"type": "integer", "minimum": 0.0, "maximum": 65535.0});
-        assert_eq!(coerce_from_schema(&schema, json!(5060)).unwrap(), json!(5060));
+        assert_eq!(
+            coerce_from_schema(&schema, json!(5060)).unwrap(),
+            json!(5060)
+        );
         assert!(coerce_from_schema(&schema, json!(65536)).is_err());
     }
 

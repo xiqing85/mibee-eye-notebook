@@ -24,11 +24,11 @@ use std::time::Duration;
 use axum::extract::Extension;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use futures::stream::Stream;
 use serde::Serialize;
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
-use futures::stream::Stream;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::errors::ApiError;
 use security::middleware::AuthenticatedUser;
@@ -108,22 +108,24 @@ fn event_to_sse(event: CameraEvent) -> Event {
             camera_id,
             device_index,
             name,
-        } => Event::default()
-            .event("camera_added")
-            .data(serde_json::json!({
+        } => Event::default().event("camera_added").data(
+            serde_json::json!({
                 "camera_id": camera_id,
                 "device_index": device_index,
                 "name": name,
-            }).to_string()),
+            })
+            .to_string(),
+        ),
         CameraEvent::CameraOfflined {
             camera_id,
             device_index,
-        } => Event::default()
-            .event("camera_offlined")
-            .data(serde_json::json!({
+        } => Event::default().event("camera_offlined").data(
+            serde_json::json!({
                 "camera_id": camera_id,
                 "device_index": device_index,
-            }).to_string()),
+            })
+            .to_string(),
+        ),
     }
 }
 

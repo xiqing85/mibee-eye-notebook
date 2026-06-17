@@ -6,12 +6,8 @@ use axum::Json;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use sqlx::SqlitePool;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use rusqlite::Connection;
-
+use sqlx::SqlitePool;
 
 use crate::db::{self, CameraRow};
 use crate::errors::ApiError;
@@ -219,40 +215,53 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use rusqlite::Connection;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
-    /// Helper: create an in-memory test DB with migration and a seeded user.
-    fn test_db() -> Arc<Mutex<Connection>> {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
-            .unwrap();
-        seed_user(&conn);
-        Arc::new(Mutex::new(conn))
+    /// Helper: create in-memory test DBs (pool + auth_db) with migrations and seeded user.
+    async fn test_db() -> (SqlitePool, Arc<Mutex<Connection>>) {
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        crate::db::run_migrations(&pool).await.unwrap();
+        {
+            let conn = auth_db.lock().await;
+            conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
+                .unwrap();
+            seed_user(&conn);
+        }
+        (pool, auth_db)
+    }
+
+    /// Helper: construct AppRouterState with default stream infrastructure.
+    fn build_state(
+        db: SqlitePool,
+        auth_db: Arc<Mutex<Connection>>,
+    ) -> crate::server::AppRouterState {
+        crate::server::AppRouterState {
+            db,
+            auth_db,
+            active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
+            protocol_runtime: Arc::new(tokio::sync::Mutex::new(
+                crate::protocol_runtime::ProtocolRuntime::new(),
+            )),
+        }
     }
 
     /// Helper: build a test app with a seeded user and session token.
-    fn test_app_with_token() -> (crate::server::AppRouterState, String) {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
-            .unwrap();
-        seed_user(&conn);
-        let token = security::auth::create_session(&conn, "admin").unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let active = crate::server::ActiveStreams::default();
-        let stream_manager = Arc::new(crate::stream_manager::StreamManager::new());
-        let rtsp_server = Arc::new(protocols::rtsp_server::RtspServer::new(
-            protocols::rtsp_server::RtspServerConfig::default(),
-        ));
-        let state = crate::server::AppRouterState {
-            db,
-            active,
-            stream_manager,
-            rtsp_server,
-            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            advertised_host: Arc::new("localhost".to_string()),
-        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
+    async fn test_app_with_token() -> (crate::server::AppRouterState, String) {
+        let (pool, auth_db) = test_db().await;
+        let token = {
+            let conn = auth_db.lock().await;
+            security::auth::create_session(&conn, "admin").unwrap()
         };
-        (state, token)
+        (build_state(pool, auth_db), token)
     }
 
     /// Seed the users table with an admin user for test setup.
@@ -268,22 +277,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_cameras_empty() {
-        let conn = test_db();
-        let state = crate::server::AppRouterState {
-            db: conn,
-            active: crate::server::ActiveStreams::default(),
-            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
-            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
-                protocols::rtsp_server::RtspServerConfig::default(),
-            )),
-            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            advertised_host: Arc::new("localhost".to_string()),
-        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
-        };
+        let (pool, auth_db) = test_db().await;
         let token = {
-            let c = state.db.lock().await;
+            let c = auth_db.lock().await;
             security::auth::create_session(&c, "admin").unwrap()
         };
+        let state = build_state(pool, auth_db);
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()
@@ -304,7 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_camera() {
-        let (state, token) = test_app_with_token();
+        let (state, token) = test_app_with_token().await;
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()
@@ -337,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_camera_crud_full_cycle() {
-        let (state, token) = test_app_with_token();
+        let (state, token) = test_app_with_token().await;
         let app = crate::server::build_app_with_state(state);
 
         // Create
@@ -444,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nonexistent_camera_returns_404() {
-        let (state, token) = test_app_with_token();
+        let (state, token) = test_app_with_token().await;
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()
@@ -458,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_camera_returns_404() {
-        let (state, token) = test_app_with_token();
+        let (state, token) = test_app_with_token().await;
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()
@@ -473,18 +472,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_camera_requires_auth() {
-        let conn = test_db();
-        let state = crate::server::AppRouterState {
-            db: conn,
-            active: crate::server::ActiveStreams::default(),
-            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
-            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
-                protocols::rtsp_server::RtspServerConfig::default(),
-            )),
-            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            advertised_host: Arc::new("localhost".to_string()),
-        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
-        };
+        let (pool, auth_db) = test_db().await;
+        let state = build_state(pool, auth_db);
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()

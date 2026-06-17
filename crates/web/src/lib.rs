@@ -5,8 +5,8 @@ pub mod config;
 pub mod db;
 /// Axum REST API + static SPA
 pub mod errors;
-pub mod routes;
 pub mod protocol_runtime;
+pub mod routes;
 pub mod server;
 pub mod stream_manager;
 

@@ -237,10 +237,7 @@ mod platform {
             .unwrap_or_else(|| format!("Video Device {}", device_index));
 
         match action {
-            "add" => Some(HotplugEvent::Added {
-                device_index,
-                name,
-            }),
+            "add" => Some(HotplugEvent::Added { device_index, name }),
             "remove" => Some(HotplugEvent::Removed { device_index }),
             _ => None,
         }

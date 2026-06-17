@@ -17,9 +17,9 @@ use tokio::sync::{Mutex, mpsc, watch};
 use tower_http::cors::CorsLayer;
 
 use crate::assets;
+use crate::protocol_runtime::ProtocolRuntime;
 use crate::routes;
 use crate::stream_manager::StreamManager;
-use crate::protocol_runtime::ProtocolRuntime;
 use opentelemetry::propagation::Extractor;
 use tracing::Instrument;
 
@@ -225,19 +225,22 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
 /// Test helper: creates in-memory pool and auth_db, seeds with a test user,
 /// and returns an app ready for testing.
 #[cfg(test)]
-pub fn test_app_with_user() -> Router {
-    let (pool, auth_db) = crate::db::create_test_dbs();
-    let _ = crate::db::run_migrations(&pool).blocking_expect("Failed to run migrations");
+pub async fn test_app_with_user() -> Router {
+    let (pool, auth_db) = crate::db::create_test_dbs().await;
+    crate::db::run_migrations(&pool)
+        .await
+        .expect("Failed to run migrations");
     // Seed a test user in auth_db
-    let conn = auth_db.lock().expect("Failed to lock auth_db");
-    let password_hash = security::password::hash_password("test_password")
-        .expect("Failed to hash password");
+    let conn = auth_db.lock().await;
+    let password_hash =
+        security::password::hash_password("test_password").expect("Failed to hash password");
     conn.execute(
         "INSERT INTO users (username, password_hash) VALUES (?1, ?2)",
         rusqlite::params!["testuser", password_hash],
-    ).expect("Failed to seed test user");
+    )
+    .expect("Failed to seed test user");
     drop(conn);
-    
+
     crate::server::build_app_with_state(AppRouterState {
         db: pool,
         auth_db,
@@ -419,6 +422,7 @@ async fn metrics_middleware(request: Request<axum::body::Body>, next: Next) -> R
 /// router, and start serving.
 ///
 /// This function blocks the current task until the server shuts down.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     host: &str,
     port: u16,
@@ -570,13 +574,13 @@ pub async fn run_with_shutdown(
 /// Create a DB with a pre-seeded admin user (setup already completed).
 /// Accessible as `crate::server::test_db_with_user()`.
 #[cfg(test)]
-pub(crate) fn test_db_with_user() -> (sqlx::SqlitePool, Arc<Mutex<Connection>>) {
-    let (pool, auth_db) = crate::db::create_test_dbs();
-    let _ = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(crate::db::run_migrations(&pool))
-    }).expect("Failed to run migrations");
+pub(crate) async fn test_db_with_user() -> (sqlx::SqlitePool, Arc<Mutex<Connection>>) {
+    let (pool, auth_db) = crate::db::create_test_dbs().await;
+    crate::db::run_migrations(&pool)
+        .await
+        .expect("Failed to run migrations");
     // Seed admin user in auth_db
-    let conn = auth_db.lock().expect("Failed to lock auth_db");
+    let conn = auth_db.lock().await;
     let hash = security::password::hash_password("test_pass").unwrap();
     conn.execute_batch(&format!(
         "INSERT INTO users (username, password_hash) VALUES ('admin', '{hash}');"
@@ -597,13 +601,25 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    fn test_db() -> Arc<Mutex<Connection>> {
-        Arc::new(Mutex::new(Connection::open_in_memory().unwrap()))
+    async fn test_db() -> (sqlx::SqlitePool, Arc<Mutex<Connection>>) {
+        crate::db::create_test_dbs().await
+    }
+
+    /// Helper: build a test router with bare DBs (no migrations, no seed user).
+    async fn test_router() -> Router {
+        let (pool, auth_db) = test_db().await;
+        build_app(pool, auth_db)
+    }
+
+    /// Helper: build a test router with migrated DBs and seeded admin user.
+    async fn test_router_with_user() -> Router {
+        let (pool, auth_db) = test_db_with_user().await;
+        build_app(pool, auth_db)
     }
 
     #[tokio::test]
     async fn test_health_route_exists() {
-        let app = build_app(test_db());
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/health")
             .body(Body::empty())
@@ -616,7 +632,7 @@ mod tests {
     async fn test_metrics_route_exists() {
         // register_metrics must be called before the handler runs.
         let _ = observability::register_metrics();
-        let app = build_app(test_db());
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/metrics")
             .body(Body::empty())
@@ -628,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_static_asset_route_public() {
-        let app = build_app(test_db());
+        let app = test_router().await;
         let req = Request::builder().uri("/").body(Body::empty()).unwrap();
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -644,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unknown_route_returns_404() {
-        let app = build_app(test_db_with_user());
+        let app = test_router_with_user().await;
         let req = Request::builder()
             .uri("/no-such-route")
             .body(Body::empty())
@@ -655,7 +671,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_routes_public() {
-        let app = build_app(test_db());
+        let app = test_router().await;
         // Auth routes should NOT require auth (they ARE the login/setup)
         for path in &["/api/auth/login", "/api/auth/setup", "/api/auth/logout"] {
             let req = Request::builder()
@@ -674,7 +690,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_camera_routes_require_auth() {
-        let app = build_app(test_db_with_user());
+        let app = test_router_with_user().await;
         let req = Request::builder()
             .uri("/api/cameras")
             .body(Body::empty())
@@ -689,7 +705,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_settings_routes_require_auth() {
-        let app = build_app(test_db_with_user());
+        let app = test_router_with_user().await;
         let req = Request::builder()
             .uri("/api/settings")
             .body(Body::empty())
@@ -703,7 +719,7 @@ mod tests {
     }
     #[tokio::test]
     async fn test_hsts_header_present() {
-        let app = build_app(test_db());
+        let app = test_router().await;
         let req = Request::builder()
             .uri("/health")
             .body(Body::empty())
@@ -724,7 +740,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cors_not_permissive() {
-        let app = build_app(test_db());
+        let app = test_router().await;
         let router_str = format!("{:?}", app);
         assert!(
             !router_str.contains("permissive"),

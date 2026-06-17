@@ -19,7 +19,6 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 use uuid::Uuid;
-use rusqlite::Connection;
 
 use crate::db;
 use crate::errors::ApiError;
@@ -51,7 +50,6 @@ pub async fn start_stream(
     let camera_type = camera.camera_type.clone();
     let config = camera.config.clone();
 
-
     match stream_manager
         .create_stream(id.clone(), &camera_type, &config, Some(&rtsp_srv))
         .await
@@ -71,7 +69,6 @@ pub async fn start_stream(
                 ..camera
             };
             let _ = db::update_camera(&db, &updated).await;
-
 
             tracing::info!(camera_id = %id, rtsp_url = ?info.rtsp_url, "stream started");
             (
@@ -116,7 +113,6 @@ pub async fn stop_stream(
         }
     };
 
-
     match stream_manager.stop_stream(&id).await {
         Ok(_info) => {
             // Log stream session end (best-effort).
@@ -133,7 +129,6 @@ pub async fn stop_stream(
                 ..camera
             };
             let _ = db::update_camera(&db, &updated).await;
-
 
             tracing::info!(camera_id = %id, "stream stopped");
             (
@@ -510,16 +505,44 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use protocols::rtsp_server::RtspServerConfig;
+    use rusqlite::Connection;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
-    fn test_db() -> Arc<Mutex<Connection>> {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
-            .unwrap();
-        seed_user(&conn);
-        Arc::new(Mutex::new(conn))
+    /// Helper: create in-memory test DBs (pool + auth_db) with migrations and seeded user.
+    async fn test_db() -> (SqlitePool, Arc<Mutex<Connection>>) {
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        crate::db::run_migrations(&pool).await.unwrap();
+        {
+            let conn = auth_db.lock().await;
+            conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
+                .unwrap();
+            seed_user(&conn);
+        }
+        (pool, auth_db)
     }
 
+    /// Helper: construct AppRouterState with default stream infrastructure.
+    fn build_state(
+        db: SqlitePool,
+        auth_db: Arc<Mutex<Connection>>,
+    ) -> crate::server::AppRouterState {
+        crate::server::AppRouterState {
+            db,
+            auth_db,
+            active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(StreamManager::new()),
+            rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            advertised_host: Arc::new("localhost".to_string()),
+            protocol_runtime: Arc::new(tokio::sync::Mutex::new(
+                crate::protocol_runtime::ProtocolRuntime::new(),
+            )),
+        }
+    }
+
+    /// Seed the users table with an admin user for test setup.
     fn seed_user(conn: &rusqlite::Connection) {
         security::auth::init_users_table(conn).unwrap();
         let hash = security::password::hash_password("test_pass").unwrap();
@@ -532,11 +555,15 @@ mod tests {
 
     /// Helper: create a test app with a seeded camera and session token.
     async fn setup_with_camera() -> (crate::server::AppRouterState, String, String) {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
-            .unwrap();
-        seed_user(&conn);
-        let token = security::auth::create_session(&conn, "admin").unwrap();
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        crate::db::run_migrations(&pool).await.unwrap();
+        let token = {
+            let conn = auth_db.lock().await;
+            conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
+                .unwrap();
+            seed_user(&conn);
+            security::auth::create_session(&conn, "admin").unwrap()
+        };
         let id = uuid::Uuid::new_v4().to_string();
         let now = format!(
             "{}",
@@ -546,34 +573,22 @@ mod tests {
                 .as_secs()
         );
 
-        conn.execute(
+        sqlx::query(
             "INSERT INTO cameras (id, name, camera_type, config, status, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                id,
-                "Test Cam",
-                "rtsp",
-                "{\"url\":\"rtsp://localhost/stream\"}",
-                "stopped",
-                now,
-                now,
-            ],
         )
+        .bind(&id)
+        .bind("Test Cam")
+        .bind("rtsp")
+        .bind("{\"url\":\"rtsp://localhost/stream\"}")
+        .bind("stopped")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
         .unwrap();
 
-        let db = Arc::new(Mutex::new(conn));
-        let active = crate::server::ActiveStreams::default();
-        let stream_manager = Arc::new(StreamManager::new());
-        let rtsp_server = Arc::new(RtspServer::new(RtspServerConfig::default()));
-        let state = crate::server::AppRouterState {
-            db,
-            active,
-            stream_manager,
-            rtsp_server,
-            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            advertised_host: Arc::new("localhost".to_string()),
-        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
-        };
+        let state = build_state(pool, auth_db);
         (state, token, id)
     }
 
@@ -714,16 +729,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_routes_require_auth() {
-        let conn = test_db();
-        let state = crate::server::AppRouterState {
-            db: conn,
-            active: crate::server::ActiveStreams::default(),
-            stream_manager: Arc::new(StreamManager::new()),
-            rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
-            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            advertised_host: Arc::new("localhost".to_string()),
-        protocol_runtime: Arc::new(tokio::sync::Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
-        };
+        let (pool, auth_db) = test_db().await;
+        let state = build_state(pool, auth_db);
         let app = crate::server::build_app_with_state(state);
 
         let cam_id = "some-id";

@@ -17,6 +17,12 @@ pub struct MockOutput {
     fail_on_send: bool,
 }
 
+impl Default for MockOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockOutput {
     pub fn new() -> Self {
         Self {

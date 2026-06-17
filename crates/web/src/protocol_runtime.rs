@@ -238,8 +238,8 @@ impl ProtocolRuntime {
             })?;
 
         // Get local IP for SIP messages
-        let local_ip = get_local_ip_for_server(&sip_server_addr)
-            .unwrap_or_else(|_| "127.0.0.1".to_string());
+        let local_ip =
+            get_local_ip_for_server(&sip_server_addr).unwrap_or_else(|_| "127.0.0.1".to_string());
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_txs.insert("gb28181".into(), shutdown_tx);
@@ -431,8 +431,7 @@ async fn run_gb28181_loop(
         Arc::new(tokio::sync::Mutex::new(HashSet::new()));
 
     // Track active RTP push outputs by Call-ID → (camera_id, output_id) for BYE cleanup.
-    let mut gb28181_outputs: HashMap<String, (String, streaming::hub::OutputId)> =
-        HashMap::new();
+    let mut gb28181_outputs: HashMap<String, (String, streaming::hub::OutputId)> = HashMap::new();
 
     // Registration state
     let mut registered = false;
@@ -841,15 +840,10 @@ fn get_onvif_xaddrs(port: u16) -> Vec<String> {
             let ifa = &*ptr;
             if let Some(addr) = ifa.ifa_addr.as_ref() {
                 if addr.sa_family as libc::c_uint == libc::AF_INET as libc::c_uint {
-                    let sin =
-                        addr as *const libc::sockaddr as *const libc::sockaddr_in;
-                    let ip =
-                        Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
+                    let sin = addr as *const libc::sockaddr as *const libc::sockaddr_in;
+                    let ip = Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
                     if !ip.is_loopback() && !ip.is_unspecified() {
-                        xaddrs.push(format!(
-                            "http://{}:{}/onvif/device_service",
-                            ip, port
-                        ));
+                        xaddrs.push(format!("http://{}:{}/onvif/device_service", ip, port));
                     }
                 }
             }

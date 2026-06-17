@@ -12,15 +12,15 @@ pub mod file;
 pub mod gb28181;
 #[cfg(test)]
 pub mod mock;
-pub mod rtsp;
 pub mod rtmp;
+pub mod rtsp;
 
 pub use file::FileOutput;
 pub use gb28181::Gb28181Output;
 #[cfg(test)]
 pub use mock::MockOutput;
-pub use rtsp::RtspOutput;
 pub use rtmp::RtmpOutput;
+pub use rtsp::RtspOutput;
 
 use std::future::Future;
 use std::pin::Pin;
