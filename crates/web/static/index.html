@@ -256,6 +256,7 @@ a:hover { color: var(--ah); }
    ============================================================ */
 .pg { display: none; padding: var(--s24); max-width: 1200px; margin: 0 auto; width: 100%; }
 .pg.a { display: block; }
+.pg.a.ap { display: flex; justify-content: center; align-items: center; min-height: 100vh; }
 
 .ph {
   display: flex;
@@ -401,8 +402,14 @@ select {
   letter-spacing: -0.02em;
 }
 
-.ac h1 { font-size: 1.429rem; font-weight: 700; margin-bottom: var(--s4); }
-.ac .st { color: var(--t2); font-size: 0.929rem; margin-bottom: var(--s32); }
+.ac .st { color: var(--t2); font-size: 0.929rem; margin-bottom: var(--s32); width: auto; height: auto; background: none; border-radius: 0; position: static; }
+.ac .st::before { content: none; }
+
+/* Password input with show/hide toggle */
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 44px; }
+.pw-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: var(--t3); padding: 4px; display: flex; align-items: center; justify-content: center; border-radius: var(--r4); }
+.pw-toggle:hover { color: var(--t1); background: var(--ho); }
 
 .ae {
   background: var(--dd);
@@ -781,7 +788,7 @@ td::before { content: attr(data-label); color: var(--t3); font-weight: 600; marg
 <section id=pg-login class="pg ap">
 <div class=ac><div class=lg>mibee-rec</div><h1 data-i18n="login.title">Sign In</h1><p class=st data-i18n="login.subtitle">Camera surveillance management</p><div id=le class=ae></div>
 <form id=lf><div class=fg><label for=lu data-i18n="login.username">Username</label><input type=text id=lu data-i18n-placeholder="login.username_ph" placeholder=Username required autocomplete=username></div>
-<div class=fg><label for=lp data-i18n="login.password">Password</label><input type=password id=lp data-i18n-placeholder="login.password_ph" placeholder=Password required autocomplete=current-password></div>
+<div class=fg><label for=lp data-i18n="login.password">Password</label><div class=pw-wrap><input type=password id=lp data-i18n-placeholder="login.password_ph" placeholder=Password required autocomplete=current-password><button type=button class=pw-toggle onclick=togglePw('lp') aria-label="Show password"><svg width=18 height=18 viewBox="0 0 24 24"><path fill=currentColor d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 110-10 5 5 0 010 10zm0-8a3 3 0 100 6 3 3 0 000-6z"/></svg></button></div></div>
 <button type=submit class="b bp" style=width:100% id=ls data-i18n="login.submit">Sign In</button></form></div></section>
 
 <section id=pg-stp class="pg ap">
@@ -2255,6 +2262,13 @@ document.addEventListener('DOMContentLoaded', function() {
   initSSE();
 });
 
+// Password show/hide toggle
+function togglePw(id) {
+  var inp = document.getElementById(id);
+  if (!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
 // Expose functions for onclick handlers in HTML
 window.G = G;
 window.wa = wa;
@@ -2279,6 +2293,7 @@ window.translatePage = translatePage;
 window.vY = vY;
 window.K = K;
 window.switchTab = switchTab;
+window.togglePw = togglePw;
 window.takeSnapshot = takeSnapshot;
 window.startRecording = startRecording;
 window.stopRecording = stopRecording;
