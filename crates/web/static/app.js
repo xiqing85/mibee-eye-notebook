@@ -44,6 +44,7 @@ function translatePage() {
 
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', THEME);
+  document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
   updateThemeToggleIcon();
 }
 function updateThemeToggleIcon() {
@@ -65,6 +66,7 @@ async function toggleTheme() {
 }
 async function toggleLang() {
   LANG = LANG === 'en' ? 'zh' : 'en';
+  document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
   updateLangToggleText();
   translatePage();
   r();
@@ -85,6 +87,7 @@ async function initThemeAndLang() {
     LANG = (navigator.language || '').startsWith('zh') ? 'zh' : 'en';
   }
   applyTheme();
+  document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
   updateLangToggleText();
   translatePage();
 }
@@ -95,7 +98,7 @@ async function initThemeAndLang() {
 // ============================================================
 const I18N = {
   'en': {
-    'nav.brand': 'mibee-rec','nav.dashboard': 'Dashboard','nav.settings': 'Settings',
+    'nav.brand': 'mibee-rec','nav.cameras': 'Cameras','nav.settings': 'Settings',
     'nav.devices': 'Devices','nav.logout': 'Logout','nav.signed_out': 'Signed out',
     'login.title': 'Sign In','login.subtitle': 'Camera surveillance management',
     'login.username': 'Username','login.password': 'Password','login.submit': 'Sign In',
@@ -107,9 +110,9 @@ const I18N = {
     'setup.setting_up': 'Setting up...','setup.created': 'Account created! Sign in.',
     'setup.error_empty': 'Please fill all fields.','setup.error_mismatch': 'Passwords do not match.',
     'setup.error_length': 'Password must be at least 8 characters.','setup.error_failed': 'Setup failed',
-    'dashboard.title': 'Cameras','dashboard.subtitle': 'Manage surveillance cameras','dashboard.add': '+ Add Camera',
-    'dashboard.loading': 'Loading cameras...','dashboard.empty_title': 'No cameras configured',
-    'dashboard.empty_desc': 'Add your first camera to start monitoring.',
+    'cameras.title': 'Cameras','cameras.subtitle': 'Manage surveillance cameras','cameras.add': '+ Add Camera',
+    'cameras.loading': 'Loading cameras...','cameras.empty_title': 'No cameras configured',
+    'cameras.empty_desc': 'Add your first camera to start monitoring.',
     'table.name': 'Name','table.type': 'Type','table.status': 'Status','table.stream_url': 'Stream URL','table.actions': 'Actions',
     'table.url_unavailable': '(URL unavailable)',
     'camera.add': 'Add Camera','camera.edit': 'Edit Camera','camera.saving': 'Saving...',
@@ -162,7 +165,7 @@ const I18N = {
     'theme.toggle': 'Toggle theme','lang.toggle': 'Switch language','lang.en': 'EN','lang.zh': '\u4e2d',
   },
   'zh': {
-    'nav.brand': 'mibee-rec','nav.dashboard': '\u4eea\u8868\u76d8','nav.settings': '\u8bbe\u7f6e',
+    'nav.brand': 'mibee-rec','nav.cameras': '\u6444\u50cf\u5934','nav.settings': '\u8bbe\u7f6e',
     'nav.devices': '\u8bbe\u5907','nav.logout': '\u9000\u51fa\u767b\u5f55','nav.signed_out': '\u5df2\u9000\u51fa\u767b\u5f55',
     'login.title': '\u767b\u5f55','login.subtitle': '\u6444\u50cf\u5934\u76d1\u63a7\u7ba1\u7406',
     'login.username': '\u7528\u6237\u540d','login.password': '\u5bc6\u7801','login.submit': '\u767b\u5f55',
@@ -173,9 +176,9 @@ const I18N = {
     'setup.setting_up': '\u8bbe\u7f6e\u4e2d...','setup.created': '\u8d26\u6237\u5df2\u521b\u5efa\uff01\u8bf7\u767b\u5f55\u3002',
     'setup.error_empty': '\u8bf7\u586b\u5199\u6240\u6709\u5b57\u6bb5\u3002','setup.error_mismatch': '\u5bc6\u7801\u4e0d\u5339\u914d\u3002',
     'setup.error_length': '\u5bc6\u7801\u81f3\u5c11\u9700\u89818\u4e2a\u5b57\u7b26\u3002','setup.error_failed': '\u8bbe\u7f6e\u5931\u8d25',
-    'dashboard.title': '\u6444\u50cf\u5934','dashboard.subtitle': '\u7ba1\u7406\u76d1\u63a7\u6444\u50cf\u5934','dashboard.add': '+ \u6dfb\u52a0\u6444\u50cf\u5934',
-    'dashboard.loading': '\u52a0\u8f7d\u6444\u50cf\u5934...','dashboard.empty_title': '\u672a\u914d\u7f6e\u6444\u50cf\u5934',
-    'dashboard.empty_desc': '\u6dfb\u52a0\u7b2c\u4e00\u4e2a\u6444\u50cf\u5934\u5f00\u59cb\u76d1\u63a7\u3002',
+    'cameras.title': '\u6444\u50cf\u5934','cameras.subtitle': '\u7ba1\u7406\u76d1\u63a7\u6444\u50cf\u5934','cameras.add': '+ \u6dfb\u52a0\u6444\u50cf\u5934',
+    'cameras.loading': '\u52a0\u8f7d\u6444\u50cf\u5934...','cameras.empty_title': '\u672a\u914d\u7f6e\u6444\u50cf\u5934',
+    'cameras.empty_desc': '\u6dfb\u52a0\u7b2c\u4e00\u4e2a\u6444\u50cf\u5934\u5f00\u59cb\u76d1\u63a7\u3002',
     'table.name': '\u540d\u79f0','table.type': '\u7c7b\u578b','table.status': '\u72b6\u6001','table.stream_url': '\u6d41\u5730\u5740','table.actions': '\u64cd\u4f5c',
     'table.url_unavailable': '\uff08URL\u4e0d\u53ef\u7528\uff09',
     'camera.add': '\u6dfb\u52a0\u6444\u50cf\u5934','camera.edit': '\u7f16\u8f91\u6444\u50cf\u5934','camera.saving': '\u4fdd\u5b58\u4e2d...',
@@ -207,7 +210,7 @@ const I18N = {
     'protocol.save': '\u4fdd\u5b58{name}','protocol.saved': '{name}\u914d\u7f6e\u5df2\u4fdd\u5b58','protocol.yes': '\u662f','protocol.no': '\u5426',
     'devices.title': '\u8bbe\u5907','devices.subtitle': '\u672c\u5730\u89c6\u9891\u548c\u97f3\u9891\u8bbe\u5907','devices.video': '\u89c6\u9891\u8bbe\u5907','devices.audio': '\u97f3\u9891\u8bbe\u5907',
     'devices.no_video': '\u672a\u627e\u5230\u89c6\u9891\u8bbe\u5907\u3002','devices.no_audio': '\u672a\u627e\u5230\u97f3\u9891\u8bbe\u5907\u3002','devices.load_failed': '\u52a0\u8f7d\u8bbe\u5907\u5931\u8d25',
-    'devices.index': '\u7f16\u53f7: ','devices.formats': '\u683c\u5f0f: ','devices.configs': '\u914d\u7f6e: ',
+    'devices.index': '\u7d22\u5f15: ','devices.formats': '\u683c\u5f0f: ','devices.configs': '\u914d\u7f6e: ',
     'common.cancel': '\u53d6\u6d88','common.delete': '\u5220\u9664','common.copy': '\u590d\u5236','common.loading': '\u52a0\u8f7d\u4e2d...','common.error': '\u9519\u8bef',
     'session.expired': '\u4f1a\u8bdd\u5df2\u8fc7\u671f',
     'usb.name': 'USB\u6444\u50cf\u5934 {index}','usb.created': 'USB\u6444\u50cf\u5934\u5df2\u521b\u5efa','usb.create_failed': '\u521b\u5efa\u6444\u50cf\u5934\u5931\u8d25',
@@ -942,7 +945,7 @@ async function loadDevices() {
       vr.data.forEach(function(d) {
         vh += '<div class="device-card">' +
               '<div class="device-name">' + E(d.name) + '</div>' +
-              '<div class="device-info">Index: ' + d.index + '</div>';
+              '<div class="device-info">' + t('devices.index') + d.index + '</div>';
         if (d.formats && d.formats.length > 0) {
           vh += '<div class="device-formats">' + t('devices.formats') + E(d.formats.join(', ')) + '</div>';
         }
@@ -1132,7 +1135,7 @@ async function lp() {
         let prefix = { onvif: 'onv-', gb28181: 'gb-', rtmp: 'rtmp-' }[p];
         let map = { enabled: 'enabled', port: 'port', device_name: 'device-name',
                     manufacturer: 'manufacturer', model: 'model', device_id: 'device-id',
-                    server_ip: 'server-ip', server_port: 'server-port', url: 'url' };
+                    platform_sip_address: 'server-ip', platform_sip_port: 'server-port', push_url: 'url' };
         Object.keys(r.data).forEach(function(k) {
           let el = document.getElementById(prefix + (map[k] || k));
           if (el) el.value = r.data[k];
@@ -1146,8 +1149,8 @@ async function sp(p) {
   let prefix = { onvif: 'onv-', gb28181: 'gb-', rtmp: 'rtmp-' }[p];
   let cfg = {};
   let map = { enabled: 'enabled', port: 'port', 'device-name': 'device_name',
-              'device-id': 'device_id', 'server-ip': 'server_ip',
-              'server-port': 'server_port', 'url': 'url' };
+              'device-id': 'device_id', 'server-ip': 'platform_sip_address',
+              'server-port': 'platform_sip_port', 'url': 'push_url' };
   document.querySelectorAll('[id^="' + prefix + '"]').forEach(function(el) {
     let key = map[el.id.slice(prefix.length)] || el.id.slice(prefix.length);
     cfg[key] = el.value;

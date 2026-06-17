@@ -58,6 +58,9 @@
   --wd: rgba(255, 152, 0, 0.12);
   --da: #ef5350;
   --dd: rgba(239, 83, 80, 0.12);
+  --success-bg: #1b5e20;
+  --error-bg: #b71c1c;
+  --info-bg: #0d47a1;
 
   --bd: #1e2740;
   --bf: #00bcd4;
@@ -104,6 +107,9 @@
   --wd: rgba(237,108,2,0.08);
   --da: #c62828;
   --dd: rgba(198,40,40,0.08);
+  --success-bg: #2e7d32;
+  --error-bg: #c62828;
+  --info-bg: #1565c0;
   --t1: #1a1a2e;
   --t2: #5a5a72;
   --t3: #8a8a9a;
@@ -575,9 +581,9 @@ tr:last-child td { border-bottom: none; }
   max-width: 360px;
 }
 
-.to-s { background: #1b5e20; color: #a5d6a7; border: 1px solid #2e7d32; }
-.to-e { background: #b71c1c; color: #ef9a9a; border: 1px solid #c62828; }
-.to-i { background: #0d47a1; color: #90caf9; border: 1px solid #1565c0; }
+.to-s { background: var(--success-bg); color: #a5d6a7; border: 1px solid #2e7d32; }
+.to-e { background: var(--error-bg); color: #ef9a9a; border: 1px solid #c62828; }
+.to-i { background: var(--info-bg); color: #90caf9; border: 1px solid #1565c0; }
 
 /* ============================================================
    SETTINGS
