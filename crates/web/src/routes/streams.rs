@@ -183,7 +183,7 @@ pub async fn snapshot(
     Extension(db): Extension<SqlitePool>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Extension(advertised_host): Extension<Arc<String>>,
+    Extension(_advertised_host): Extension<Arc<String>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Verify camera exists
@@ -234,13 +234,8 @@ pub async fn snapshot(
         }
     };
 
-    // RTSP URL for the camera's stream
-    let rtsp_host = if advertised_host.is_empty() {
-        "127.0.0.1"
-    } else {
-        advertised_host.as_str()
-    };
-    let rtsp_url = format!("rtsp://{}:8554/live/{}", rtsp_host, id);
+    // Internal ffmpeg→RTSP loopback: always use 127.0.0.1 (both processes run on this machine)
+    let rtsp_url = format!("rtsp://127.0.0.1:8554/live/{}", id);
 
     // Use ffmpeg to capture a single JPEG frame
     let capture_result = timeout(Duration::from_secs(30), async move {
@@ -347,7 +342,7 @@ pub async fn live_preview(
     Extension(db): Extension<SqlitePool>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Extension(advertised_host): Extension<Arc<String>>,
+    Extension(_advertised_host): Extension<Arc<String>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
     use std::process::Stdio;
@@ -373,12 +368,8 @@ pub async fn live_preview(
     // Live preview: pull from RTSP and convert to MJPEG via ffmpeg.
     // This single ffmpeg approach works for ALL camera types (USB, RTSP, ONVIF,
     // GB28181) because every camera's stream is available through the RTSP server.
-    let rtsp_host = if advertised_host.is_empty() {
-        "127.0.0.1"
-    } else {
-        advertised_host.as_str()
-    };
-    let rtsp_url = format!("rtsp://{}:8554/live/{}", rtsp_host, id);
+    // Internal ffmpeg→RTSP loopback: always use 127.0.0.1 (both processes run on this machine)
+    let rtsp_url = format!("rtsp://127.0.0.1:8554/live/{}", id);
 
     let mut cmd = Command::new("ffmpeg");
     cmd.stdin(Stdio::null())
