@@ -14,12 +14,16 @@ All requests and responses use JSON:
 - Request: `Content-Type: application/json`
 - Response: `Content-Type: application/json`
 
+**Note:** Binary responses (snapshot, live preview) use appropriate content types (e.g., `image/jpeg`, `multipart/x-mixed-replace`).
+
 ### Authentication
-The API uses cookie-based session authentication. After successful setup, the API returns a session token in the `Set-Cookie` header which must be included in subsequent requests:
+The API uses cookie-based session authentication. After successful login, the API returns a session token in the `Set-Cookie` header which must be included in subsequent requests:
 
 ```bash
 Cookie: session=$SESSION_TOKEN
 ```
+
+Additionally, a CSRF token is issued as a non-HttpOnly cookie and returned in the response body. All state-changing requests (POST/PUT/DELETE/PATCH) must include the CSRF token in the `X-CSRF-Token` header.
 
 ### TLS Requirement
 All API communication requires TLS/SSL. The server generates a self-signed certificate on first run if none exists.
@@ -68,9 +72,79 @@ curl -X POST https://localhost:8443/api/auth/setup \
   -d '{"username": "admin", "password": "securepass123"}'
 ```
 
-### Session Management
+---
 
-**Note:** Traditional login/logout endpoints (`POST /api/auth/login` and `/POST /api/auth/logout`) are not yet implemented and return 501. Use the password reset endpoint instead.
+### Login
+
+**Endpoint:** `POST /api/auth/login`
+
+**Description:** Authenticate and create a session. On success, sets a session cookie (HttpOnly) and a CSRF cookie (non-HttpOnly), and returns a JSON response with the CSRF token.
+
+**Request Body:**
+```json
+{
+  "username": "string",
+  "password": "string"
+}
+```
+
+**Response (200 OK):**
+- **Headers:**
+  - `Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`
+  - `Set-Cookie: csrf-token=<token>; SameSite=Strict; Path=/; Max-Age=86400`
+- **Body:**
+```json
+{
+  "status": "ok",
+  "csrf_token": "<token>"
+}
+```
+
+**Response (401 Unauthorized):**
+```json
+{
+  "error": "invalid credentials"
+}
+```
+
+**Response (429 Too Many Requests):**
+```json
+{
+  "error": "account locked, try again in N seconds"
+}
+```
+
+**Example:**
+```bash
+curl -X POST https://localhost:8443/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "securepass123"}'
+```
+
+---
+
+### Logout
+
+**Endpoint:** `POST /api/auth/logout`
+
+**Description:** Invalidate the current session. Clears the session cookie. No authentication required (clears whatever session exists).
+
+**Response (200 OK):**
+- **Headers:**
+  - `Set-Cookie: session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`
+- **Body:**
+```json
+{
+  "status": "ok"
+}
+```
+
+**Example:**
+```bash
+curl -X POST https://localhost:8443/api/auth/logout
+```
+
+---
 
 ### Password Reset
 
@@ -165,13 +239,14 @@ curl -X GET https://localhost:8443/metrics
   {
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "name": "Front Door",
-    "camera_type": "rtsp",
+    "camera_type": "usb",
     "config": {
-      "url": "rtsp://192.168.1.100:554/stream1"
+      "device_index": 0
     },
     "status": "stopped",
     "created_at": "1672531200",
-    "updated_at": "1672531200"
+    "updated_at": "1672531200",
+    "rtsp_url": "rtsp://localhost:8554/live/550e8400-e29b-41d4-a716-446655440000"
   }
 ]
 ```
@@ -202,26 +277,28 @@ curl -X GET https://localhost:8443/api/cameras \
   "name": "string",
   "camera_type": "string",
   "config": {
-    "url": "rtsp://192.168.1.100:554/stream1"
+    "device_index": 0
   }
 }
 ```
 
 **Camera Types:**
-- `usb` - Local USB webcam
+- `usb` - Local USB webcam (primary type for this product)
 - `rtsp` - RTSP streaming camera
 - `onvif` - ONVIF network camera
 - `gb28181` - GB/T 28181 compliant camera
 - `rtmp` - RTMP ingest camera
+
+**Note:** This product is designed for **local capture only** - it captures from physically-attached devices (USB webcams via V4L2). While the database allows other camera types, the primary use case is local webcam capture via the `usb` type.
 
 **Response (201 Created):**
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "name": "Front Door",
-  "camera_type": "rtsp",
+  "camera_type": "usb",
   "config": {
-    "url": "rtsp://192.168.1.100:554/stream1"
+    "device_index": 0
   },
   "status": "stopped",
   "created_at": "1672531200",
@@ -242,14 +319,12 @@ curl -X GET https://localhost:8443/api/cameras \
 curl -X POST https://localhost:8443/api/cameras \
   -H "Content-Type: application/json" \
   -H "Cookie: session=$SESSION_TOKEN" \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
   -d '{
-    "name": "Backyard Camera",
-    "camera_type": "onvif",
+    "name": "Webcam",
+    "camera_type": "usb",
     "config": {
-      "host": "192.168.1.200",
-      "port": 80,
-      "username": "admin",
-      "password": "password"
+      "device_index": 0
     }
   }'
 ```
@@ -265,13 +340,14 @@ curl -X POST https://localhost:8443/api/cameras \
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "name": "Front Door",
-  "camera_type": "rtsp",
+  "camera_type": "usb",
   "config": {
-    "url": "rtsp://192.168.1.100:554/stream1"
+    "device_index": 0
   },
   "status": "running",
   "created_at": "1672531200",
-  "updated_at": "1672534800"
+  "updated_at": "1672534800",
+  "rtsp_url": "rtsp://localhost:8554/live/550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
@@ -309,7 +385,7 @@ curl -X GET https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440
   "name": "Updated Name",
   "camera_type": "string",
   "config": {
-    "url": "rtsp://updated-url:554/stream"
+    "device_index": 1
   },
   "status": "running"
 }
@@ -320,9 +396,9 @@ curl -X GET https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "name": "Updated Name",
-  "camera_type": "rtsp",
+  "camera_type": "usb",
   "config": {
-    "url": "rtsp://updated-url:554/stream"
+    "device_index": 1
   },
   "status": "running",
   "created_at": "1672531200",
@@ -343,6 +419,7 @@ curl -X GET https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440
 curl -X PUT https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440000 \
   -H "Content-Type: application/json" \
   -H "Cookie: session=$SESSION_TOKEN" \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
   -d '{
     "name": "Updated Camera Name",
     "status": "stopped"
@@ -381,7 +458,8 @@ curl -X PUT https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440
 **Example:**
 ```bash
 curl -X DELETE https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440000 \
-  -H "Cookie: session=$SESSION_TOKEN"
+  -H "Cookie: session=$SESSION_TOKEN" \
+  -H "X-CSRF-Token: $CSRF_TOKEN"
 ```
 
 ### Start Stream
@@ -393,7 +471,8 @@ curl -X DELETE https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655
 **Response (200 OK):**
 ```json
 {
-  "status": "ok",
+  "status": "running",
+  "rtsp_url": "rtsp://localhost:8554/live/550e8400-e29b-41d4-a716-446655440000",
   "camera_id": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
@@ -425,7 +504,8 @@ curl -X DELETE https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655
 **Example:**
 ```bash
 curl -X POST https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440000/start \
-  -H "Cookie: session=$SESSION_TOKEN"
+  -H "Cookie: session=$SESSION_TOKEN" \
+  -H "X-CSRF-Token: $CSRF_TOKEN"
 ```
 
 ### Stop Stream
@@ -461,29 +541,73 @@ curl -X POST https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-44665544
 **Example:**
 ```bash
 curl -X POST https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440000/stop \
-  -H "Cookie: session=$SESSION_TOKEN"
+  -H "Cookie: session=$SESSION_TOKEN" \
+  -H "X-CSRF-Token: $CSRF_TOKEN"
 ```
 
 ### Capture Snapshot
 
 **Endpoint:** `GET /api/cameras/{id}/snapshot`
 
-**Description:** Capture a single JPEG frame from a camera.
+**Description:** Capture a single JPEG frame from a camera using ffmpeg. The camera stream must be active.
 
-**Status:** Not yet implemented - returns 501.
+**Requirements:**
+- Stream must be running for the camera (returns 409 otherwise)
+- ffmpeg must be installed and available on PATH
 
-**Response (501 Not Implemented):**
-```json
-{
-  "error": "snapshot capture not yet implemented",
-  "code": 501
-}
-```
+**Response (200 OK):**
+- **Headers:**
+  - `Content-Type: image/jpeg`
+  - `Content-Length: <size>`
+- **Body:** JPEG binary image data
+
+**Response (404 Not Found):**
+Camera does not exist
+
+**Response (409 Conflict):**
+Stream is not active - start the stream first
+
+**Response (504 Gateway Timeout):**
+Capture took longer than 30 seconds
 
 **Example:**
 ```bash
+# Capture snapshot and save to file
 curl -X GET https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440000/snapshot \
-  -H "Cookie: session=$SESSION_TOKEN"
+  -H "Cookie: session=$SESSION_TOKEN" \
+  -o snapshot.jpg
+```
+
+---
+
+### Live Preview
+
+**Endpoint:** `GET /api/cameras/{id}/live`
+
+**Description:** Browser live preview stream using MJPEG multipart format. Suitable for direct use in `<img src=...>` tags. The camera stream must be active.
+
+**Requirements:**
+- Stream must be running for the camera (returns 409 otherwise)
+- ffmpeg must be installed and available on PATH
+
+**Response (200 OK):**
+- **Headers:**
+  - `Content-Type: multipart/x-mixed-replace; boundary=ffmpeg`
+  - `Cache-Control: no-store, no-cache, must-revalidate`
+- **Body:** Continuous MJPEG stream (JPEG frames separated by boundaries)
+
+**Response (404 Not Found):**
+Camera does not exist
+
+**Response (409 Conflict):**
+Stream is not active - start the stream first
+
+**Example:**
+```bash
+# In HTML:
+# <img src="/api/cameras/{id}/live">
+#
+# The browser automatically handles the MJPEG stream and displays live video.
 ```
 
 ---
@@ -501,7 +625,6 @@ curl -X GET https://localhost:8443/api/cameras/550e8400-e29b-41d4-a716-446655440
 {
   "theme": "dark",
   "language": "en-US",
-  "notification_enabled": "true",
   "max_concurrent_streams": "16"
 }
 ```
@@ -557,54 +680,230 @@ curl -X GET https://localhost:8443/api/settings \
 curl -X PUT https://localhost:8443/api/settings \
   -H "Content-Type: application/json" \
   -H "Cookie: session=$SESSION_TOKEN" \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
   -d '{
     "settings": {
       "theme": "light",
-      "language": "en-US",
-      "auto_discover": "true"
+      "language": "en-US"
     }
   }'
 ```
 
 ---
 
-## ONVIF Endpoints
+## Protocol Configuration Endpoints
 
-### Discover ONVIF Devices
+### Get Protocol Config
 
-**Endpoint:** `GET /api/onvif/discover`
+**Endpoint:** `GET /api/protocols/{onvif|gb28181|rtmp}`
 
-**Description:** Probe the local network for ONVIF cameras using WS-Discovery (UDP multicast on port 3702). Uses a 5-second timeout.
+**Description:** Retrieve the current configuration for the specified protocol.
 
 **Response (200 OK):**
 ```json
-[
-  {
-    "xaddrs": [
-      "http://192.168.1.100:80/onvif/device_service"
-    ],
-    "scopes": [
-      "onvif://www.onvif.org/Profile/Streaming",
-      "onvif://www.onvif.org/type/video"
-    ],
-    "types": ["dn:Device"],
-    "endpoint": "soap-udp://192.168.1.100:3702"
-  }
-]
-```
-
-**Response (500 Internal Server Error):**
-```json
 {
-  "error": "ONVIF discovery failed",
-  "code": 500
+  "enabled": true,
+  // ... protocol-specific fields
 }
 ```
 
 **Example:**
 ```bash
-curl -X GET https://localhost:8443/api/onvif/discover \
+curl -X GET https://localhost:8443/api/protocols/onvif \
   -H "Cookie: session=$SESSION_TOKEN"
+```
+
+---
+
+### Update Protocol Config
+
+**Endpoint:** `PUT /api/protocols/{onvif|gb28181|rtmp}`
+
+**Description:** Update the configuration for the specified protocol. Persists to SQLite and hot-toggles the protocol runtime based on the `enabled` flag (no server restart required).
+
+**Request Body:**
+```json
+{
+  "enabled": true,
+  // ... protocol-specific fields
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "status": "ok"
+}
+```
+
+**Example:**
+```bash
+curl -X PUT https://localhost:8443/api/protocols/onvif \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=$SESSION_TOKEN" \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
+  -d '{"enabled": true, "device_name": "FrontDoor"}'
+```
+
+---
+
+### Get Protocol Runtime Status
+
+**Endpoint:** `GET /api/protocols/runtime-status`
+
+**Description:** Get the running/stopped status of all protocols.
+
+**Response (200 OK):**
+```json
+{
+  "onvif": "running",
+  "gb28181": "stopped",
+  "rtmp": "running"
+}
+```
+
+**Example:**
+```bash
+curl -X GET https://localhost:8443/api/protocols/runtime-status \
+  -H "Cookie: session=$SESSION_TOKEN"
+```
+
+---
+
+## Device Enumeration Endpoints
+
+### List Video Devices
+
+**Endpoint:** `GET /api/devices/video`
+
+**Description:** Enumerate all available local video capture devices (webcams) using V4L2.
+
+**Response (200 OK):**
+```json
+[
+  {
+    "index": 0,
+    "name": "/dev/video0",
+    "formats": ["YUYV 640x480", "MJPEG 1280x720"]
+  }
+]
+```
+
+**Example:**
+```bash
+curl -X GET https://localhost:8443/api/devices/video \
+  -H "Cookie: session=$SESSION_TOKEN"
+```
+
+---
+
+### List Audio Devices
+
+**Endpoint:** `GET /api/devices/audio`
+
+**Description:** Enumerate all available local audio input devices using ALSA.
+
+**Response (200 OK):**
+```json
+[
+  {
+    "name": "default",
+    "supported_configs": [
+      {
+        "channels": 2,
+        "min_sample_rate": 44100.0,
+        "max_sample_rate": 48000.0,
+        "sample_format": "S16LE"
+      }
+    ]
+  }
+]
+```
+
+**Example:**
+```bash
+curl -X GET https://localhost:8443/api/devices/audio \
+  -H "Cookie: session=$SESSION_TOKEN"
+```
+
+---
+
+## Server-Sent Events (SSE)
+
+### Camera Events Stream
+
+**Endpoint:** `GET /api/events`
+
+**Description:** Server-Sent Events stream for real-time camera hot-plug events. Receives `camera_added` and `camera_offlined` events as cameras are plugged in or unplugged.
+
+**Event Types:**
+- `camera_added` - New camera discovered
+- `camera_offlined` - Camera went offline (unplugged)
+
+**Event Format:**
+```
+event: camera_added
+data: {"camera_id":"...","device_index":0,"name":"..."}
+
+event: camera_offlined
+data: {"camera_id":"...","device_index":0}
+
+```
+
+**Example:**
+```bash
+# SSE endpoint returns continuous event stream
+curl -N https://localhost:8443/api/events \
+  -H "Cookie: session=$SESSION_TOKEN"
+```
+
+---
+
+## Security Features
+
+### CSRF Protection
+
+All state-changing requests (POST, PUT, DELETE, PATCH) require a CSRF token to prevent Cross-Site Request Forgery attacks.
+
+**Token Issuance:**
+- On successful login, a CSRF token is issued as a non-HttpOnly cookie named `csrf-token`
+- The same token is also returned in the JSON response body as `csrf_token`
+
+**Token Usage:**
+- Include the token in the `X-CSRF-Token` header on all POST/PUT/DELETE/PATCH requests
+- The token value must match the `csrf-token` cookie value (double-submit pattern)
+
+**Example:**
+```bash
+curl -X POST https://localhost:8443/api/cameras \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=$SESSION_TOKEN; csrf-token=<token>" \
+  -H "X-CSRF-Token: <token>" \
+  -d '{"name":"Test","camera_type":"usb"}'
+```
+
+**Failure:** Missing or mismatched token returns 403 Forbidden.
+
+---
+
+### Rate Limiting
+
+Login endpoints are rate-limited to prevent brute force attacks.
+
+**Default Limits:**
+- 20 requests per 60 seconds per IP address on auth endpoints
+- Rate limit counter resets on successful login
+
+**Account Lockout:**
+- After 5 failed login attempts, the account is locked
+- Lockout duration doubles with each additional failure: 60s → 120s → 240s → ...
+- Successful login resets the failure counter
+
+**Rate Limit Response:**
+```json
+{
+  "error": "account locked, try again in 60 seconds"
+}
 ```
 
 ---
@@ -628,6 +927,13 @@ All error responses follow a consistent format:
 }
 ```
 
+### 403 Forbidden
+```json
+{
+  "error": "CSRF token missing or invalid"
+}
+```
+
 ### 404 Not Found
 ```json
 {
@@ -647,7 +953,7 @@ All error responses follow a consistent format:
 ### 429 Too Many Requests
 ```json
 {
-  "error": "rate limit exceeded"
+  "error": "account locked, try again in N seconds"
 }
 ```
 
@@ -659,10 +965,10 @@ All error responses follow a consistent format:
 }
 ```
 
-### 501 Not Implemented
+### 504 Gateway Timeout
 ```json
 {
-  "error": "not implemented"
+  "error": "snapshot capture timed out"
 }
 ```
 
@@ -680,7 +986,7 @@ All error responses follow a consistent format:
 
 1. **First Access:** Server responds with 503 for most endpoints
 2. **Setup:** Call `POST /api/auth/setup` to create admin user
-3. **Access:** Use returned session token for authenticated endpoints
+3. **Access:** Login with `POST /api/auth/login` to get session token and CSRF token
 4. **Configuration:** Add cameras, settings, and discover devices
 
 ## Example Session Flow
@@ -691,27 +997,36 @@ curl -X POST https://localhost:8443/api/auth/setup \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "securepass123"}'
 
-# 2. Create a camera
+# 2. Login to get session and CSRF tokens
+LOGIN_RESPONSE=$(curl -X POST https://localhost:8443/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "securepass123"}' \
+  -c cookies.txt)
+
+CSRF_TOKEN=$(echo $LOGIN_RESPONSE | jq -r '.csrf_token')
+
+# 3. Create a camera (requires CSRF token)
 curl -X POST https://localhost:8443/api/cameras \
   -H "Content-Type: application/json" \
-  -H "Cookie: session=returned_session_token" \
-  -d '{"name": "Test Camera", "camera_type": "rtsp", "config": {"url": "rtsp://192.168.1.100:554/stream"}}'
+  -b cookies.txt \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
+  -d '{"name": "Webcam", "camera_type": "usb", "config": {"device_index": 0}}'
 
-# 3. Start streaming
-curl -X POST https://localhost:8443/api/cameras/camera_id/start \
-  -H "Cookie: session=returned_session_token"
+# 4. Start streaming (requires CSRF token)
+curl -X POST https://localhost:8443/api/cameras/<camera_id>/start \
+  -b cookies.txt \
+  -H "X-CSRF-Token: $CSRF_TOKEN"
 
-# 4. Check settings
+# 5. Check settings
 curl -X GET https://localhost:8443/api/settings \
-  -H "Cookie: session=returned_session_token"
+  -b cookies.txt
 ```
 
-## Rate Limiting
-
-Login endpoints are rate-limited to 20 requests per 60 seconds per IP address to prevent brute force attacks.
+---
 
 ## Session Management
 
 - Session tokens expire after 24 hours
 - All sessions are invalidated when password is reset
-- Session cleanup happens automatically
+- Session cleanup happens automatically (every 5 minutes)
+- Rate limiting resets on successful login

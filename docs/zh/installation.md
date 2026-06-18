@@ -157,6 +157,57 @@ cp config.toml config.local.toml
 编辑 `config.local.toml` 进行本地覆盖配置。此文件已被 .gitignore 忽略，不会被提交。
 
 ### 默认配置
+```toml
+[web]
+port = 8443
+host = "0.0.0.0"
+advertised_host = "192.168.1.100"
+
+[rtsp]
+server_port = 8554
+
+[rtmp_push]
+enabled = false
+push_url = "rtmp://192.168.1.100:1935/live"
+app_name = "live"
+stream_name = "stream1"
+reconnect_interval_secs = 5
+max_reconnect_attempts = 10
+
+[capture]
+video_device = "/dev/video0"
+audio_device = "default"
+
+[security]
+rate_limit_max = 20
+rate_limit_window_secs = 60
+
+[observability]
+otel_endpoint = "http://localhost:4317"
+log_level = "info"
+
+[recording]
+enabled = false
+path = "./recordings"
+segment_duration_secs = 900
+max_capacity_mb = 10240
+
+[database]
+path = "~/.local/share/mibee-rec/mibee_rec.db"
+```
+
+### 配置选项
+
+- **web**：Web UI 设置（端口、主机、通告主机）
+- **rtsp**：RTSP 服务器配置（仅出站服务器模式）
+- **rtmp_push**：RTMP 推送客户端（推送到外部推流服务器的出站，不是接收服务器）
+- **capture**：视频/音频设备路径（仅本地；不发现远程摄像头）
+- **security**：速率限制配置（不可中毒 Mutex）
+- **observability**：日志和指标设置（OTLP 跟踪、可选 Loki 远程日志推送）
+- **onvif**：ONVIF 设备端点配置（可选）
+- **gb28181**：GB/T 28181 设备注册（可选）
+- **recording**：本地 MP4 段录制，自动修剪
+- **database**：SQLite 数据库路径（XDG 兼容默认值）
 
 ```toml
 [web]
@@ -166,8 +217,8 @@ host = "0.0.0.0"
 [rtsp]
 server_port = 8554
 
-[rtmp]
-ingest_port = 1935
+[rtmp_push]
+enabled = false
 
 [capture]
 video_device = "/dev/video0"
@@ -354,7 +405,11 @@ podman run -d \
   -v /opt/mibee-rec/config.local.toml:/config.toml:ro \
   -v /opt/mibee-rec/tls:/tls:ro \
   -p 8443:8443 \
+  -p 8443:8443 \
   -p 8554:8554 \
+  mibee-rec
+# 注意：RTMP 推送是出站的；除非您正在运行外部 RTMP 推流服务器，否则不需要端口映射
+```
   -p 1935:1935 \
   mibee-rec
 ```

@@ -2,33 +2,33 @@
 
 ## Overview
 
-mibee-rec is a professional laptop surveillance agent built in Rust, designed to capture local webcam and microphone audio while connecting to IP cameras and NVRs via multiple streaming protocols. The architecture prioritizes security, low resource usage, minimal dependencies, Linux-first development, and local-first deployment.
+mibee-rec is a **PC-local webcam & microphone capture agent** built in Rust. It captures video and audio from devices **physically attached to this machine** (USB webcams, built-in/USB microphones) via V4L2/ALSA, and distributes the captured stream through outbound protocols (RTSP server, RTMP push, ONVIF device, GB/T 28181 device) to external NVRs and live platforms. The architecture prioritizes security (TLS-only, authenticated), low resource usage, minimal dependencies, Linux-first development, and local-first (air-gapped) deployment. It does **not** discover or pull from remote network cameras.
 
 ### Design Goals
 
 - **Security first**: All external access requires encryption (TLS) and authentication. No anonymous access to streams or control surfaces.
 - **Low resource usage**: Targets <5% CPU idle, <200MB RAM using zero-copy async I/O throughout the pipeline.
 - **Minimal dependencies**: Prefers hand-written codec and protocol implementations. Only adds crates for genuinely hard problems (TLS, async runtime, platform ABI).
-- **Linux priority**: V4L2/ALSA first-class citizens. Windows (MSMF/WASAPI) second-class. macOS not in scope.
+- **Linux priority**: V4L2/ALSA are first-class (Tier 1 — the only platform that compiles end-to-end today). Windows (MSMF/WASAPI) and macOS (AVFoundation/CoreAudio) are planned Tier 2.
 - **Local-first**: Development, testing, and production run on the same laptop. Exact commands provided for privileged operations.
 
 ## Workspace Layout
 
-The project uses a Rust workspace with 6 specialized crates, totaling ~22k lines of code:
+The project uses a Rust workspace with 6 specialized crates:
 
 ```
 mibee-rec/
-├─ src/                # Binary entry (main.rs), config, types, error (945 LOC)
+├─ src/                # Binary entry (main.rs), config, types
 ├─ crates/
-│  ├─ capture/         # Video (nokhwa) + Audio (cpal) device wrappers (800 LOC)
-│  ├─ protocols/       # RTSP, RTMP, ONVIF, GB28181, RTP, H.264 (11.4k LOC)
-│  ├─ streaming/       # StreamHub fan-out, source/output adapters, MiBee client (4.1k LOC)
-│  ├─ web/             # Axum REST API + embedded SPA + TLS (2.5k LOC)
-│  ├─ security/        # Auth, TLS, encryption, rate limiting (1.9k LOC)
-│  └─ observability/   # tracing + OTel + Prometheus (423 LOC)
-├─ migrations/         # SQLite schema (cameras, settings, stream_sessions)
+│  ├─ capture/         # Video (nokhwa) + Audio (cpal) + hot-plug (udev)
+│  ├─ protocols/       # RTSP server, RTMP push, ONVIF, GB28181, RTP, H.264, RTCP
+│  ├─ streaming/       # StreamHub fan-out, CaptureSource adapter, Output adapters, MiBee client
+│  ├─ web/             # Axum REST API + embedded SPA + TLS + i18n + ProtocolRuntime
+│  ├─ security/        # Auth (bcrypt sessions), TLS (rustls), rate limiting, CSRF, password hashing
+│  └─ observability/   # tracing + OTel + Prometheus + Loki log shipping
+├─ migrations/         # SQLite schema (cameras, settings, stream_sessions, users, sessions, protocol_configs)
 ├─ config.toml         # Default runtime config
-└─ tls/                # Development TLS certificates
+└─ tls/                # Development TLS certificates (gitignored in prod)
 ```
 
 ## Dependency Graph
@@ -98,7 +98,7 @@ pub trait Output: Send + 'static {
 
 Central fan-out orchestrator that connects one source to multiple outputs:
 
-- **Broadcast channel**: Uses `tokio::sync::broadcast::channel(64)` for frame distribution
+- **Broadcast channel**: Uses `tokio::sync::broadcast::channel(300)` for frame distribution (increased from 64 to prevent IDR frame drops during MJPEG preview)
 - **Decoupled processing**: Source frame rate independent from output processing speed
 - **Dynamic output management**: Outputs can be added/removed while streaming
 - **Task-based architecture**: Source and each output run as separate tokio tasks
@@ -202,7 +202,7 @@ Starting → Running → Stopping → Stopped
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
-**Note**: CaptureSource adapter is currently missing - the capture crate is not wired into the streaming pipeline.
+**Note**: The CaptureSource adapter (`crates/streaming/src/capture_source.rs`) bridges nokhwa video capture and cpal audio capture into the streaming pipeline via ffmpeg encoding (H.264 for video, PCM/G.711 for audio).
 
 ### HTTP → API → Streaming → Protocol Clients
 
@@ -222,20 +222,43 @@ Starting → Running → Stopping → Stopped
                   └───────────────┘
 ```
 
-## Known Gaps
+## Current Limitations
 
-### Missing Components
+1. **Windows / macOS**: Do not compile yet (planned Tier 2). Blockers: `libc::getifaddrs` is POSIX-only, `#[cfg(unix)]` guards without Windows fallbacks, hardcoded `/dev/videoN` paths.
+2. **H.265 web preview**: Not universal in browsers — the web pipeline uses H.264/MJPEG only.
+3. **No motion detection / computer vision**: Out of scope for current version.
 
-1. **CaptureSource adapter**: No implementation of `Source` trait for local capture devices
-2. **Streaming crate wiring**: The streaming crate is not connected to the root binary
-3. **Login/Logout stubs**: Session management returns 501, actual auth flow not implemented
+## Implemented Systems (beyond core pipeline)
 
-### Partial Implementations
+### TLS & Authentication
+- **TLS-only** (rustls, never OpenSSL): self-signed dev certs auto-generated on first run; hot-reload on certificate file mtime change.
+- **Session auth**: bcrypt-hashed admin credentials, 24h session cookies (`HttpOnly; Secure; SameSite=Strict`), 5-min expired-session cleanup task.
+- **Rate limiting**: per-IP fixed window on auth endpoints (default 20/60s), resets on successful login.
+- **Login lockout**: exponential backoff per-user after 5 failures (60s → 120s → 240s → ...).
+- **CSRF**: double-submit cookie pattern (CSRF token issued on login, verified via `X-CSRF-Token` header).
+- **CSP + HSTS + body size limits**: strict Content-Security-Policy, HSTS header, 10KB limit on auth routes, 1MB default.
 
-1. **RTSP Server**: Structural adapter only, frame distribution not implemented
-2. **RTMP Push**: Structural adapter, TCP connection and chunking not implemented
-3. **GB/T 28181**: SIP/RTP transport layer stubbed, PS→H.264 conversion not implemented
-4. **ONVif**: Discovery works but stream URI resolution and streaming not fully implemented
+### Protocol Hot-Toggle
+`ProtocolRuntime` (`crates/web/src/protocol_runtime.rs`) starts and stops ONVIF, GB28181, and RTMP at runtime in response to Web UI toggles — **without server restart**. Protocol configs are persisted to SQLite and survive restart.
+
+### Hot-Plug Camera Monitor
+udev netlink listener (`crates/capture/src/hotplug.rs`) detects ADD/REMOVE events: auto-discovers plugged cameras and marks unplugged cameras offline (flushing their FileOutput gracefully).
+
+### SSE Event Bus
+`GET /api/events` (Server-Sent Events) pushes real-time camera add/offline events to the browser, enabling live UI updates without polling.
+
+### Local Recording
+`FileOutput` (`crates/streaming/src/output/file.rs`) writes MP4 segments to a user-configured path. Segment duration and total capacity are configurable; oldest segments are auto-pruned when capacity is reached. Per-stream enable/disable.
+
+### i18n & Theme
+- **Bilingual** (zh-CN / en-US): every user-facing string flows through a `t()` translation dictionary in `app.js`. Language toggle persists to user settings.
+- **Day/night theme**: system-preference auto-detect on first run, manual toggle persists.
+
+### Observability
+- **Prometheus**: 14+ custom counters/gauges at `/metrics`.
+- **OpenTelemetry traces**: 132 `#[tracing::instrument]` spans across all handlers and critical paths; OTLP gRPC export.
+- **W3C TraceContext**: `traceparent` header extraction (incoming, Axum middleware) + injection (outbound HTTP).
+- **Remote log shipping**: optional `tracing-loki` layer (fail-open — unreachable endpoint just logs a warning).
 
 ## Design Decisions
 

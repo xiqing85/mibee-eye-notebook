@@ -44,14 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Resolved — GB28181 RTP push + BYE cleanup + tracing instrumentation
 - **GB28181 RTP push fully wired**: `Gb28181Output` is dynamically attached to the camera's `StreamHub` via `add_output_at_runtime` when a SIP INVITE arrives, and detached via `remove_output_from_stream` when BYE is received. The `HubHandle::remove_output` API was added to stop the output task and clean up. The `add_output_to_stream` race condition (take/replace pattern) was fixed by using `as_ref()` with a read lock.
-- **OpenTelemetry span instrumentation added**: 123 `#[tracing::instrument]` annotations across all Axum HTTP handlers, StreamHub, StreamManager, capture pipeline (VideoCaptureSource/AudioCaptureSource), and protocol handlers (RTSP server, RTMP push, GB28181 SIP, ONVIF WS-Discovery/SOAP). The OTLP export pipeline now produces real trace data.
+- **OpenTelemetry span instrumentation added**: 132 `#[tracing::instrument]` annotations across all Axum HTTP handlers, StreamHub, StreamManager, capture pipeline (VideoCaptureSource/AudioCaptureSource), and protocol handlers (RTSP server, RTMP push, GB28181 SIP, ONVIF WS-Discovery/SOAP). The OTLP export pipeline now produces real trace data.
+
+### Added — protocol hot-toggle, hot-plug, SSE, i18n, recording, and more
+- **Protocol hot-toggle via Web UI**: `ProtocolRuntime` (`crates/web/src/protocol_runtime.rs`) starts/stops ONVIF, GB28181, and RTMP at runtime in response to Web UI toggles — **without server restart**. State persists across restarts via SQLite.
+- **Hot-plug camera monitor**: udev netlink ADD/REMOVE listener auto-discovers plugged cameras and marks unplugged cameras offline (flushing their FileOutput gracefully).
+- **SSE event bus**: `GET /api/events` (Server-Sent Events) pushes real-time camera add/offline events to the browser.
+- **Snapshot endpoint**: `GET /api/cameras/{id}/snapshot` fully implemented — captures a JPEG frame via ffmpeg.
+- **Browser live preview**: MJPEG multipart stream at `GET /api/cameras/{id}/live` — working end-to-end with single-slice frame fix.
+- **i18n (zh-CN / en-US)**: full `t()` translation dictionary in `app.js`, language toggle persisted to user settings.
+- **Day/night theme**: system-preference auto-detect on first run, manual toggle persisted.
+- **Local recording**: `FileOutput` MP4 segment archive with configurable duration + capacity + auto-prune-oldest, per-stream toggle.
+- **Remote log shipping**: optional `tracing-loki` layer (fail-open) via `[observability.logs]` config.
+- **SQLite hybrid access**: sqlx pool (`web::db::init_pool`) for web CRUD + rusqlite (`init_auth_db`) for auth.
+- **`advertised_host` config**: auto-detect LAN IP via UDP probe, no more hardcoded `localhost` in URLs.
+- **W3C TraceContext propagation**: `traceparent` header extraction (incoming, Axum middleware) + injection (outbound HTTP requests).
+- **esbuild build pipeline**: frontend bundled via esbuild for faster, smaller output.
+- **4th migration** (`004__add_offline_since`): tracks when cameras went offline.
 
 ### Known gaps remaining
-- **Hot-toggle of ONVIF/GB28181 without restart**: currently requires server restart. Hot-enable/disable requires protocol lifecycle management (start/stop WS-Discovery and SIP registration in response to Web UI toggle). Targeted for later phase.
-- **Frontend type coercion in `app.js`**: backend safely handles legacy string-typed config values via schema coercion, so this is non-blocking. Frontend will be cleaned up when `app.js` is rewritten for i18n + theme + live preview.
-- **W3C traceparent propagation**: tracing spans exist within the process but are not propagated across HTTP boundaries (no `traceparent` header injection/extraction in middleware). Targeted for next phase.
-- ~~**Browser live preview**: no `<video>` element or MSE/JPEG pipeline yet. UI shows static placeholder.~~ → **Fixed**: MJPEG multipart stream working (`/api/cameras/{id}/live`), camera view renders correctly, re-entry crash fixed.
-- ~~**i18n + day/night theme**: UI is hardcoded English, dark-only.~~ → **Fixed**: full zh-CN/en-US i18n layer + day/night theme with system auto-detect.
+- **Windows / macOS compilation**: Do not compile yet (planned Tier 2). Blockers: `libc::getifaddrs` POSIX-only, `#[cfg(unix)]` without Windows fallback, hardcoded `/dev/videoN` paths.
 
 ### Changed — Brand rename
 - **Rebranded from `notebook-cam` to `mibee-rec`** across all source, config, docs, and UI.
