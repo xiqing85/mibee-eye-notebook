@@ -37,7 +37,7 @@ The release binary will be available at `target/release/mibee-rec`.
 Default ports:
 - Web UI: 8443 (HTTPS with self-signed TLS)
 - RTSP Server: 8554
-- RTMP Ingest: 1935
+- RTMP Push: 1935 (outbound to external ingest)
 
 ## First Run
 
@@ -72,41 +72,36 @@ On success, the server:
 
 Open your browser and navigate to:
 
-``
+```
 https://localhost:8443
-``
+```
 
 **Important:** You will see a security warning about the self-signed certificate. This is expected in development. Click "Advanced" and "Proceed to localhost" to continue.
 
 After setup, the web UI requires authentication using session-based cookies.
 
-## Add a Camera
+## Web UI Features
 
-Once setup is complete, you can add cameras via the API.
+The web UI provides:
 
-**Example: Add an RTSP camera**
+- **Bilingual support**: zh-CN / en-US language toggle (persisted to user settings)
+- **Day/night theme**: System-preference auto-detect, manual toggle (persisted to user settings)
+- **Camera management**: Add, remove, and configure local webcam capture
+- **Stream controls**: Start/stop streams, monitor status
+- **Protocol configuration**: RTSP, RTMP push, ONVIF, GB28181 (all default-OFF, enable per-stream via UI)
+- **Local recording**: MP4 segment archive with auto-prune
+- **Settings**: Rate limiting, device enumeration, and more
 
-```bash
-curl -X POST https://localhost:8443/api/cameras \
-  -H "Content-Type: application/json" \
-  -H "Cookie: session=<your-session-token>" \
-  -d '{
-    "name": "Front Door Camera",
-    "camera_type": "rtsp",
-    "config": {
-      "url": "rtsp://192.168.1.100:554/stream"
-    }
-  }'
-```
+## Product Scope
 
-**Supported Camera Types:**
-- `usb` - Local webcam/microphone
-- `rtsp` - IP camera via RTSP
-- `onvif` - ONVIF-compatible cameras
-- `gb28181` - GB/T 28181 standard
-- `rtmp` - RTMP ingest streams
+**mibee-rec is a LOCAL-ONLY capture agent:**
 
-**Note:** The `login`, `logout`, and `snapshot` endpoints currently return 501 (not implemented). Use the setup endpoint for authentication.
+- Captures physically-attached devices (USB webcam, built-in/USB mic) from THIS machine only
+- Does NOT discover or connect to remote network cameras
+- Does NOT act as an NVR or video management server
+- Outbound streaming (RTSP server, RTMP push, ONVIF device, GB28181 device) is available but default-OFF
+
+For authoritative product positioning, see [POSITIONING.md](../POSITIONING.md).
 
 ## Next Steps
 

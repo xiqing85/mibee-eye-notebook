@@ -43,6 +43,13 @@ sudo usermod -aG video $USER
 ### Privileged Ports
 
 By default, mibee-rec uses:
+
+- Web UI: 8443 (TLS)
+
+- RTSP: 8554  
+
+- RTMP Push: 1935 (outbound to external ingest server; no RTMP ingest server exists)
+
 - Web UI: 8443 (TLS)
 - RTSP: 8554  
 - RTMP: 1935
@@ -159,12 +166,64 @@ Edit `config.local.toml` for local overrides. This file is gitignored and won't 
 [web]
 port = 8443
 host = "0.0.0.0"
+advertised_host = "192.168.1.100"
 
 [rtsp]
 server_port = 8554
 
-[rtmp]
-ingest_port = 1935
+[rtmp_push]
+enabled = false
+push_url = "rtmp://192.168.1.100:1935/live"
+app_name = "live"
+stream_name = "stream1"
+reconnect_interval_secs = 5
+max_reconnect_attempts = 10
+
+[capture]
+video_device = "/dev/video0"
+audio_device = "default"
+
+[security]
+rate_limit_max = 20
+rate_limit_window_secs = 60
+
+[observability]
+otel_endpoint = "http://localhost:4317"
+log_level = "info"
+
+[recording]
+enabled = false
+path = "./recordings"
+segment_duration_secs = 900
+max_capacity_mb = 10240
+
+[database]
+path = "~/.local/share/mibee-rec/mibee_rec.db"
+```
+
+### Configuration Options
+
+- **web**: Web UI settings (port, host, advertised_host)
+- **rtsp**: RTSP server configuration (outbound server mode only)
+- **rtmp_push**: RTMP push client (outbound push to external ingest, NOT ingest server)
+- **capture**: Video/audio device paths (local-only; no remote camera discovery)
+- **security**: Rate limiting configuration (non-poisoning Mutex)
+- **observability**: Logging and metrics settings (OTLP tracing, optional Loki remote log shipping)
+- **onvif**: ONVIF device endpoint configuration (optional)
+- **gb28181**: GB/T 28181 device registration (optional)
+- **recording**: Local MP4 segment recording with auto-prune
+- **database**: SQLite database path (XDG-compliant default)
+
+```toml
+[web]
+port = 8443
+host = "0.0.0.0"
+
+[rtsp]
+server_port = 8554
+
+[rtmp_push]
+enabled = false
 
 [capture]
 video_device = "/dev/video0"
@@ -191,6 +250,27 @@ log_level = "info"
 ## TLS Certificates
 
 ### Development Setup
+
+For development, mibee-rec automatically generates self-signed TLS certificates on first run:
+
+```bash
+# First run generates certificates
+./target/release/mibee-rec --config config.local.toml
+
+# Certificates are saved to:
+# - tls/cert.pem
+# - tls/key.pem
+```
+
+The certificates support hot-reload on file mtime change (update cert.pem/key.pem files and server reloads automatically).
+
+Development certificates use:
+
+- Subject: CN=mibee-rec
+
+- SAN: mibee-rec.local
+
+- Validity: ~30 days
 
 For development, mibee-rec automatically generates self-signed TLS certificates on first run:
 
@@ -351,7 +431,11 @@ podman run -d \
   -v /opt/mibee-rec/config.local.toml:/config.toml:ro \
   -v /opt/mibee-rec/tls:/tls:ro \
   -p 8443:8443 \
+  -p 8443:8443 \
   -p 8554:8554 \
+  mibee-rec
+# Note: RTMP push is outbound; no port mapping needed unless you're running an external RTMP ingest server
+```
   -p 1935:1935 \
   mibee-rec
 ```

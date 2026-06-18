@@ -12,34 +12,43 @@
 ## Features
 
 - **Local capture** — webcam via V4L2 (Linux) / MSMF (Windows), microphone via ALSA / WASAPI
-- **Outbound protocols** — RTSP server (clients pull), RTMP push, ONVIF device endpoint, GB/T 28181 device registration
+- **Outbound protocols** — RTSP server (clients pull), RTMP push, ONVIF device endpoint, GB/T 28181 device registration (all default-OFF, enabled via Web UI)
 - **H.264 / H.265** — hand-written NAL unit parser, keyframe detection, SPS/PPS extraction
 - **MiBee NVR integration** — REST API client, camera sync, SSE event stream
-- **Web UI** — Axum REST API + embedded SPA, TLS via rustls, session-based auth
+- **Web UI** — Axum REST API + embedded SPA, TLS via rustls, session-based auth, bilingual (zh-CN / en-US), day/night theme
+- **Local recording** — MP4 segment archive with auto-prune, configurable per-camera
+- **Browser preview** — MJPEG multipart live stream, JPEG snapshot endpoint
 - **Resource-bounded** — semaphore-guarded concurrency (max 16 streams), per-stream memory budgets
-- **Observable** — structured logging, OpenTelemetry export, Prometheus metrics endpoint
+- **Observable** — structured logging, OpenTelemetry traces (132+ instrumented spans), Prometheus metrics (14+ counters/gauges), optional Loki remote log shipping
+- **Security** — rate limiting with exponential backoff, CSRF (double-submit cookie), CSP header, TLS-only
+- **Dynamic management** — protocol hot-toggle via Web UI (no restart needed), hot-plug camera detection (udev), SSE real-time events
 - **Low footprint** — targets <5% CPU idle, <200 MB RAM; zero-copy where possible
 
 ### Crate Responsibilities
 
 | Crate | LOC | Role |
 |-------|-----|------|
-| `protocols` | ~11.4k | RTSP, RTMP, ONVIF, GB28181, RTP, H.264 — hand-written codec and protocol implementations |
-| `streaming` | ~4.1k | StreamHub fan-out orchestrator, source/output adapters, MiBee NVR client |
-| `web` | ~2.5k | Axum REST API + embedded SPA + TLS via rustls |
-| `security` | ~1.9k | Session-based auth, rate limiting, encryption |
+| `protocols` | ~11k | RTSP, RTMP, ONVIF, GB28181, RTP, H.264 — hand-written codec and protocol implementations |
+| `streaming` | ~4k | StreamHub fan-out orchestrator (to Web Preview, File Output, RTSP, RTMP, ONVIF, GB28181), source/output adapters, MiBee NVR client |
+| `web` | ~2.5k | Axum REST API + embedded SPA + TLS via rustls + i18n + theme |
+| `security` | ~1.9k | Session-based auth, rate limiting, CSRF protection, encryption |
 | `capture` | ~800 | Video (nokhwa) + Audio (cpal) device wrappers |
-| `observability` | ~423 | Structured tracing, OpenTelemetry export, Prometheus metrics |
+| `observability` | ~423 | Structured tracing, OpenTelemetry export, Prometheus metrics, Loki remote log shipping |
+
 ## Architecture
 
 ```
 ┌──────────────────────────────────┐
 │        Web UI (Axum + SPA)       │
 │  REST API · TLS · Auth Session   │
+│  Bilingual (zh-CN/en-US) · Theme  │
 ├──────────────────────────────────┤
 │       Streaming Hub              │
 │  Source → BufferPool → fan-out   │
 │  ResourceController (max 16)     │
+│    ↓ ↓ ↓ ↓ ↓ ↓                  │
+│ Web Preview · File Output       │
+│   RTSP · RTMP · ONVIF · GB28181  │
 ├──────────────────────────────────┤
 │        Protocol Layer            │
 │  RTSP · RTMP · ONVIF · GB28181   │
@@ -47,9 +56,11 @@
 ├──────────────────────────────────┤
 │        Capture Layer             │
 │  Video (nokhwa) · Audio (cpal)   │
+│  Hot-plug detection (udev)       │
 ├──────────────────────────────────┤
 │   Security · Observability       │
-│  Auth · TLS · Tracing · Metrics  │
+│  Auth · TLS · CSRF · CSP         │
+│  Tracing · Metrics · Loki logs   │
 └──────────────────────────────────┘
 ```
 
@@ -73,26 +84,31 @@ mibee-rec/
 
 | Area | Component | Implementation | Runtime status |
 |------|-----------|----------------|----------------|
-| **Auth (login/logout/setup/reset)** | Session-based | bcrypt + 24h session + rate limit | ✅ Implemented & wired in |
+| **Auth (login/logout/setup/reset)** | Session-based | bcrypt + 24h session + rate limit + exponential backoff lockout | ✅ Implemented & wired in |
 | **TLS (rustls)** | HTTPS only, no HTTP | Auto self-signed dev cert, hot-reload | ✅ Implemented & wired in |
 | **RTSP Server** | RFC 2326 + Digest auth + RTP interleaved | Hand-written (`RtspServer`) | ✅ Wired into runtime |
-| **RTMP Push** | Handshake + connect + publish | Hand-written (`RtmpPushClient`, 1084 LOC) | ⚠️ Code complete, **NOT wired** into StreamManager |
-| **ONVIF Device** | WS-Discovery + SOAP device service | Hand-written (`WsDiscoveryServer`, 701 LOC) | ⚠️ Code complete, **NOT started** at runtime |
-| **GB/T 28181 Device** | SIP REGISTER (Digest) + RTP push | Hand-written (`SipDeviceClient` + `RtpPusher`, 2033 LOC) | ⚠️ SIP registers, but **RTP pusher not attached** to StreamHub |
-| **H.264** | NAL unit parser, SPS/PPS, keyframe detection | Hand-written (`H264Parser`) | ✅ Used by RTMP & GB28181 |
+| **RTMP Push** | Handshake + connect + publish | Hand-written (`RtmpOutput`, auto-attached via StreamHub when `rtmp_push.enabled=true`) | ✅ Implemented & wired in |
+| **ONVIF Device** | WS-Discovery + SOAP device service | Hand-written (`WsDiscoveryServer` + SOAP service, starts when `onvif.enabled=true`) | ✅ Implemented & wired in |
+| **GB/T 28181 Device** | SIP REGISTER (Digest) + INVITE + RTP push | Hand-written (`Gb28181Output` dynamically attached on INVITE, detached on BYE) | ✅ Implemented & wired in |
+| **H.264** | NAL unit parser, SPS/PPS, keyframe detection | Hand-written (`H264Parser`) | ✅ Used by all video outputs |
 | **H.265 decode** | Browser fallback to H.264 | — | ⚠️ Not universal in browsers; H.264 only for v1 |
-| **Browser live preview** | MJPEG multipart stream via `<img>` | `live_preview()` route | ✅ Working — RTSP→MJPEG transcode, multipart stream |
-| **Local recording** | MP4 segment archive | — | ❌ **Missing** — no `FileOutput`, no `[recording]` config |
-| **i18n (zh-CN / en-US)** | i18n layer for every UI string | — | ❌ **Missing** — UI hardcoded English |
-| **Day/night theme** | Theme toggle | — | ❌ **Missing** |
-| **CSRF / CSP** | Token + strict header | — | ❌ **Missing** |
-| **Remote log shipping** | Loki / OTLP logs | — | ❌ **Missing** (stdout only) |
-| **OTel traces** | OTLP gRPC exporter | Pipeline wired | ⚠️ **Zero `#[tracing::instrument]`** → zero spans |
-| **Prometheus metrics** | 10 counters/gauges | Manual via `prometheus` crate | ✅ `/metrics` endpoint |
-| **Cross-platform: Windows** | MSMF + WASAPI | — | ❌ **Does not compile** (`libc::getifaddrs` POSIX-only) |
-| **Cross-platform: macOS** | AVFoundation + CoreAudio | — | ❌ **Does not compile** in practice (`/dev/videoN` hardcoded) |
+| **Browser live preview** | MJPEG multipart stream via `<img>` | `/api/cameras/{id}/live` route (ffmpeg transcode) | ✅ Implemented & wired in |
+| **Local recording** | MP4 segment archive with auto-prune | `FileOutput` auto-attached per-camera based on recording config | ✅ Implemented & wired in |
+| **i18n (zh-CN / en-US)** | Translation layer | `t()` dictionary in `app.js`, language toggle persisted to user settings | ✅ Implemented & wired in |
+| **Day/night theme** | Theme toggle | System-preference auto-detect, manual override persisted | ✅ Implemented & wired in |
+| **CSRF / CSP** | Double-submit cookie + strict header | CSRF token on login, verified via `X-CSRF-Token` header; strict CSP header | ✅ Implemented & wired in |
+| **Remote log shipping** | Loki / OTLP logs | `tracing-loki` layer with batch + flush interval, fail-open | ✅ Implemented & wired in |
+| **OTel traces** | OTLP gRPC exporter | Pipeline wired + 132 `#[tracing::instrument]` spans across handlers and critical paths | ✅ Implemented & wired in |
+| **Prometheus metrics** | Counters/gauges | 14+ custom metrics at `/metrics` endpoint | ✅ Implemented & wired in |
+| **Rate limiting** | Per-IP fixed window | `parking_lot::Mutex`-guarded, resets on successful login, exponential backoff after 5 failures | ✅ Implemented & wired in |
+| **Protocol hot-toggle** | Start/stop without restart | `ProtocolRuntime` starts/stops ONVIF/GB28181/RTMP via Web UI | ✅ Implemented & wired in |
+| **Hot-plug monitor** | Camera add/remove | udev netlink ADD/REMOVE auto-discovers plugged cameras, marks unplugged offline | ✅ Implemented & wired in |
+| **SSE event bus** | Real-time events | `/api/events` pushes camera add/offline events to browser | ✅ Implemented & wired in |
+| **Cross-platform: Windows** | MSMF + WASAPI | — | ❌ Does not compile (planned Tier 2, blockers: `libc::getifaddrs` POSIX-only) |
+| **Cross-platform: macOS** | AVFoundation + CoreAudio | — | ❌ Planned Tier 2 (would compile but `/dev/videoN` paths don't exist) |
 
-**Legend**: ✅ Working · ⚠️ Code present but incomplete/not wired · ❌ Missing
+**Legend**: ✅ Working · ⚠️ Limited/fallback · ❌ Missing/Not supported
+
 
 See [`docs/POSITIONING.md`](docs/POSITIONING.md) for the authoritative product scope and [`AGENTS.md`](AGENTS.md) for engineering guidance.
 

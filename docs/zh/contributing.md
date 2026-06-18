@@ -80,19 +80,18 @@ cargo fmt
 
 ```
 mibee-rec/
-├─ src/                    # 二进制入口点，配置，类型，错误处理
+├─ src/                    # 二进制入口点，配置，类型
 │  ├─ main.rs             # 应用程序入口点
 │  ├─ config.rs           # 配置管理，使用 TOML
-│  ├─ types.rs           # 核心领域类型 (CameraId, StreamId, CameraType)
-│  └─ error.rs           # 统一的错误枚举 (thiserror)
+│  └─ types.rs            # 核心领域类型 (CameraId, StreamId, CameraType)
 ├─ crates/                # 工作区 crate
-│  ├─ protocols/         # RTSP, RTMP, ONVIF, GB28181, RTP, H.264 (11.4k 行)
-│  ├─ streaming/         # StreamHub 分发，源/输出适配器，MiBee 客户端 (4.1k 行)
-│  ├─ web/              # Axum REST API + 内嵌 SPA + TLS (2.5k 行)
-│  ├─ security/         # 认证，TLS，加密，速率限制 (1.9k 行)
-│  ├─ capture/           # 视频 (nokhwa) + 音频 (cpal) 采集 (800 行)
-│  └─ observability/    # tracing + OTel + Prometheus 指标 (423 行)
-├─ migrations/           # SQLite 模式 (cameras, settings, stream_sessions)
+│  ├─ protocols/         # RTSP 服务端、RTMP 推流、ONVIF、GB28181、RTP、H.264、RTCP
+│  ├─ streaming/         # StreamHub 分发、CaptureSource、输出适配器、MiBee 客户端
+│  ├─ web/              # Axum REST API + 内嵌 SPA + TLS + i18n + ProtocolRuntime
+│  ├─ security/         # 认证、TLS、限流、CSRF、密码哈希
+│  ├─ capture/           # 视频 (nokhwa) + 音频 (cpal) + 热插拔 (udev)
+│  └─ observability/    # tracing + OTel + Prometheus + Loki 日志推送
+├─ migrations/           # SQLite 模式（4 个迁移：摄像头、设置、协议配置、用户/会话）
 └─ tls/                  # 开发 TLS 证书
 ```
 
@@ -402,10 +401,12 @@ pub fn all_routes() -> Router<AppState> {
 
 查看现有协议作为参考：
 
-- **ONVIF**: `crates/protocols/src/onvif.rs` - 使用 oxvif 包装器
-- **GB28181**: `crates/protocols/src/gb28181.rs` - 使用 gmv 包装器  
-- **RTSP**: `crates/protocols/src/rtsp.rs` - 手写的客户端
-- **RTMP**: `crates/protocols/src/rtmp/mod.rs` - 手写的服务器
+- **ONVIF**: `crates/protocols/src/onvif.rs` - 手写 WS-Discovery + SOAP 设备服务
+- **GB28181**: `crates/protocols/src/gb28181/` - 手写 SIP 设备客户端 + RTP 推送器（模块目录）
+- **RTSP**: `crates/protocols/src/rtsp_server/` - 手写 RTSP 服务端 (RFC 2326, Digest 认证, RTP 交错)
+- **RTMP**: `crates/protocols/src/rtmp/` - 手写 RTMP 推流客户端 (握手 + 连接 + 发布)
+- **H.264**: `crates/protocols/src/h264.rs` - 手写 NAL 单元解析器
+- **RTP**: `crates/protocols/src/rtp.rs` - 手写 RTP 打包器/解析器
 
 ## 添加摄像头类型
 
@@ -691,31 +692,24 @@ fn audio_callback(data: &mut [f32]) {
 }
 ```
 
-### 3. GB/T 28181 PS → H.264 转换
+**问题**: GB28181 设备模式通过 SIP REGISTER 向平台注册；平台发送 INVITE，本设备将 RTP（封装在 MPEG-PS 中）推送回平台。
 
-**问题**: GB28181 摄像头发送 MPEG-2 Program Stream，必须解码为 H.264 才能在 Web 上播放。
-
-**解决方案**: 使用 `gmv` crate 自动处理转换：
-
-```rust
-// GB28181 客户端内部处理 PS → H.264 转换
-let client = Gb28181Client::new(config);
-let nal_units = client.receive_ps_and_convert_to_nal().await?;
-```
+**解决方案**: 手写 SIP 设备客户端（`crates/protocols/src/gb28181/sip.rs`）处理 REGISTER/INVITE/BYE。RTP 推送器（`crates/protocols/src/gb28181/rtp_pusher.rs`）通过 RTP/UDP 推送封装在 MPEG-PS 中的 H.264 NAL 单元。`Gb28181Output` 适配器在收到 INVITE 时动态附加到摄像头的 `StreamHub`，在收到 BYE 时分离。
 
 **浏览器兼容性**: H.265 在浏览器中并非普遍支持 - 总是回退到 H.264。
 
-### 4. ONVIF WS-Discovery
+**浏览器兼容性**: H.265 在浏览器中并非普遍支持 - 总是回退到 H.264。
 
 **问题**: ONVIF 发现使用 UDP 多播端口 3702，可能需要原始套接字访问。
 
 **要求**:
 ```bash
 # 可能需要 CAP_NET_RAW 能力或 root 访问权限
-# 或使用抽象化此功能的库
+# crates/protocols/src/onvif.rs 中的手写 WS-Discovery 服务端
+# 会自动处理
 ```
 
-**替代方案**: 使用 oxvif 包装器自动处理发现。
+**注意**: ONVIF 完全是手写的（没有外部包装库）。设备端点通过 SOAP 公开设备信息，使外部 NVR 能够通过 WS-Discovery 发现本机。
 
 ### 5. WebRTC Rust 生态系统
 
