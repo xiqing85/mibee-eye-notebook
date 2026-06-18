@@ -37,7 +37,7 @@ cargo build --release
 默认端口：
 - Web UI：8443（HTTPS 使用自签名 TLS）
 - RTSP 服务端：8554
-- RTMP 接收：1935
+- RTMP 推送：1935（推送到外部推流服务器的出站）
 
 ## 首次运行
 
@@ -80,33 +80,28 @@ https://localhost:8443
 
 设置完成后，Web 界面需要使用基于会话的 cookie 进行身份认证。
 
-## 添加摄像头
+## Web 界面功能
 
-设置完成后，您可以通过 API 添加摄像头。
+Web 界面提供：
 
-**示例：添加 RTSP 摄像头**
+- **双语支持**：zh-CN / en-US 语言切换（保存到用户设置）
+- **日间/夜间主题**：系统偏好自动检测，手动切换（保存到用户设置）
+- **摄像头管理**：添加、删除和配置本地摄像头捕获
+- **流控制**：启动/停止流，监控状态
+- **协议配置**：RTSP、RTMP 推送、ONVIF、GB28181（均默认关闭，通过 UI 按流启用）
+- **本地录制**：MP4 段存档，自动修剪
+- **设置**：速率限制、设备枚举等
 
-```bash
-curl -X POST https://localhost:8443/api/cameras \
-  -H "Content-Type: application/json" \
-  -H "Cookie: session=<your-session-token>" \
-  -d '{
-    "name": "Front Door Camera",
-    "camera_type": "rtsp",
-    "config": {
-      "url": "rtsp://192.168.1.100:554/stream"
-    }
-  }'
-```
+## 产品范围
 
-**支持的摄像头类型：**
-- `usb` - 本地摄像头/麦克风
-- `rtsp` - 通过 RTSP 连接的 IP 摄像头
-- `onvif` - ONVIF 兼容摄像头
-- `gb28181` - GB/T 28181 标准
-- `rtmp` - RTMP 接收流
+**mibee-rec 是仅本地捕获代理：**
 
-**注意：** `login`、`logout` 和 `snapshot` 端点当前返回 501（未实现）。使用设置端点进行身份认证。
+- 仅从此机器捕获物理连接的设备（USB 摄像头、内置/USB 麦克风）
+- 不会发现或连接到远程网络摄像头
+- 不充当 NVR 或视频管理服务器
+- 出站流媒体（RTSP 服务器、RTMP 推送、ONVIF 设备、GB28181 设备）可用但默认关闭
+
+有关权威产品定位，请参阅 [POSITIONING.md](../POSITIONING.md)。
 
 ## 下一步
 
@@ -124,4 +119,4 @@ curl -X POST https://localhost:8443/api/cameras \
 祝监控愉快！
 
 ---
-*MiBee-Rec (MiBee Rec) — 基于 Rust 构建的专业笔记本监控代理。*
+*MiBee-Rec（MiBee Rec）— 基于 Rust 构建的专业笔记本监控代理。*

@@ -80,19 +80,18 @@ cargo fmt
 
 ```
 mibee-rec/
-├─ src/                    # Binary entry point, config, types, error handling
+├─ src/                    # Binary entry point, config, types
 │  ├─ main.rs             # Application entry point
 │  ├─ config.rs           # Configuration management with TOML
-│  ├─ types.rs           # Core domain types (CameraId, StreamId, CameraType)
-│  └─ error.rs           # Unified error enum (thiserror)
+│  └─ types.rs            # Core domain types (CameraId, StreamId, CameraType)
 ├─ crates/                # Workspace crates
-│  ├─ protocols/         # RTSP, RTMP, ONVIF, GB28181, RTP, H.264 (11.4k LOC)
-│  ├─ streaming/         # StreamHub fan-out, source/output adapters, MiBee client (4.1k LOC)
-│  ├─ web/              # Axum REST API + embedded SPA + TLS (2.5k LOC)
-│  ├─ security/         # Auth, TLS, encryption, rate limiting (1.9k LOC)
-│  ├─ capture/           # Video (nokhwa) + Audio (cpal) capture (800 LOC)
-│  └─ observability/    # tracing + OTel + Prometheus metrics (423 LOC)
-├─ migrations/           # SQLite schema (cameras, settings, stream_sessions)
+│  ├─ protocols/         # RTSP server, RTMP push, ONVIF, GB28181, RTP, H.264, RTCP
+│  ├─ streaming/         # StreamHub fan-out, CaptureSource, Output adapters, MiBee client
+│  ├─ web/              # Axum REST API + embedded SPA + TLS + i18n + ProtocolRuntime
+│  ├─ security/         # Auth, TLS, rate limiting, CSRF, password hashing
+│  ├─ capture/           # Video (nokhwa) + Audio (cpal) + hot-plug (udev)
+│  └─ observability/    # tracing + OTel + Prometheus + Loki log shipping
+├─ migrations/           # SQLite schema (4 migrations: cameras, settings, protocol_configs, users/sessions)
 └─ tls/                  # Development TLS certificates
 ```
 
@@ -402,10 +401,12 @@ Add protocol-specific configuration options to your config structure and update 
 
 Look at existing protocols for reference:
 
-- **ONVIF**: `crates/protocols/src/onvif.rs` - uses oxvif wrapper
-- **GB28181**: `crates/protocols/src/gb28181.rs` - uses gmv wrapper  
-- **RTSP**: `crates/protocols/src/rtsp.rs` - hand-written client
-- **RTMP**: `crates/protocols/src/rtmp/mod.rs` - hand-written server
+- **ONVIF**: `crates/protocols/src/onvif.rs` - hand-written WS-Discovery + SOAP device service
+- **GB28181**: `crates/protocols/src/gb28181/` - hand-written SIP device client + RTP pusher (module directory)
+- **RTSP**: `crates/protocols/src/rtsp_server/` - hand-written RTSP server (RFC 2326, Digest auth, RTP interleaved)
+- **RTMP**: `crates/protocols/src/rtmp/` - hand-written RTMP push client (handshake + connect + publish)
+- **H.264**: `crates/protocols/src/h264.rs` - hand-written NAL unit parser
+- **RTP**: `crates/protocols/src/rtp.rs` - hand-written RTP packetizer/parser
 
 ## Adding a Camera Type
 
@@ -691,31 +692,24 @@ fn audio_callback(data: &mut [f32]) {
 }
 ```
 
-### 3. GB/T 28181 PS → H.264 Conversion
+**Issue**: GB28181 device mode registers WITH the platform via SIP REGISTER; the platform sends INVITE, and this device pushes RTP (encapsulated in MPEG-PS) back to the platform.
 
-**Issue**: GB28181 cameras send MPEG-2 Program Stream, which must be decoded to H.264 for web playback.
-
-**Solution**: Use the `gmv` crate which handles the conversion automatically:
-
-```rust
-// GB28181 client handles PS → H.264 conversion internally
-let client = Gb28181Client::new(config);
-let nal_units = client.receive_ps_and_convert_to_nal().await?;
-```
+**Solution**: The hand-written SIP device client (`crates/protocols/src/gb28181/sip.rs`) handles REGISTER/INVITE/BYE. The RTP pusher (`crates/protocols/src/gb28181/rtp_pusher.rs`) pushes H.264 NAL units encapsulated in MPEG-PS over RTP/UDP. The `Gb28181Output` adapter is dynamically attached to the camera's `StreamHub` on INVITE and detached on BYE.
 
 **Browser compatibility**: H.265 is not universally supported in browsers - always fallback to H.264.
 
-### 4. ONVIF WS-Discovery
+**Browser compatibility**: H.265 is not universally supported in browsers - always fallback to H.264.
 
 **Issue**: ONVIF discovery uses UDP multicast port 3702 and may require raw socket access.
 
 **Requirements**:
 ```bash
 # May need CAP_NET_RAW capability or root access
-# Or use a library that abstracts this away
+# The hand-written WS-Discovery server in crates/protocols/src/onvif.rs
+# handles this automatically
 ```
 
-**Alternative**: Use oxvif wrapper which handles discovery automatically.
+**Note**: ONVIF is entirely hand-written (no external wrapper library). The device endpoint exposes device information via SOAP so external NVRs can discover this machine via WS-Discovery.
 
 ### 5. WebRTC Rust Ecosystem
 

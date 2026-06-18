@@ -2,33 +2,33 @@
 
 ## 概述
 
-mibee-rec 是一个用 Rust 构建的专业笔记本电脑监控代理，设计用于捕获本地网络摄像头和麦克风音频，同时通过多种流媒体协议连接到 IP 摄像头和 NVR。架构优先考虑安全性、低资源使用、最小依赖、Linux 优先开发和本地优先部署。
+mibee-rec 是一个用 Rust 构建的 **PC 本地摄像头和麦克风采集代理**。它通过 V4L2/ALSA 采集**物理连接到本机**的设备（USB 摄像头、内置/USB 麦克风）的视频和音频，并通过对外协议（RTSP 服务端、RTMP 推流、ONVIF 设备端、GB/T 28181 设备端）将采集到的流分发给外部 NVR 和直播平台。架构优先考虑安全性（仅 TLS、需认证）、低资源使用、最小依赖、Linux 优先开发和本地优先（离线）部署。它**不会**发现或拉取远程网络摄像头。
 
 ### 设计目标
 
 - **安全优先**：所有外部访问都需要加密（TLS）和身份验证。流或控制界面上无匿名访问。
 - **低资源使用**：目标 <5% CPU 空闲，<200MB RAM，在整个管道中使用零拷贝异步 I/O。
 - **最小依赖**：偏好手写的编解码器和协议实现。仅添加用于真正困难问题的 crate（TLS、异步运行时、平台 ABI）。
-- **Linux 优先**：V4L2/ALSA 为一等公民。Windows（MSMF/WASAPI）为二等公民。macOS 不在范围内。
+- **Linux 优先**：V4L2/ALSA 为一等公民（Tier 1 — 目前唯一能端到端编译的平台）。Windows（MSMF/WASAPI）和 macOS（AVFoundation/CoreAudio）为计划的 Tier 2。
 - **本地优先**：开发、测试和生产都在同一台笔记本电脑上运行。为特权操作提供确切命令。
 
 ## 工作区布局
 
-项目使用包含 6 个专业 crate 的 Rust 工作区，总计约 22k 行代码：
+项目使用包含 6 个专业 crate 的 Rust 工作区：
 
 ```
 mibee-rec/
-├─ src/                # 二进制入口 (main.rs)，配置，类型，错误 (945 LOC)
+├─ src/                # 二进制入口 (main.rs)，配置，类型
 ├─ crates/
-│  ├─ capture/         # 视频 (nokhwa) + 音频 (cpal) 设备包装器 (800 LOC)
-│  ├─ protocols/       # RTSP, RTMP, ONVIF, GB28181, RTP, H.264 (11.4k LOC)
-│  ├─ streaming/       # StreamHub 广播分发，源/输出适配器，MiBee 客户端 (4.1k LOC)
-│  ├─ web/             # Axum REST API + 嵌入式 SPA + TLS (2.5k LOC)
-│  ├─ security/        # 身份验证，TLS，加密，限流 (1.9k LOC)
-│  └─ observability/   # tracing + OTel + Prometheus (423 LOC)
-├─ migrations/         # SQLite 模式（摄像头、设置、流会话）
+│  ├─ capture/         # 视频 (nokhwa) + 音频 (cpal) + 热插拔 (udev)
+│  ├─ protocols/       # RTSP 服务端、RTMP 推流、ONVIF、GB28181、RTP、H.264、RTCP
+│  ├─ streaming/       # StreamHub 广播分发、CaptureSource 适配器、输出适配器、MiBee 客户端
+│  ├─ web/             # Axum REST API + 嵌入式 SPA + TLS + i18n + ProtocolRuntime
+│  ├─ security/        # 认证 (bcrypt 会话)、TLS (rustls)、限流、CSRF、密码哈希
+│  └─ observability/   # tracing + OTel + Prometheus + Loki 日志推送
+├─ migrations/         # SQLite 模式（摄像头、设置、流会话、用户、会话、协议配置）
 ├─ config.toml         # 默认运行时配置
-└─ tls/                # 开发 TLS 证书
+└─ tls/                # 开发 TLS 证书（生产环境 gitignored）
 ```
 
 ## 依赖关系图
@@ -98,7 +98,7 @@ pub trait Output: Send + 'static {
 
 中心广播分发器，将一个源连接到多个输出：
 
-- **广播通道**：使用 `tokio::sync::broadcast::channel(64)` 进行帧分发
+- **广播通道**：使用 `tokio::sync::broadcast::channel(300)` 进行帧分发（从 64 增加以防止 MJPEG 预览期间的 IDR 帧丢弃）
 - **解耦处理**：源帧率独立于输出处理速度
 - **动态输出管理**：流传输过程中可以添加/删除输出
 - **基于任务架构**：源和每个输出作为独立的 tokio 任务运行
@@ -202,7 +202,7 @@ Starting → Running → Stopping → Stopped
 └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
-**注意**：CaptureSource 适配器当前缺失 - capture crate 未连接到流媒体管道。
+**注意**：CaptureSource 适配器（`crates/streaming/src/capture_source.rs`）通过 ffmpeg 编码（视频 H.264、音频 PCM/G.711）将 nokhwa 视频采集和 cpal 音频采集桥接到流媒体管道中。
 
 ### HTTP → API → Streaming → Protocol Clients
 
@@ -222,20 +222,43 @@ Starting → Running → Stopping → Stopped
                   └───────────────┘
 ```
 
-## 已知缺陷
+## 当前限制
 
-### 缺失组件
+1. **Windows / macOS**：目前无法编译（计划 Tier 2）。阻碍：`libc::getifaddrs` 仅限 POSIX、`#[cfg(unix)]` 无 Windows 回退、硬编码 `/dev/videoN` 路径。
+2. **H.265 Web 预览**：浏览器支持不普遍 — Web 管道仅使用 H.264/MJPEG。
+3. **无运动检测/计算机视觉**：当前版本不在范围内。
 
-1. **CaptureSource 适配器**：本地捕获设备的 `Source` trait 未实现
-2. **Streaming crate 连接**：streaming crate 未连接到根二进制文件
-3. **登录/登出存根**：会话管理返回 501，实际身份验证流程未实现
+## 已实现系统（核心管道之外）
 
-### 部分实现
+### TLS 与身份认证
+- **仅 TLS**（rustls，绝不使用 OpenSSL）：首次运行时自动生成自签名开发证书；证书文件 mtime 变化时热重载。
+- **会话认证**：bcrypt 哈希管理员凭证，24 小时会话 cookie（`HttpOnly; Secure; SameSite=Strict`），5 分钟过期会话清理任务。
+- **速率限制**：认证端点上的每 IP 固定窗口（默认 20/60 秒），成功登录后重置。
+- **登录锁定**：5 次失败后每用户指数退避（60 秒 → 120 秒 → 240 秒 → ...）。
+- **CSRF**：双提交 cookie 模式（登录时签发 CSRF 令牌，通过 `X-CSRF-Token` 头验证）。
+- **CSP + HSTS + 请求体大小限制**：严格的 Content-Security-Policy、HSTS 头、认证路由 10KB 限制、默认 1MB。
 
-1. **RTSP 服务器**：仅结构适配器，帧分发未实现
-2. **RTMP 推送**：结构适配器，TCP 连接和分块未实现
-3. **GB/T 28181**：SIP/RTP 传输层存根，PS→H.264 转换未实现
-4. **ONVif**：发现功能正常，但流 URI 解析和流式传输未完全实现
+### 协议热切换
+`ProtocolRuntime`（`crates/web/src/protocol_runtime.rs`）在运行时响应 Web UI 开关启停 ONVIF、GB28181 和 RTMP — **无需服务器重启**。协议配置持久化到 SQLite，重启后保留。
+
+### 热插拔摄像头监控
+udev netlink 监听器（`crates/capture/src/hotplug.rs`）检测 ADD/REMOVE 事件：自动发现插入的摄像头，将拔出的摄像头标记为离线（优雅刷新其 FileOutput）。
+
+### SSE 事件总线
+`GET /api/events`（Server-Sent Events）将实时摄像头添加/离线事件推送到浏览器，实现无需轮询的实时 UI 更新。
+
+### 本地录像
+`FileOutput`（`crates/streaming/src/output/file.rs`）将 MP4 片段写入用户配置的路径。片段时长和总容量可配置；达到容量时自动清理最旧的片段。支持每流启用/禁用。
+
+### i18n 与主题
+- **双语**（zh-CN / en-US）：每个面向用户的字符串都通过 `app.js` 中的 `t()` 翻译字典。语言切换持久化到用户设置。
+- **日/夜主题**：首次运行时自动检测系统偏好，手动切换会持久化。
+
+### 可观测性
+- **Prometheus**：`/metrics` 端点提供 14+ 自定义计数器/仪表。
+- **OpenTelemetry 追踪**：132 个 `#[tracing::instrument]` 跨度覆盖所有处理器和关键路径；OTLP gRPC 导出。
+- **W3C TraceContext**：`traceparent` 头提取（入站，Axum 中间件）+ 注入（出站 HTTP）。
+- **远程日志推送**：可选的 `tracing-loki` 层（故障开放 — 无法连接的端点仅记录警告）。
 
 ## 设计决策
 
