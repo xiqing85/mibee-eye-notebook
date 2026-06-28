@@ -201,7 +201,7 @@ impl RtspServer {
         sdp_body: String,
         ssrc: u32,
     ) -> broadcast::Sender<Vec<u8>> {
-        let (tx, _rx) = broadcast::channel(300);
+        let (tx, rx) = broadcast::channel(300);
         let entry = LiveStreamEntry {
             frame_tx: tx.clone(),
             sdp_body,
@@ -209,6 +209,10 @@ impl RtspServer {
             cached_sps: None,
             cached_pps: None,
         };
+        // Leak the receiver to keep the broadcast channel alive.
+        // Without this, senders would get `NoRecipients` errors before any
+        // RTSP client subscribes.
+        std::mem::forget(rx);
         self.inner.live_streams.lock().insert(path, entry);
         tx
     }
@@ -1193,16 +1197,19 @@ mod tests {
     #[test]
     fn test_find_live_stream() {
         let mut live_map = HashMap::new();
+        let (tx, rx) = broadcast::channel(300);
         live_map.insert(
             "livecam".to_string(),
             LiveStreamEntry {
-                frame_tx: broadcast::channel(300).0,
+                frame_tx: tx,
                 sdp_body: "s=Live".to_string(),
                 ssrc: 1,
                 cached_sps: None,
                 cached_pps: None,
             },
         );
+        // Leak receiver to keep channel alive
+        std::mem::forget(rx);
         assert!(find_live_stream("/livecam", &live_map).is_some());
         assert!(find_live_stream("rtsp://localhost:8554/livecam", &live_map).is_some());
         assert!(find_live_stream("/other", &live_map).is_none());
