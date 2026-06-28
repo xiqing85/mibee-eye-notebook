@@ -326,9 +326,25 @@ mod tests {
         };
         out.send_frame(&frame).await.unwrap();
 
-        // Verify data arrives on the channel
+        // Verify data arrives as an RTP-encapsulated packet on the channel
         let received = rx.recv().await.expect("Should receive data on channel");
-        assert_eq!(received, vec![0x67, 0x42, 0x80]);
+        // 12-byte RTP header + 3-byte NAL payload = 15 bytes
+        assert_eq!(
+            received.len(),
+            15,
+            "Expected 12-byte RTP header + 3-byte NAL"
+        );
+        // RTP version + marker + PT
+        assert_eq!(received[0], 0x80, "RTP version=2, no extensions");
+        assert_eq!(received[1], 0x60, "marker=1, PT=96 (H.264)");
+        // SSRC = 1
+        assert_eq!(&received[8..12], &[0, 0, 0, 1], "SSRC should be 1");
+        // Payload matches the frame data
+        assert_eq!(
+            &received[12..],
+            &[0x67, 0x42, 0x80],
+            "NAL payload should match"
+        );
 
         out.stop().await.unwrap();
     }
