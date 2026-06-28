@@ -705,8 +705,8 @@ mod tests {
         assert_eq!(config.model, "NB-CAM-1");
         assert_eq!(config.firmware_version, "1.0.0");
         assert_eq!(config.serial_number, "NB-000001");
-        assert!(!config.xaddrs.is_empty());
-        assert_eq!(config.rtsp_url, "rtsp://localhost:8554/webcam");
+        assert!(config.xaddrs.is_empty()); // xaddrs populated at runtime by get_onvif_xaddrs
+        assert!(config.rtsp_url.is_empty()); // rtsp_url populated at runtime
         assert!(!config.scopes.is_empty());
     }
 }
