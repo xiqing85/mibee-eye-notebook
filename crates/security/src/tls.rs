@@ -227,6 +227,7 @@ mod tests {
 
     #[test]
     fn test_build_tls_config_generates_files() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = std::env::temp_dir().join("mibee-rec-tls-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -266,6 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cert_watcher_reloads_on_file_change() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = std::env::temp_dir().join("mibee-rec-watcher-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
