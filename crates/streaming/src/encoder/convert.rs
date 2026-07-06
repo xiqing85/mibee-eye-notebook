@@ -87,10 +87,19 @@ impl Yuv420p {
 
 /// Decode MJPEG bytes into a [`Yuv420p`] frame.
 ///
-/// Uses [`jpeg_decoder`] to decode to RGB8, then converts RGB → YUV420p using
-/// the BT.601 matrix. Allocates one frame per call — callers should reuse the
-/// returned buffer where possible (the encoder path does).
+/// With the `turbojpeg` cargo feature enabled, uses libjpeg-turbo to decode
+/// *directly* to planar YUV420 (one step, SIMD-accelerated, ~2-6× faster than
+/// the pure-Rust path). Otherwise falls back to [`jpeg_decoder`] → RGB8 →
+/// `rgb8_to_yuv420p` (BT.601 matrix).
 pub fn mjpeg_to_yuv420p(mjpeg_bytes: &[u8]) -> Result<Yuv420p> {
+    #[cfg(feature = "turbojpeg")]
+    {
+        if let Ok(frame) = mjpeg_to_yuv420p_turbojpeg(mjpeg_bytes) {
+            return Ok(frame);
+        }
+        // Fall through to the pure-Rust path on any turbojpeg error.
+    }
+
     let mut decoder = jpeg_decoder::Decoder::new(mjpeg_bytes);
     let pixels = decoder.decode().context("MJPEG decode failed")?;
     let info = decoder.info().context("MJPEG had no image info")?;
@@ -276,6 +285,24 @@ pub fn yuv420p_to_rgb8(frame: &Yuv420p) -> Vec<u8> {
         }
     }
     rgb
+}
+
+// ── turbojpeg fast path (feature-gated) ───────────────────────────────────────
+
+#[cfg(feature = "turbojpeg")]
+fn mjpeg_to_yuv420p_turbojpeg(mjpeg_bytes: &[u8]) -> Result<Yuv420p> {
+    use turbojpeg::decompress_to_yuv;
+
+    // libjpeg-turbo's "decompress to YUV" path decodes straight to planar
+    // YCbCr 4:2:0 with SIMD (TJ_FASTUPSAMPLE defaults off), skipping the RGB8
+    // intermediate entirely. The returned `YuvImage` is tightly packed I420,
+    // matching [`Yuv420p`]'s layout exactly.
+    let img = decompress_to_yuv(mjpeg_bytes).context("turbojpeg: decompress_to_yuv failed")?;
+    Ok(Yuv420p {
+        width: img.width,
+        height: img.height,
+        data: img.data,
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

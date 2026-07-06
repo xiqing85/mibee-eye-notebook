@@ -14,6 +14,7 @@ import { api } from '../api.js';
 import { cameras, streamUrls, showToast } from '../store.js';
 import { navigate } from '../components/useHashRoute.js';
 import { LivePreview } from '../components/LivePreview.js';
+import { useStore } from '../hooks.js';
 
 const GRID_LAYOUTS = [
   { id: 1, label: 'grid.layout_1', cols: '1fr', count: 1 },
@@ -69,8 +70,8 @@ export function Dashboard({ onEditCamera, onAddCamera, onDeleteCamera }) {
     }
   }
 
-  const camList = cameras.value;
-  const runningIds = Object.keys(streamUrls.value);
+  const camList = useStore(cameras);
+  const runningIds = Object.keys(useStore(streamUrls));
 
   return (
     <section class="page">

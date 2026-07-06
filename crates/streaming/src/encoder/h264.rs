@@ -128,6 +128,9 @@ pub struct H264Encoder {
     /// input dimensions (the underlying encoder auto-reinits on change, but a
     /// resolution change mid-stream is unexpected for a fixed camera).
     config: H264EncoderConfig,
+    /// Reusable Annex B scratch buffer — avoids a per-frame ~64 KB allocation
+    /// on the encode hot path. Cleared (length→0, capacity retained) each call.
+    annex_b_buf: Vec<u8>,
 }
 
 impl H264Encoder {
@@ -173,7 +176,7 @@ impl H264Encoder {
             "OpenH264 encoder initialized"
         );
 
-        Ok(Self { encoder, config })
+        Ok(Self { encoder, config, annex_b_buf: Vec::with_capacity(64 * 1024) })
     }
 
     /// Encode a single YUV420p frame at the given presentation timestamp
@@ -206,16 +209,17 @@ impl H264Encoder {
         // OpenH264 writes Annex B (start-code-prefixed) NALs into the
         // bitstream. We need them split into individual NAL units with the
         // start code stripped, to match the MediaFrame::Video contract.
-        let mut annex_b = Vec::with_capacity(64 * 1024);
-        bitstream.write_vec(&mut annex_b);
+        // Reuse a scratch buffer across calls to avoid a per-frame allocation.
+        self.annex_b_buf.clear();
+        bitstream.write_vec(&mut self.annex_b_buf);
 
-        let nals = split_annex_b_to_nals(&annex_b, is_keyframe);
+        let nals = split_annex_b_to_nals(&self.annex_b_buf, is_keyframe);
 
         tracing::trace!(
             timestamp_ms,
             frame_type = ?frame_type,
             nal_count = nals.len(),
-            bytes = annex_b.len(),
+            bytes = self.annex_b_buf.len(),
             "encoded frame"
         );
 
