@@ -56,7 +56,13 @@ export function Dashboard({ onEditCamera, onAddCamera, onDeleteCamera }) {
     if (res.ok) {
       showToast(t('stream.started'), 'success');
       streamUrls.value = { ...streamUrls.value, [id]: { rtsp_url: res.data.rtsp_url, status: 'running' } };
-    } else if (res.status !== 409) {
+    } else if (res.status === 409) {
+      // Already running — reconcile so the grid tile shows it immediately.
+      const cam = (cameras.value || []).find((c) => c.id === id);
+      if (cam?.rtsp_url) {
+        streamUrls.value = { ...streamUrls.value, [id]: { rtsp_url: cam.rtsp_url, status: 'running' } };
+      }
+    } else {
       showToast(t('error.failed') + ': ' + (res.data?.error || ''), 'error');
     }
   }
