@@ -217,18 +217,26 @@ pub fn rgb8_to_yuv420p(rgb: &[u8], width: u32, height: u32) -> Result<Yuv420p> {
     let (y_plane, uv) = data.split_at_mut(y_len);
     let (u_plane, v_plane) = uv.split_at_mut(uv_len);
 
-    // First pass: full-resolution Y.
+    // First pass: full-resolution Y (BT.601 limited range, broadcast standard).
+    // Limited range maps RGB [0,255] to Y [16,235]; this is what virtually
+    // every H.264 decoder expects by default and avoids the green/grey tint
+    // that arises when full-range YUV meets a decoder that ignores the VUI
+    // full_range flag.
+    //   Y = 16 + (219/255) * (0.299R + 0.587G + 0.114B)
+    // Fixed-point: round(0.299*219/255*65536)=16829, etc.
+    //   ≈ 16 + (16829*R + 33038*G + 6416*B) >> 16
     for i in 0..w * h {
         let r = rgb[i * 3] as i32;
         let g = rgb[i * 3 + 1] as i32;
         let b = rgb[i * 3 + 2] as i32;
-        // BT.601 full range: Y = 0.299R + 0.587G + 0.114B
-        let y = (66 * r + 129 * g + 25 * b + 128) >> 8;
-        y_plane[i] = y.clamp(0, 255) as u8;
+        let y = 16 + ((16829 * r + 33038 * g + 6416 * b + 32768) >> 16);
+        y_plane[i] = y.clamp(16, 235) as u8;
     }
 
     // Second pass: subsampled U/V (2x2 averaging in RGB space, then matrix).
-
+    // Limited-range Cb/Cr occupy [16,240] with 128 = neutral.
+    //   Cb = 128 + (224/255) * (-0.169R - 0.331G + 0.500B)
+    //   Cr = 128 + (224/255) * ( 0.500R - 0.419G - 0.081B)
     for cy in 0..half_h {
         for cx in 0..half_w {
             let mut sr = 0i32;
@@ -246,12 +254,13 @@ pub fn rgb8_to_yuv420p(rgb: &[u8], width: u32, height: u32) -> Result<Yuv420p> {
             sg /= 4;
             sb /= 4;
             let idx = cy * half_w + cx;
-            // U = -0.169R - 0.331G + 0.500B + 128
-            let u = (-38 * sr - 74 * sg + 112 * sb + 128 * 128) >> 8;
-            // V =  0.500R - 0.419G - 0.081B + 128
-            let v = (112 * sr - 94 * sg - 18 * sb + 128 * 128) >> 8;
-            u_plane[idx] = u.clamp(0, 255) as u8;
-            v_plane[idx] = v.clamp(0, 255) as u8;
+            // Limited-range coefficients (× 224/255, scaled by 65536):
+            //   Cb: -9719, -19026, +28736  → 128 + (sum)>>16
+            //   Cr: +28736, -24070, -4642
+            let u = 128 + ((-9719 * sr - 19026 * sg + 28736 * sb + 32768) >> 16);
+            let v = 128 + ((28736 * sr - 24070 * sg - 4642 * sb + 32768) >> 16);
+            u_plane[idx] = u.clamp(16, 240) as u8;
+            v_plane[idx] = v.clamp(16, 240) as u8;
         }
     }
 

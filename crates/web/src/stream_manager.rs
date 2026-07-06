@@ -118,6 +118,10 @@ struct StreamHandle {
     latest_jpeg: Option<LatestJpeg>,
     /// JPEG preview broadcast sender (for the MJPEG live-preview endpoint).
     jpeg_tx: Option<broadcast::Sender<Arc<[u8]>>>,
+    /// Cached (SPS, PPS) NAL units extracted from the broadcast, so new MSE
+    /// clients can bootstrap an init segment without waiting for the next IDR.
+    /// `None` until the first IDR has been observed.
+    sps_pps_cache: Option<Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>>>,
     /// Current status.
     status: StreamStatus,
 }
@@ -304,7 +308,7 @@ impl StreamManager {
         let (stop_tx, stop_rx) = watch::channel(false);
         let rtsp_base = format!("rtsp://{}:{}", self.advertised_host, RTSP_PORT);
 
-        let (run_handle, rtsp_url, rtmp_url, hub_handle) = {
+        let (run_handle, rtsp_url, rtmp_url, hub_handle, sps_pps_cache) = {
             let mut hub = StreamHub::new(source, self.resource_controller.clone());
             let stream_url: Option<String>;
 
@@ -462,6 +466,48 @@ impl StreamManager {
             // additional outputs to this stream after it has started.
             let hub_handle = hub.handle();
 
+            // Spawn a background "SPS/PPS harvester" that subscribes to the
+            // frame broadcast and caches the most recent SPS (NAL type 7) and
+            // PPS (type 8). New MSE/fMP4 clients read this cache so they can
+            // build an init segment immediately, without waiting up to a full
+            // GOP for the next IDR to carry fresh parameter sets.
+            let harvester_handle = hub_handle.clone();
+            let sps_pps_cache: Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>> =
+                Arc::new(Mutex::new(None));
+            let cache_clone = Arc::clone(&sps_pps_cache);
+            tokio::spawn(async move {
+                let mut rx = harvester_handle.subscribe_frames();
+                let mut have_sps = false;
+                let mut have_pps = false;
+                while let Ok(frame) = rx.recv().await {
+                    let streaming::source::MediaFrame::Video { data, .. } = &*frame else {
+                        continue;
+                    };
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let nal_type = data[0] & 0x1f;
+                    match nal_type {
+                        7 => {
+                            let mut g = cache_clone.lock();
+                            let entry = g.get_or_insert_with(|| (Vec::new(), Vec::new()));
+                            entry.0 = data.clone();
+                            have_sps = true;
+                        }
+                        8 => {
+                            let mut g = cache_clone.lock();
+                            let entry = g.get_or_insert_with(|| (Vec::new(), Vec::new()));
+                            entry.1 = data.clone();
+                            have_pps = true;
+                        }
+                        _ => {}
+                    }
+                    if have_sps && have_pps {
+                        // Both seen once; keep updating but no need to log again.
+                    }
+                }
+            });
+
             // Spawn a monitor task that calls hub.stop() when the external
             // stop signal is received.
             let cam_id = camera_id.clone();
@@ -472,7 +518,7 @@ impl StreamManager {
                 hub.stop();
             });
 
-            (handle, stream_url, rtmp_url, Some(hub_handle))
+            (handle, stream_url, rtmp_url, Some(hub_handle), Some(sps_pps_cache))
         };
 
         // ── 5. Store the stream handle ──────────────────────────────────
@@ -484,6 +530,7 @@ impl StreamManager {
             hub_handle,
             latest_jpeg,
             jpeg_tx,
+            sps_pps_cache,
             status: StreamStatus::Running,
         };
 
@@ -630,6 +677,20 @@ impl StreamManager {
         let handle = streams.get(camera_id)?;
         let hub_handle = handle.hub_handle.as_ref()?;
         Some(hub_handle.subscribe_frames())
+    }
+
+    /// Return the cached (SPS, PPS) NAL units for a camera, if both have been
+    /// observed by the background harvester.
+    ///
+    /// New MSE clients use this to bootstrap an fMP4 init segment immediately
+    /// rather than waiting up to a full GOP for the next IDR to carry fresh
+    /// parameter sets. Returns `None` if the stream is unknown or no IDR has
+    /// been seen yet.
+    pub async fn sps_pps(&self, camera_id: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+        let streams = self.streams.read().await;
+        let handle = streams.get(camera_id)?;
+        let cache = handle.sps_pps_cache.as_ref()?;
+        cache.lock().clone()
     }
 
     /// Attach a new output to an already-running stream.

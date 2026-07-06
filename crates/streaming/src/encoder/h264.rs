@@ -158,12 +158,12 @@ impl H264Encoder {
             .rate_control_mode(rc_mode)
             .qp(qp_range)
             .intra_frame_period(gop)
-            // VUI: declare BT.601 full-range so the browser decodes the YUV→RGB
-            // matrix correctly. The encoder's rgb8_to_yuv420p uses the BT.601
-            // full-range matrix, so the SPS must advertise matching primaries
-            // + matrix + full-range flag — otherwise browsers guess and the
-            // picture takes on a green tint.
-            .vui(VuiConfig::bt601().full_range(true))
+            // VUI: declare BT.601 limited-range (broadcast standard). The
+            // encoder's rgb8_to_yuv420p now produces limited-range YUV
+            // (Y in [16,235], Cb/Cr in [16,240]) matching this declaration.
+            // Every H.264 decoder defaults to limited-range, so this avoids
+            // the green/grey tint caused by full-range YUV being misread.
+            .vui(VuiConfig::bt601())
             // Scene-change detection + adaptive quantisation + background
             // detection all default on; they improve quality for a moving
             // surveillance scene at negligible cost.
