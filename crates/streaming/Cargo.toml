@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Enable AAC audio encoding (required for RTMP audio + standards-compliant MP4
+# audio). Off by default — G.711 μ-law is the default audio codec, which works
+# for RTSP but is non-compliant for RTMP/MP4.
+default = []
+aac = ["dep:fdk-aac"]
+
 [dependencies]
 capture = { path = "../capture" }
 tokio.workspace = true
@@ -20,6 +27,12 @@ futures = "0.3"
 cpal.workspace = true
 parking_lot = "0.12"
 observability = { path = "../observability" }
+# Native codec stack (ffmpeg replacement)
+openh264.workspace = true
+jpeg-decoder.workspace = true
+jpeg-encoder.workspace = true
+muxide.workspace = true
+fdk-aac = { workspace = true, optional = true }
 
 [dev-dependencies]
 axum.workspace = true

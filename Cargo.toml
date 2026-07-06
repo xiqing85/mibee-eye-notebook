@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Professional laptop surveillance agent"
 license = "NON-COMMERCIAL"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -45,6 +45,20 @@ bcrypt = "0.17"
 rand = "0.8"
 nokhwa = { version = "0.10", features = ["input-native"] }
 cpal = "0.18"
+# ── Native codec stack (replaces ffmpeg subprocesses) ────────────────────────
+# H.264 software encoder (Cisco BSD-2, vendored C++ compiled via cc/build.rs).
+# `source` feature bundles a prebuilt Cisco library blob for the host target,
+# avoiding the need to ship/locate libopenh264.so at runtime.
+openh264 = { version = "0.9", features = ["source"] }
+# JPEG decode (camera MJPG → pixels) and encode (YUYV cameras → JPEG preview).
+jpeg-decoder = "0.3"
+jpeg-encoder = "0.7"
+# Pure-Rust MP4 (fMP4) muxer for local recording segment archive.
+muxide = "0.2"
+# Optional AAC encoder for RTMP audio compliance. The `optional = true` is
+# declared at the consumer (streaming crate) level, not here — workspace
+# deps don't support `optional`.
+fdk-aac = "0.8"
 rcgen = "0.14"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 futures-core = "0.3"
@@ -60,7 +74,7 @@ version = "0.1.0"
 edition = "2024"
 license-file = "LICENSE"
 description = "Professional laptop surveillance agent"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [dependencies]
 tokio.workspace = true
