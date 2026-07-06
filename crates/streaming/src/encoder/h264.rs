@@ -24,7 +24,7 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use anyhow::{Context, Result};
-use openh264::encoder::{BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile, QpRange, RateControlMode};
+use openh264::encoder::{BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile, QpRange, RateControlMode, VuiConfig};
 use openh264::formats::YUVSource;
 use openh264::Timestamp;
 
@@ -158,6 +158,12 @@ impl H264Encoder {
             .rate_control_mode(rc_mode)
             .qp(qp_range)
             .intra_frame_period(gop)
+            // VUI: declare BT.601 full-range so the browser decodes the YUV→RGB
+            // matrix correctly. The encoder's rgb8_to_yuv420p uses the BT.601
+            // full-range matrix, so the SPS must advertise matching primaries
+            // + matrix + full-range flag — otherwise browsers guess and the
+            // picture takes on a green tint.
+            .vui(VuiConfig::bt601().full_range(true))
             // Scene-change detection + adaptive quantisation + background
             // detection all default on; they improve quality for a moving
             // surveillance scene at negligible cost.
