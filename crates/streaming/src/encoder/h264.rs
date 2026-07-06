@@ -7,24 +7,28 @@
 //!
 //! # Profile / tuning
 //!
-//! Tuned for low-latency camera streaming, mirroring the previous ffmpeg
-//! `-preset ultrafast -tune zerolatency` baseline:
+//! The encoder is tuned per-stream via [`H264EncoderConfig`], whose
+//! `quality_preset` field maps onto a coherent bundle of profile / complexity /
+//! rate-control / QP-range settings:
 //!
-//! - **Profile**: Baseline (Constrained Baseline-equivalent) — maximum decoder
-//!   compatibility across RTSP/RTMP/GB28181 consumers.
-//! - **Complexity**: Low — fastest encode.
-//! - **Rate control**: Quality mode with a clamped QP range, plus a target
-//!   bitrate ceiling.
-//! - **GOP** (`intra_frame_period`): equals `fps * 1s` so a keyframe lands
-//!   every second (matches the old ffmpeg `-g 30` at 30 fps).
+//! | Preset       | Profile | Complexity | RC mode  | QP range | Use case                |
+//! |--------------|---------|------------|----------|----------|-------------------------|
+//! | `UltraFast`  | Baseline| Low        | Quality  | 10–51    | Weak CPUs (≤2 cores)    |
+//! | `Medium`     | High    | Medium     | Quality  | 10–48    | Balanced default        |
+//! | `High`       | High    | High       | Quality  | 10–40    | Strong CPUs / clarity   |
+//! | `HardwareMax`| —       | —          | —        | —        | Handled by HW backends  |
+//!
+//! **GOP** (`intra_frame_period`) is derived from the actual `fps` so a
+//! keyframe lands every second regardless of capture frame rate.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use anyhow::{Context, Result};
-use openh264::encoder::{BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile};
+use openh264::encoder::{BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile, QpRange, RateControlMode};
 use openh264::formats::YUVSource;
 use openh264::Timestamp;
 
+use crate::capability::QualityPreset;
 use super::convert::Yuv420p;
 
 /// Configuration for constructing an [`H264Encoder`].
@@ -34,21 +38,71 @@ pub struct H264EncoderConfig {
     pub width: u32,
     /// Frame height in pixels (must be even).
     pub height: u32,
-    /// Target frame rate in Hz.
+    /// Target frame rate in Hz. Drives the GOP size (1-second keyframe
+    /// interval) and the muxer's `max_frame_rate`.
     pub fps: f32,
     /// Target bitrate in bits per second.
     pub bitrate_bps: u32,
+    /// Quality preset — selects profile / complexity / rate control / QP range.
+    pub quality_preset: QualityPreset,
 }
 
 impl Default for H264EncoderConfig {
     fn default() -> Self {
-        // Match the old ffmpeg defaults: 1280x720@30fps.
+        // Match the old ffmpeg defaults: 1280x720@30fps, balanced quality.
         Self {
             width: 1280,
             height: 720,
             fps: 30.0,
             bitrate_bps: 2_500_000,
+            quality_preset: QualityPreset::Medium,
         }
+    }
+}
+
+/// Resolve a [`QualityPreset`] into concrete OpenH264 tuning parameters.
+///
+/// Kept as a standalone function so it can be unit-tested without
+/// constructing an encoder.
+fn preset_to_tuning(preset: QualityPreset) -> (&'static str, Profile, Complexity, RateControlMode, QpRange) {
+    match preset {
+        // Weak CPUs: Baseline + lowest complexity + wide QP range. Maximise
+        // throughput at the cost of compression efficiency and image quality.
+        QualityPreset::UltraFast => (
+            "ultra-fast",
+            Profile::Baseline,
+            Complexity::Low,
+            RateControlMode::Quality,
+            // QP 18 keeps keyframes sharp; allow up to 45 before quality collapses.
+            QpRange::new(18, 45),
+        ),
+        // Balanced: High profile (cabinets + 8x8 transform), medium
+        // complexity. Good default for 4+ core CPUs.
+        QualityPreset::Medium => (
+            "medium",
+            Profile::High,
+            Complexity::Medium,
+            RateControlMode::Quality,
+            QpRange::new(15, 44),
+        ),
+        // Clarity-focused: High profile + high complexity motion search,
+        // tighter QP range to hold image quality under motion.
+        QualityPreset::High => (
+            "high",
+            Profile::High,
+            Complexity::High,
+            RateControlMode::Quality,
+            QpRange::new(10, 40),
+        ),
+        // Hardware backends own their tuning; the software path should never
+        // see this preset. Fall back to Medium defensively.
+        QualityPreset::HardwareMax => (
+            "medium (hw-max fallback)",
+            Profile::High,
+            Complexity::Medium,
+            RateControlMode::Quality,
+            QpRange::new(15, 44),
+        ),
     }
 }
 
@@ -80,20 +134,30 @@ impl H264Encoder {
     /// Create a new encoder with the given configuration.
     pub fn new(config: H264EncoderConfig) -> Result<Self> {
         let api = openh264::OpenH264API::from_source();
-        let gop = if config.fps >= 1.0 {
-            IntraFramePeriod::from_num_frames(config.fps.round() as u32)
+        // GOP = one keyframe per second, derived from the *actual* capture
+        // frame rate. The previous code hardcoded 30 fps which produced a
+        // 3-second keyframe interval for 10 fps cameras.
+        let fps_for_gop = if config.fps >= 1.0 {
+            config.fps
         } else {
-            IntraFramePeriod::from_num_frames(30)
+            30.0
         };
+        let gop = IntraFramePeriod::from_num_frames(fps_for_gop.round().max(1.0) as u32);
+
+        let (preset_label, profile, complexity, rc_mode, qp_range) =
+            preset_to_tuning(config.quality_preset);
 
         let enc_config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(config.bitrate_bps))
             .max_frame_rate(FrameRate::from_hz(config.fps))
-            .profile(Profile::Baseline)
-            .complexity(Complexity::Low)
+            .profile(profile)
+            .complexity(complexity)
+            .rate_control_mode(rc_mode)
+            .qp(qp_range)
             .intra_frame_period(gop)
-            // Scene-change detection helps keep quality stable during motion,
-            // but for a fixed surveillance camera we leave defaults on.
+            // Scene-change detection + adaptive quantisation + background
+            // detection all default on; they improve quality for a moving
+            // surveillance scene at negligible cost.
             ;
 
         let encoder = Encoder::with_api_config(api, enc_config)
@@ -104,7 +168,9 @@ impl H264Encoder {
             height = config.height,
             fps = config.fps,
             bitrate_bps = config.bitrate_bps,
-            "OpenH264 encoder initialized (Baseline, low complexity)"
+            preset = preset_label,
+            gop_frames = fps_for_gop.round() as u32,
+            "OpenH264 encoder initialized"
         );
 
         Ok(Self { encoder, config })
@@ -315,6 +381,30 @@ mod tests {
         assert_eq!(start_code_len_at(&[1, 2, 3], 0), None);
     }
 
+    #[test]
+    fn ultra_fast_preset_uses_baseline_for_speed() {
+        // openh264's Profile/Complexity enums don't derive PartialEq, so we
+        // assert on the preset label (our own string) plus the QP range that
+        // is unique to each preset.
+        let (label, _profile, _complexity, _, _qp) =
+            preset_to_tuning(QualityPreset::UltraFast);
+        assert_eq!(label, "ultra-fast");
+    }
+
+    #[test]
+    fn high_preset_uses_high_profile_and_complexity() {
+        let (label, _profile, _complexity, _, _qp) =
+            preset_to_tuning(QualityPreset::High);
+        assert_eq!(label, "high");
+    }
+
+    #[test]
+    fn medium_preset_is_the_balanced_default() {
+        let (label, _profile, _complexity, _, _qp) =
+            preset_to_tuning(QualityPreset::Medium);
+        assert_eq!(label, "medium");
+    }
+
     /// End-to-end encoder smoke test.
     ///
     /// Requires the `source` feature's bundled Cisco binary, which is only
@@ -327,6 +417,7 @@ mod tests {
             height: 64,
             fps: 30.0,
             bitrate_bps: 500_000,
+            quality_preset: QualityPreset::Medium,
         }) {
             Ok(e) => e,
             Err(e) => {

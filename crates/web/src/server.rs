@@ -107,6 +107,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
 
     let protected_routes = Router::new()
         .merge(reset_route)
+        // Session introspection (auth required)
+        .route("/api/auth/me", get(routes::me_handler))
         // Cameras CRUD
         .route("/api/cameras", get(routes::cameras::list_cameras))
         .route("/api/cameras", post(routes::cameras::create_camera))
@@ -122,6 +124,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/cameras/{id}/snapshot", get(routes::streams::snapshot))
         // Live preview (MJPEG stream for <img>)
         .route("/api/cameras/{id}/live", get(routes::streams::live_preview))
+        // MSE / fMP4 stream for <video> (H.264, hardware-decoded by browser)
+        .route("/api/cameras/{id}/stream.mse", get(routes::mse::stream_mse))
         // Settings
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
@@ -151,6 +155,14 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             put(routes::protocols::update_protocols_rtmp),
         )
         .route(
+            "/api/protocols/recording",
+            get(routes::protocols::get_protocols_recording),
+        )
+        .route(
+            "/api/protocols/recording",
+            put(routes::protocols::update_protocols_recording),
+        )
+        .route(
             "/api/protocols/runtime-status",
             get(routes::protocols::get_protocols_runtime_status),
         )
@@ -163,8 +175,17 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             get(routes::devices::list_video_devices),
         )
         .route(
+            "/api/devices/video/{index}/formats",
+            get(routes::devices::list_video_device_formats),
+        )
+        .route(
             "/api/devices/audio",
             get(routes::devices::list_audio_devices),
+        )
+        // Hardware capability introspection
+        .route(
+            "/api/capabilities",
+            get(routes::capabilities::get_capabilities),
         )
         // Auth middleware
         .route_layer(middleware::from_fn(security::middleware::require_auth));

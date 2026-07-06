@@ -14,8 +14,10 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub mod cameras;
+pub mod capabilities;
 pub mod devices;
 pub mod events;
+pub mod mse;
 pub mod protocols;
 pub mod settings;
 pub mod streams;
@@ -105,6 +107,24 @@ pub async fn metrics_handler() -> impl IntoResponse {
     let body = observability::render_metrics();
     let headers = [("content-type", "text/plain; version=0.0.4; charset=utf-8")];
     (StatusCode::OK, headers, body)
+}
+
+/// GET /api/auth/me — return the authenticated user's identity.
+///
+/// Allows the SPA to query "who am I?" on load to decide whether to render
+/// the app or redirect to login. The project is single-admin by design, so
+/// the role is always `"admin"`.
+#[tracing::instrument(skip_all)]
+pub async fn me_handler(
+    Extension(user): Extension<security::middleware::AuthenticatedUser>,
+) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "username": user.0,
+            "role": "admin",
+        })),
+    )
 }
 
 /// Placeholder handler for not-yet-implemented routes (501).

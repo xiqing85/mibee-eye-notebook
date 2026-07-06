@@ -43,6 +43,31 @@ pub struct VideoDeviceInfo {
     pub formats: Vec<String>,
 }
 
+/// A structured single-format capability reported by a camera.
+///
+/// Unlike the stringly-typed [`VideoDeviceInfo::formats`], this preserves the
+/// width / height / pixel-format / frame-rate as discrete fields so the Web UI
+/// can render resolution + fps pickers and the encoding layer can request a
+/// specific format at stream-creation time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatCapability {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Pixel format label (e.g. `"MJPEG"`, `"YUYV"`).
+    pub format: String,
+    /// Frame rate in frames-per-second.
+    pub fps: u32,
+}
+
+impl FormatCapability {
+    /// Pixels-per-frame, handy for sorting and capacity heuristics.
+    pub fn pixels(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
+}
+
 /// A single captured video frame.
 ///
 /// Contains the raw camera buffer in the format indicated by
@@ -281,6 +306,45 @@ fn enumerate_device_formats(device_index: usize) -> Result<Vec<String>> {
             )
         })
         .collect();
+
+    // Camera is dropped, releasing the device.
+    Ok(formats)
+}
+
+/// Open a camera by index and return its supported formats as structured
+/// [`FormatCapability`] entries.
+///
+/// Each `(width, height, format, fps)` combination the driver exposes becomes
+/// one entry. The list is sorted by descending pixel count, then descending
+/// fps, so the highest-resolution + highest-framerate options come first —
+/// matching the order the Web UI presents to the user.
+pub fn enumerate_device_formats_detailed(device_index: usize) -> Result<Vec<FormatCapability>> {
+    use nokhwa::utils::CameraFormat;
+
+    let index = CameraIndex::Index(device_index as u32);
+    let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::None);
+
+    let mut camera =
+        Camera::new(index, requested).context("failed to open camera for format enumeration")?;
+
+    let mut formats: Vec<FormatCapability> = camera
+        .compatible_camera_formats()
+        .context("failed to enumerate camera formats")?
+        .into_iter()
+        .map(|cf: CameraFormat| FormatCapability {
+            width: cf.width(),
+            height: cf.height(),
+            format: format!("{:?}", cf.format()),
+            fps: cf.frame_rate(),
+        })
+        .collect();
+
+    // Highest resolution first; within a resolution, highest fps first.
+    formats.sort_by(|a, b| {
+        b.pixels()
+            .cmp(&a.pixels())
+            .then_with(|| b.fps.cmp(&a.fps))
+    });
 
     // Camera is dropped, releasing the device.
     Ok(formats)

@@ -258,9 +258,10 @@ impl StreamManager {
         // *before* the source is boxed as `dyn Source`, since those methods
         // are specific to `VideoCaptureSource`. So we keep the typed value
         // around for handle extraction, then box it.
-        let (source, latest_jpeg, jpeg_tx): (
+        let (source, latest_jpeg, dimensions, jpeg_tx): (
             Box<dyn Source>,
             Option<LatestJpeg>,
+            Option<Arc<parking_lot::Mutex<Option<streaming::capture_source::StreamDimensions>>>>,
             Option<broadcast::Sender<Arc<[u8]>>>,
         ) = match camera_type {
             "usb" => {
@@ -270,12 +271,31 @@ impl StreamManager {
                     .ok_or_else(|| {
                         anyhow::anyhow!("USB camera config must include 'device_index'")
                     })?;
-                let vcs = streaming::capture_source::VideoCaptureSource::new(
+                let mut vcs = streaming::capture_source::VideoCaptureSource::new(
                     device_index as usize,
                 );
+                // Adapt the encoder to the host: probe once (cached) and pick
+                // the recommended quality preset. A user-set override from the
+                // camera config (`quality_preset`) takes precedence when present.
+                let preset = config
+                    .get("quality_preset")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_quality_preset)
+                    .unwrap_or_else(|| {
+                        streaming::capability::probe().recommended_quality
+                    });
+                vcs = vcs.with_quality_preset(preset);
+                // Honour an explicit target fps from the camera config so the
+                // encoder's GOP matches the real capture rate.
+                if let Some(fps) = config.get("target_fps").and_then(|v| v.as_f64()) {
+                    if fps > 0.0 {
+                        vcs = vcs.with_target_fps(fps as f32);
+                    }
+                }
                 let latest = vcs.latest_jpeg_handle();
+                let dims = vcs.dimensions_handle();
                 let tx = vcs.jpeg_sender();
-                (Box::new(vcs), Some(latest), tx)
+                (Box::new(vcs), Some(latest), Some(dims), tx)
             }
             other => anyhow::bail!("unsupported camera type: {other}"),
         };
@@ -410,6 +430,12 @@ impl StreamManager {
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(10_240);
                             let mut output = FileOutput::new(path, &camera_id, seg, cap);
+                            // Attach the live dimensions handle so the muxer's
+                            // track metadata reflects the real negotiated
+                            // resolution instead of the 1280x720 default.
+                            if let Some(dims) = &dimensions {
+                                output = output.with_dimensions_handle(Arc::clone(dims));
+                            }
                             match output.start().await {
                                 Ok(()) => {
                                     info!(%camera_id, path, segment_secs = seg, "FileOutput attached");
@@ -591,6 +617,21 @@ impl StreamManager {
         Some(tx.subscribe())
     }
 
+    /// Subscribe to the encoded-frame broadcast for a camera.
+    ///
+    /// Used by the MSE/fMP4 HTTP endpoint to pull H.264 NAL units and remux
+    /// them into fragmented MP4 for browser `MediaSource` playback. Returns
+    /// `None` if the camera has no active stream or no hub handle.
+    pub async fn subscribe_frames(
+        &self,
+        camera_id: &str,
+    ) -> Option<tokio::sync::broadcast::Receiver<Arc<streaming::source::MediaFrame>>> {
+        let streams = self.streams.read().await;
+        let handle = streams.get(camera_id)?;
+        let hub_handle = handle.hub_handle.as_ref()?;
+        Some(hub_handle.subscribe_frames())
+    }
+
     /// Attach a new output to an already-running stream.
     ///
     /// This is the runtime entry point used by external protocol handlers
@@ -645,6 +686,22 @@ impl StreamManager {
 impl Default for StreamManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Parse a [`QualityPreset`] from the string form used in JSON camera configs.
+///
+/// Accepts the serde kebab-case names (`"ultra-fast"`, `"medium"`, `"high"`,
+/// `"hardware-max"`). Returns `None` for unknown values so the caller falls
+/// back to the host-recommended preset.
+fn parse_quality_preset(s: &str) -> Option<streaming::capability::QualityPreset> {
+    use streaming::capability::QualityPreset;
+    match s.trim() {
+        "ultra-fast" => Some(QualityPreset::UltraFast),
+        "medium" => Some(QualityPreset::Medium),
+        "high" => Some(QualityPreset::High),
+        "hardware-max" => Some(QualityPreset::HardwareMax),
+        _ => None,
     }
 }
 

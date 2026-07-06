@@ -1,0 +1,17 @@
+{
+  "name": "mibee-rec-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Preact SPA sources for mibee-rec. Bundled by esbuild at Rust build time; no runtime Node dependency.",
+  "license": "NON-COMMERCIAL",
+  "devDependencies": {
+    "preact": "^10.24.0"
+  },
+  "scripts": {
+    "install-deps": "npm install --no-save --prefix crates/web"
+  },
+  "comments": {
+    "purpose": "These are BUILD-TIME devDependencies only. esbuild bundles preact into crates/web/static/app.bundle.js, which is then inlined into index.html. The shipped binary embeds index.html and has zero Node/npm runtime dependency.",
+    "build": "On Linux: cargo build invokes crates/web/build.rs which runs tools/esbuild-linux-x64. Run `npm install` in this directory first so preact is resolvable."
+  }
+}
