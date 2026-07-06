@@ -7,7 +7,7 @@
 //! blocking V4L2 / cpal syscalls so they are wrapped in [`spawn_blocking`].
 
 use axum::Json;
-use axum::extract::Extension;
+use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Serialize;
@@ -26,6 +26,16 @@ pub struct VideoDeviceResponse {
     pub index: usize,
     pub name: String,
     pub formats: Vec<String>,
+}
+
+/// Structured single-format entry — one per `(width, height, format, fps)`
+/// tuple the camera exposes.
+#[derive(Debug, Serialize)]
+pub struct FormatCapabilityResponse {
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
+    pub fps: u32,
 }
 
 /// Response shape for a single audio input device.
@@ -77,6 +87,51 @@ pub async fn list_video_devices(
             index: d.index,
             name: d.name,
             formats: d.formats,
+        })
+        .collect();
+
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+/// GET /api/devices/video/{index}/formats — list the structured
+/// `(width, height, format, fps)` capabilities of a single camera.
+///
+/// Unlike [`list_video_devices`], which returns format strings, this returns
+/// discrete fields so the Web UI can render a resolution / fps picker and the
+/// streaming layer can request a specific format when the stream is created.
+/// Entries are sorted highest-resolution-first.
+#[tracing::instrument(skip_all)]
+pub async fn list_video_device_formats(
+    Extension(_user): Extension<AuthenticatedUser>,
+    Path(index): Path<usize>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        capture::video::enumerate_device_formats_detailed(index)
+    })
+    .await;
+
+    let formats = match result {
+        Ok(Ok(f)) => f,
+        Ok(Err(e)) => {
+            tracing::warn!(device_index = index, error = %e, "failed to enumerate formats");
+            return ApiError::not_found(format!(
+                "could not enumerate formats for device {index}: {e}"
+            ))
+            .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "spawn_blocking join error for format enumeration");
+            return ApiError::internal("failed to enumerate device formats").into_response();
+        }
+    };
+
+    let response: Vec<FormatCapabilityResponse> = formats
+        .into_iter()
+        .map(|f| FormatCapabilityResponse {
+            width: f.width,
+            height: f.height,
+            format: f.format,
+            fps: f.fps,
         })
         .collect();
 

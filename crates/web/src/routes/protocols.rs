@@ -370,6 +370,41 @@ pub async fn update_protocols_rtmp(
 }
 
 // ---------------------------------------------------------------------------
+// Recording config
+// ---------------------------------------------------------------------------
+
+/// GET /api/protocols/recording — return local recording config as JSON.
+#[tracing::instrument(skip_all)]
+pub async fn get_protocols_recording(
+    Extension(db): Extension<Db>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    handle_get(&db, "recording").await
+}
+
+/// PUT /api/protocols/recording — update local recording config (partial, validated).
+///
+/// Persists the config to the DB. Recording is attached at stream-creation
+/// time: toggling `enabled` takes effect on the next stream start (stop +
+/// start the camera to apply). Existing running streams keep their current
+/// recording state until restarted.
+#[tracing::instrument(skip_all)]
+pub async fn update_protocols_recording(
+    Extension(db): Extension<Db>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Json(payload): Json<serde_json::Value>,
+) -> axum::response::Response {
+    match handle_put_and_get(&db, "recording", payload).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok"})),
+        )
+            .into_response(),
+        Err(resp) => resp,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Runtime status
 // ---------------------------------------------------------------------------
 

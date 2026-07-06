@@ -36,6 +36,7 @@ use tracing::{debug, info, warn};
 use crate::encoder::audio::{AudioEncoder, G711Encoder};
 use crate::encoder::convert::{Yuv420p, mjpeg_to_yuv420p, yuyv_to_yuv420p};
 use crate::encoder::h264::{H264Encoder, H264EncoderConfig, NalUnit};
+use crate::capability::QualityPreset;
 use crate::source::{MediaFrame, Source};
 use capture::audio::{AudioCapture, AudioFrame};
 use capture::video::{VideoCapture, VideoFrame};
@@ -84,10 +85,33 @@ pub struct VideoCaptureSource {
     /// Most recent JPEG frame for snapshot/preview subscribers.
     /// `Arc<[u8]>` so subscribers can share without copying.
     latest_jpeg: Arc<Mutex<Option<Arc<[u8]>>>>,
+    /// Negotiated stream dimensions (width, height, fps), populated when the
+    /// encoder is lazily initialised on the first frame. Shared so downstream
+    /// consumers (e.g. FileOutput) can read the real resolution before they
+    /// build their muxer track metadata.
+    dimensions: Arc<Mutex<Option<StreamDimensions>>>,
+    /// Requested capture frame rate (0.0 = fall back to 30.0). The actual
+    /// delivered rate is bounded by the camera + USB bandwidth, but this value
+    /// drives the encoder's `max_frame_rate` + GOP size so the keyframe cadence
+    /// matches reality rather than a hardcoded 30 fps.
+    target_fps: f32,
+    /// Quality preset handed to the OpenH264 encoder. Defaults to
+    /// [`QualityPreset::Medium`]; the Web UI will override this via
+    /// [`VideoCaptureSource::with_quality_preset`].
+    quality_preset: QualityPreset,
     /// Broadcast sender for live-preview subscribers.
     jpeg_tx: Option<broadcast::Sender<Arc<[u8]>>>,
     /// Frame counter, used to throttle YUYV→JPEG re-encoding.
     frame_count: u64,
+}
+
+/// Negotiated stream geometry, shared from the capture source to downstream
+/// outputs so MP4 muxer metadata matches the actual encoded frames.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamDimensions {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f32,
 }
 
 impl VideoCaptureSource {
@@ -114,6 +138,9 @@ impl VideoCaptureSource {
             height: 0,
             fps: 0.0,
             latest_jpeg: Arc::new(Mutex::new(None)),
+            dimensions: Arc::new(Mutex::new(None)),
+            target_fps: 0.0,
+            quality_preset: QualityPreset::Medium,
             jpeg_tx: Some(jpeg_tx),
             frame_count: 0,
         }
@@ -149,6 +176,39 @@ impl VideoCaptureSource {
     /// Return the most recent JPEG bytes, if available.
     pub fn latest_jpeg(&self) -> Option<Arc<[u8]>> {
         self.latest_jpeg.lock().clone()
+    }
+
+    /// Return a clone of the stream-dimensions handle.
+    ///
+    /// Populated with the negotiated `(width, height, fps)` once the encoder
+    /// is lazily initialised on the first frame. Downstream outputs (e.g.
+    /// [`FileOutput`](crate::output::FileOutput)) read this so MP4 track
+    /// metadata matches the actual encoded frames instead of a hardcoded
+    /// default.
+    pub fn dimensions_handle(&self) -> Arc<Mutex<Option<StreamDimensions>>> {
+        Arc::clone(&self.dimensions)
+    }
+
+    /// Override the encoder quality preset.
+    ///
+    /// Should be called before [`start`](Source::start). The preset selects the
+    /// OpenH264 profile / complexity / rate-control / QP range. Defaults to
+    /// [`QualityPreset::Medium`]; choose [`QualityPreset::UltraFast`] on weak
+    /// CPUs and [`QualityPreset::High`] when image clarity matters most.
+    pub fn with_quality_preset(mut self, preset: QualityPreset) -> Self {
+        self.quality_preset = preset;
+        self
+    }
+
+    /// Override the target frame rate used for encoder configuration.
+    ///
+    /// A value of `0.0` (the default) defers to 30 Hz. Set this to the actual
+    /// capture rate (e.g. 10.0 for a USB-2 webcam at 720p) so the GOP size
+    /// produces a one-second keyframe interval and the muxer's
+    /// `max_frame_rate` matches reality.
+    pub fn with_target_fps(mut self, fps: f32) -> Self {
+        self.target_fps = fps;
+        self
     }
 }
 
@@ -232,17 +292,35 @@ impl Source for VideoCaptureSource {
                 if self.encoder.is_none() {
                     self.width = video_frame.width;
                     self.height = video_frame.height;
-                    self.fps = 30.0;
+                    // Use the caller-requested target fps, falling back to 30
+                    // when unset. This drives the GOP size (1-second keyframe
+                    // interval) so e.g. a 10 fps USB-2 webcam gets a keyframe
+                    // every 10 frames, not every 30.
+                    self.fps = if self.target_fps > 0.0 {
+                        self.target_fps
+                    } else {
+                        30.0
+                    };
                     let config = H264EncoderConfig {
                         width: self.width,
                         height: self.height,
                         fps: self.fps,
                         bitrate_bps: bitrate_for_dimensions(self.width, self.height),
+                        quality_preset: self.quality_preset,
                     };
                     self.encoder = Some(H264Encoder::new(config).context("encoder init failed")?);
+                    // Publish the negotiated dimensions so downstream outputs
+                    // (e.g. FileOutput) can build correct muxer track metadata.
+                    *self.dimensions.lock() = Some(StreamDimensions {
+                        width: self.width,
+                        height: self.height,
+                        fps: self.fps,
+                    });
                     info!(
                         width = self.width,
                         height = self.height,
+                        fps = self.fps,
+                        preset = ?self.quality_preset,
                         format = %video_frame.format,
                         "encoder initialized for camera format"
                     );
