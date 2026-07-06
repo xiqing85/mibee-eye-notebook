@@ -6,6 +6,7 @@ import { api } from '../api.js';
 import { streamUrls, showToast } from '../store.js';
 import { navigate } from '../components/useHashRoute.js';
 import { LivePreview } from '../components/LivePreview.js';
+import { useStore } from '../hooks.js';
 
 export function CameraDetail({ cameraId }) {
   const [cam, setCam] = useState(null);
@@ -25,8 +26,9 @@ export function CameraDetail({ cameraId }) {
     return () => { alive = false; };
   }, [cameraId]);
 
-  const running = !!streamUrls.value[cameraId];
-  const rtspUrl = streamUrls.value[cameraId]?.rtsp_url;
+  const urls = useStore(streamUrls);
+  const running = !!urls[cameraId];
+  const rtspUrl = urls[cameraId]?.rtsp_url;
 
   async function start() {
     const res = await api.post(`/api/cameras/${cameraId}/start`);

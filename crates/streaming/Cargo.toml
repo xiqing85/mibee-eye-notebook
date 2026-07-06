@@ -17,6 +17,11 @@ vaapi = []
 # Enable NVIDIA hardware H.264 encoding via NVENC. Requires the NVIDIA Codec
 # SDK at build time and a proprietary driver at run time. Off by default.
 nvenc = []
+# Use libjpeg-turbo (via the `turbojpeg` crate) for MJPEG decoding instead of
+# the pure-Rust `jpeg-decoder`. ~2-6× faster on x86_64 thanks to SIMD. The
+# default build stays on jpeg-decoder to avoid the libturbojpeg0 run-time
+# system dependency; enable this when libturbojpeg0 is present on the target.
+turbojpeg = ["dep:turbojpeg"]
 
 [dependencies]
 capture = { path = "../capture" }
@@ -39,6 +44,7 @@ jpeg-decoder.workspace = true
 jpeg-encoder.workspace = true
 muxide.workspace = true
 fdk-aac = { workspace = true, optional = true }
+turbojpeg = { version = "1.0", optional = true }
 
 [dev-dependencies]
 axum.workspace = true
