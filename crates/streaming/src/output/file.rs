@@ -13,11 +13,14 @@
 use std::future::Future;
 use std::io::BufWriter;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use muxide::api::{Muxer, MuxerBuilder, VideoCodec};
+use parking_lot::Mutex;
 
+use crate::capture_source::StreamDimensions;
 use crate::output::Output;
 use crate::source::MediaFrame;
 
@@ -40,8 +43,13 @@ pub struct FileOutput {
     height: u32,
     /// Frame rate of the video track (passed to the muxer).
     fps: f32,
-    /// Active muxer + its underlying file. `None` when not started or between
-    /// segment rotations.
+    /// Optional live dimensions handle from the capture source. When present,
+    /// the real negotiated `(width, height, fps)` is read from here at segment
+    /// open time so muxer metadata matches the actual encoded frames rather
+    /// than the hardcoded default.
+    dimensions_handle: Option<Arc<Mutex<Option<StreamDimensions>>>>,
+    /// Active muxer + its underlying file. `None` when not started, before the
+    /// first keyframe arrives, or between segment rotations.
     active: Option<ActiveSegment>,
     /// Presentation timestamp (seconds) of the first frame in the current
     /// segment — used to compute per-frame PTS and detect rotation boundaries.
@@ -64,7 +72,9 @@ impl FileOutput {
     /// The `path` directory is created (recursively) on [`start`](Output::start).
     /// Dimensions are used to configure the muxer's video track; if they don't
     /// match the actual encoded frames the resulting MP4 may have incorrect
-    /// metadata but will still be playable.
+    /// metadata but will still be playable. Pass a live dimensions handle via
+    /// [`with_dimensions_handle`](Self::with_dimensions_handle) to ensure the
+    /// muxer picks up the real negotiated geometry.
     pub fn new(path: &str, camera_id: &str, segment_duration_secs: u64, max_capacity_mb: u64) -> Self {
         Self {
             path: path.to_string(),
@@ -74,6 +84,7 @@ impl FileOutput {
             width: 1280,
             height: 720,
             fps: 30.0,
+            dimensions_handle: None,
             active: None,
             segment_start_pts: 0.0,
             started: false,
@@ -89,6 +100,20 @@ impl FileOutput {
         self.width = width;
         self.height = height;
         self.fps = fps;
+        self
+    }
+
+    /// Attach a live dimensions handle from the capture source.
+    ///
+    /// When set, [`open_new_segment`](Self::open_new_segment) reads the real
+    /// negotiated `(width, height, fps)` from this handle, so the muxer track
+    /// metadata matches the actual encoded frames even when the output is
+    /// constructed before the first frame arrives.
+    pub fn with_dimensions_handle(
+        mut self,
+        handle: Arc<Mutex<Option<StreamDimensions>>>,
+    ) -> Self {
+        self.dimensions_handle = Some(handle);
         self
     }
 
@@ -134,6 +159,17 @@ impl FileOutput {
     fn open_new_segment(&mut self) -> Result<()> {
         // Close the current segment first, if any.
         self.close_current_segment()?;
+
+        // Pick up the real negotiated dimensions if a live handle is attached.
+        // This lets the muxer emit correct track metadata even though the
+        // output was constructed before the first frame arrived.
+        if let Some(handle) = &self.dimensions_handle {
+            if let Some(d) = *handle.lock() {
+                self.width = d.width;
+                self.height = d.height;
+                self.fps = d.fps;
+            }
+        }
 
         // Generate the timestamped filename.
         let now = SystemTime::now()
@@ -188,8 +224,9 @@ impl Output for FileOutput {
             // Ensure output directory exists.
             std::fs::create_dir_all(&self.path)?;
 
-            // Open the first segment.
-            self.open_new_segment()?;
+            // The first segment is opened lazily on the first keyframe so the
+            // muxer picks up the real negotiated dimensions (which the capture
+            // source publishes only after the first frame arrives).
             self.started = true;
             observability::inc_recording_active();
             Ok(())
@@ -215,8 +252,11 @@ impl Output for FileOutput {
                     }
 
                     // Check for segment rotation: rotate when the wall-clock
-                    // age of the current segment exceeds the duration, but only
-                    // at a keyframe boundary so each segment starts cleanly.
+                    // age of the current segment exceeds the duration, at a
+                    // keyframe boundary so each segment starts cleanly. If no
+                    // segment is open yet (lazy first-segment open), open one
+                    // immediately regardless of keyframe status so no frames
+                    // are dropped while waiting for the next IDR.
                     let needs_rotation = self
                         .active
                         .as_ref()
@@ -225,7 +265,8 @@ impl Output for FileOutput {
                         })
                         .unwrap_or(true);
 
-                    if needs_rotation && keyframe {
+                    let open_now = needs_rotation && (keyframe || self.active.is_none());
+                    if open_now {
                         if let Err(e) = self.open_new_segment() {
                             tracing::warn!(error = %e, "segment rotation failed, continuing with current segment");
                         }

@@ -518,6 +518,20 @@ impl HubHandle {
     pub fn is_stopped(&self) -> bool {
         *self.global_stop_rx.borrow()
     }
+
+    /// Subscribe to the hub's frame broadcast.
+    ///
+    /// Returns a fresh [`broadcast::Receiver`] that yields every
+    /// [`MediaFrame`] the source produces. Used by pull-style consumers
+    /// (e.g. the MSE/fMP4 HTTP endpoint) that want their own independent view
+    /// of the stream rather than attaching a push-style [`Output`].
+    ///
+    /// The receiver is bound to the same capacity (64 frames) as the hub's
+    /// broadcast channel; slow consumers will see `Lagged` errors and skip
+    /// frames rather than blocking the source.
+    pub fn subscribe_frames(&self) -> broadcast::Receiver<Arc<MediaFrame>> {
+        self.broadcast_tx.subscribe()
+    }
 }
 
 /// Spawn a task for an output to consume frames from the broadcast channel.

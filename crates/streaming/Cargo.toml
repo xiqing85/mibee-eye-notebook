@@ -11,6 +11,12 @@ rust-version.workspace = true
 # for RTSP but is non-compliant for RTMP/MP4.
 default = []
 aac = ["dep:fdk-aac"]
+# Enable Intel/AMD hardware H.264 encoding via libva (VAAPI). Requires libva at
+# build/run time. Off by default — the software (OpenH264) path is always built.
+vaapi = []
+# Enable NVIDIA hardware H.264 encoding via NVENC. Requires the NVIDIA Codec
+# SDK at build time and a proprietary driver at run time. Off by default.
+nvenc = []
 
 [dependencies]
 capture = { path = "../capture" }
