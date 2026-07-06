@@ -6,18 +6,10 @@ use axum::Json;
 use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
-use futures_core::Stream;
 use protocols::rtsp_server::RtspServer;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
-use std::task::{Context, Poll};
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
-use tokio::sync::Mutex;
-use tokio::sync::oneshot;
-use tokio::time::{Duration, timeout};
+use std::sync::Arc;
+use tokio_stream::StreamExt as TokioStreamExt;
 use uuid::Uuid;
 
 use crate::db;
@@ -163,21 +155,20 @@ pub async fn stop_stream(
     }
 }
 
-/// Per-camera serialization lock to prevent concurrent ffmpeg for the same camera.
-static SNAPSHOT_LOCKS: OnceLock<Arc<Mutex<HashMap<String, ()>>>> = OnceLock::new();
-
 /// GET /api/cameras/{id}/snapshot — capture a single JPEG frame.
 ///
-/// Captures a JPEG snapshot from an active stream by using ffmpeg to pull
-/// a single frame from the RTSP stream and encode it as JPEG.
+/// Returns the most recent JPEG frame cached by the capture pipeline. For MJPG
+/// cameras this is a zero-cost passthrough of the camera's own JPEG bytes; for
+/// YUYV-only cameras a JPEG is re-encoded periodically in the capture loop.
+///
+/// This replaces the previous ffmpeg-from-RTSP snapshot subprocess — it is
+/// faster (no process spawn, no RTSP round-trip) and requires no ffmpeg.
 ///
 /// # Returns
 ///
 /// - `200 OK` with JPEG body on success
 /// - `404 Not Found` if camera does not exist
-/// - `409 Conflict` if stream is not active
-/// - `504 Gateway Timeout` if capture takes longer than 30 seconds
-/// - `500 Internal Server Error` on ffmpeg or IO errors
+/// - `409 Conflict` if stream is not active or no frame has been captured yet
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn snapshot(
     Extension(db): Extension<SqlitePool>,
@@ -186,135 +177,41 @@ pub async fn snapshot(
     Extension(_advertised_host): Extension<Arc<String>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // Verify camera exists
-    let camera = match db::get_camera(&db, &id).await {
-        Ok(Some(cam)) => cam,
+    // Verify camera exists.
+    match db::get_camera(&db, &id).await {
+        Ok(Some(_)) => {}
         Ok(None) => return ApiError::not_found("camera not found").into_response(),
         Err(e) => {
             tracing::error!(error = %e, camera_id = %id, "failed to get camera for snapshot");
             return ApiError::internal("database error").into_response();
         }
-    };
-    drop(camera);
-
-    // Check if stream is active
-    if !stream_manager.has_stream(&id).await {
-        return ApiError::conflict("stream not active - start the stream first").into_response();
     }
 
-    // Acquire per-camera serialization lock
-    let locks = SNAPSHOT_LOCKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
-    let _camera_lock = {
-        let mut lock_map = locks.lock().await;
-        if lock_map.contains_key(&id) {
-            drop(lock_map);
-            return ApiError::conflict("snapshot already in progress for this camera")
-                .into_response();
-        }
-        lock_map.insert(id.clone(), ());
-        // Create a guard that removes the lock on drop
-        struct LockGuard {
-            locks: Arc<Mutex<HashMap<String, ()>>>,
-            camera_id: String,
-        }
-        impl Drop for LockGuard {
-            fn drop(&mut self) {
-                let locks = self.locks.clone();
-                let camera_id = self.camera_id.clone();
-                // Use spawn to avoid blocking in drop
-                tokio::spawn(async move {
-                    let mut lock_map = locks.lock().await;
-                    lock_map.remove(&camera_id);
-                });
-            }
-        }
-        LockGuard {
-            locks: locks.clone(),
-            camera_id: id.clone(),
+    // Fetch the cached JPEG directly from the capture pipeline.
+    let jpeg = match stream_manager.latest_jpeg(&id).await {
+        Some(j) => j,
+        None => {
+            // Either no active stream, or stream active but no frame captured yet.
+            let msg = if stream_manager.has_stream(&id).await {
+                "no frame captured yet — retry in a moment"
+            } else {
+                "stream not active - start the stream first"
+            };
+            return ApiError::conflict(msg).into_response();
         }
     };
 
-    // Internal ffmpeg→RTSP loopback: always use 127.0.0.1 (both processes run on this machine)
-    let rtsp_url = format!("rtsp://127.0.0.1:8554/live/{}", id);
-
-    // Use ffmpeg to capture a single JPEG frame
-    let capture_result = timeout(Duration::from_secs(30), async move {
-        let mut child = Command::new("ffmpeg")
-            .arg("-rtsp_transport")
-            .arg("tcp")
-            .arg("-i")
-            .arg(&rtsp_url)
-            .arg("-vframes")
-            .arg("1")
-            .arg("-f")
-            .arg("image2")
-            .arg("-c:v")
-            .arg("mjpeg")
-            .arg("-q:v")
-            .arg("2")
-            .arg("pipe:1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn ffmpeg for snapshot: {}", e))?;
-
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("failed to capture ffmpeg stdout"))?;
-
-        // Read all output (JPEG data)
-        let mut buffer = Vec::new();
-        stdout
-            .read_to_end(&mut buffer)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to read ffmpeg output: {}", e))?;
-
-        // Wait for ffmpeg to complete
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to wait for ffmpeg: {}", e))?;
-
-        if !status.success() {
-            anyhow::bail!("ffmpeg exited with non-zero status: {:?}", status);
-        }
-
-        // Verify JPEG magic bytes
-        if buffer.len() < 3 || buffer[..2] != [0xFF, 0xD8] {
-            anyhow::bail!("output is not a valid JPEG");
-        }
-
-        Ok::<Vec<u8>, anyhow::Error>(buffer)
-    })
-    .await;
-
-    drop(_camera_lock);
-
-    match capture_result {
-        Ok(Ok(jpeg_data)) => {
-            let mut headers = HeaderMap::new();
-            headers.insert("content-type", HeaderValue::from_static("image/jpeg"));
-            headers.insert(
-                "content-length",
-                jpeg_data
-                    .len()
-                    .to_string()
-                    .parse::<HeaderValue>()
-                    .unwrap_or(HeaderValue::from_static("0")),
-            );
-            (StatusCode::OK, headers, jpeg_data).into_response()
-        }
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, camera_id = %id, "snapshot capture failed");
-            ApiError::internal("failed to capture snapshot").into_response()
-        }
-        Err(_) => {
-            tracing::warn!(camera_id = %id, "snapshot capture timed out after 30s");
-            ApiError::gateway_timeout("snapshot capture timed out").into_response()
-        }
-    }
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("image/jpeg"));
+    headers.insert(
+        "content-length",
+        jpeg.len()
+            .to_string()
+            .parse::<HeaderValue>()
+            .unwrap_or(HeaderValue::from_static("0")),
+    );
+    // Copy into an owned Vec for the response body (axum body wants 'static).
+    (StatusCode::OK, headers, jpeg.to_vec()).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -323,20 +220,24 @@ pub async fn snapshot(
 
 /// GET /api/cameras/{id}/live — MJPEG live preview stream.
 ///
-/// Returns a `multipart/x-mixed-replace` response with JPEG frames at ~10 fps.
-/// Suitable for direct use in `<img src=...>` — the browser handles the
-/// multipart MJPEG decoding natively, no JavaScript or MSE required.
+/// Returns a `multipart/x-mixed-replace` response with JPEG frames as they
+/// are captured. Suitable for direct use in `<img src=...>` — the browser
+/// handles the multipart MJPEG decoding natively, no JavaScript or MSE
+/// required.
+///
+/// This replaces the previous ffmpeg-from-RTSP transcoding subprocess. The
+/// capture pipeline already produces JPEG frames (zero-cost for MJPG cameras,
+/// periodically re-encoded for YUYV cameras); this endpoint simply forwards
+/// them to subscribers.
 ///
 /// # Requirements
 /// - Camera must exist and have an active stream (returns 409 otherwise).
-/// - ffmpeg must be installed and on PATH.
-/// - The RTSP server must be reachable at the advertised host.
 ///
 /// # Notes
 /// - Authentication is via the session cookie (sent automatically by `<img>`
 ///   on same-origin requests).
-/// - The stream runs until the client disconnects (connection closes).
-/// - Each client gets its own ffmpeg subprocess.
+/// - The stream runs until the client disconnects (dropping the response body
+///   drops the broadcast subscription naturally — no reaper task needed).
 #[tracing::instrument(skip_all, fields(camera_id = %id))]
 pub async fn live_preview(
     Extension(db): Extension<SqlitePool>,
@@ -345,9 +246,6 @@ pub async fn live_preview(
     Extension(_advertised_host): Extension<Arc<String>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    use std::process::Stdio;
-    use tokio_util::io::ReaderStream;
-
     // Verify camera exists.
     match db::get_camera(&db, &id).await {
         Ok(Some(_)) => {}
@@ -360,126 +258,60 @@ pub async fn live_preview(
         }
     }
 
-    // Verify stream is active.
-    if !stream_manager.has_stream(&id).await {
-        return ApiError::conflict("stream not active - start the stream first").into_response();
-    }
-
-    // Live preview: pull from RTSP and convert to MJPEG via ffmpeg.
-    // This single ffmpeg approach works for ALL camera types (USB, RTSP, ONVIF,
-    // GB28181) because every camera's stream is available through the RTSP server.
-    // Internal ffmpeg→RTSP loopback: always use 127.0.0.1 (both processes run on this machine)
-    let rtsp_url = format!("rtsp://127.0.0.1:8554/live/{}", id);
-
-    let mut cmd = Command::new("ffmpeg");
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    cmd.args([
-        "-hide_banner",
-        "-loglevel",
-        "fatal",
-        "-fflags",
-        "nobuffer",
-        "-flags",
-        "low_delay",
-        "-analyzeduration",
-        "500000",
-        "-rtsp_transport",
-        "tcp",
-        "-i",
-        &rtsp_url,
-        "-s",
-        "640x360",
-        "-f",
-        "mpjpeg",
-        "-r",
-        "10",
-        "-q:v",
-        "5",
-        "-an",
-        "pipe:1",
-    ]);
-
-    tracing::info!(camera_id = %id, rtsp_url = %rtsp_url, "starting MJPEG live preview");
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to spawn ffmpeg");
-            return ApiError::internal("ffmpeg spawn failed").into_response();
-        }
-    };
-
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
+    // Subscribe to the JPEG preview broadcast.
+    let rx = match stream_manager.subscribe_jpeg(&id).await {
+        Some(rx) => rx,
         None => {
-            let _ = child.kill().await;
-            return ApiError::internal("ffmpeg stdout unavailable").into_response();
+            return ApiError::conflict("stream not active - start the stream first")
+                .into_response();
         }
     };
 
-    // Oneshot channel to signal the reaper when client disconnects.
-    // The reaper task waits for either:
-    //   - kill_rx triggered: client disconnected, kill ffmpeg and reap
-    //   - child.wait(): ffmpeg exited naturally (EPIPE on stdout write)
-    // Without this, axum does not abort the body stream when the HTTP client
-    // disconnects, so the pipe read end stays open and ffmpeg never receives
-    // EPIPE, becoming a zombie process.
-    let (kill_tx, kill_rx) = oneshot::channel::<()>();
+    tracing::info!(camera_id = %id, "starting MJPEG live preview");
 
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = kill_rx => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                tracing::debug!(camera_id = %id, "ffmpeg killed on client disconnect");
+    // The stream closures below must be 'static (axum body requirement), so
+    // we clone `id` here for the tracing field inside the closure.
+    let cam_id = id.clone();
+
+    // Wrap the broadcast receiver in a BroadcastStream, then map each JPEG
+    // frame into a multipart MIME part. When the HTTP client disconnects,
+    // axum drops the response body, dropping this stream and the underlying
+    // receiver — no reaper task or kill channel is needed (unlike the old
+    // ffmpeg subprocess design).
+    let boundary = "mibeejpeg";
+    let frame_stream = tokio_stream::wrappers::BroadcastStream::new(rx)
+        .filter_map(move |res| match res {
+            Ok(jpeg) => Some(jpeg),
+            // Lagged = subscriber fell behind; skip ahead to the latest frame.
+            Err(e) => {
+                tracing::debug!(camera_id = %cam_id, error = ?e, "preview subscriber lagged");
+                None
             }
-            result = child.wait() => {
-                tracing::debug!(camera_id = %id, status = ?result.ok(), "ffmpeg exited naturally");
-            }
-        }
-    });
-
-    // Stream wrapper that sends kill signal on drop.
-    // When the HTTP response body is dropped (client disconnect),
-    // kill_tx fires, and the reaper kills ffmpeg.
-    //
-    // Safety: FfmpegStream is Unpin because:
-    //   Pin<Box<...>> is Unpin, Option<oneshot::Sender<()>> is Unpin.
-    // So Pin::get_unchecked_mut is safe.
-    struct FfmpegStream {
-        inner: Pin<Box<ReaderStream<tokio::process::ChildStdout>>>,
-        kill_tx: Option<oneshot::Sender<()>>,
-    }
-
-    impl Stream for FfmpegStream {
-        type Item = Result<axum::body::Bytes, std::io::Error>;
-
-        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            let this = unsafe { self.get_unchecked_mut() };
-            this.inner.as_mut().poll_next(cx)
-        }
-    }
-
-    impl Drop for FfmpegStream {
-        fn drop(&mut self) {
-            if let Some(tx) = self.kill_tx.take() {
-                let _ = tx.send(());
-            }
-        }
-    }
-
-    let stream = FfmpegStream {
-        inner: Box::pin(ReaderStream::new(stdout)),
-        kill_tx: Some(kill_tx),
-    };
+        })
+        .map(move |jpeg| {
+            // Build the multipart part: boundary header + JPEG + trailing CRLF.
+            let mut part = Vec::with_capacity(jpeg.len() + 64);
+            use std::io::Write;
+            let _ = write!(
+                part,
+                "--{boundary}\r\n\
+                 Content-Type: image/jpeg\r\n\
+                 Content-Length: {}\r\n\r\n",
+                jpeg.len()
+            );
+            part.extend_from_slice(&jpeg);
+            part.extend_from_slice(b"\r\n");
+            Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::from(part))
+        });
 
     axum::response::Response::builder()
-        .header("content-type", "multipart/x-mixed-replace; boundary=ffmpeg")
+        .header(
+            "content-type",
+            format!("multipart/x-mixed-replace; boundary={boundary}"),
+        )
         .header("cache-control", "no-store, no-cache, must-revalidate")
         .header("pragma", "no-cache")
-        .body(axum::body::Body::from_stream(stream))
+        .body(axum::body::Body::from_stream(frame_stream))
         .unwrap_or_else(|e| {
             tracing::error!(error = ?e, "failed to build MJPEG response");
             ApiError::internal("response build failed").into_response()

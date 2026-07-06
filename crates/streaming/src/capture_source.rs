@@ -1,34 +1,50 @@
-//! Capture source adapter: local webcam → H.264 encoded stream.
+//! Capture source adapters: local webcam/audio → encoded [`MediaFrame`] stream.
 //!
-//! Bridges the [`capture`] crate (V4L2 webcam via nokhwa) with the streaming
-//! pipeline by encoding raw camera frames (MJPEG or raw video) into H.264
-//! via an ffmpeg subprocess and wrapping them as [`MediaFrame::Video`].
-//!
-//! # Pipeline
+//! This module bridges the [`capture`] crate (V4L2 webcam via nokhwa, ALSA
+//! audio via cpal) with the streaming pipeline. Unlike the previous
+//! ffmpeg-subprocess design, encoding now happens entirely in-process:
 //!
 //! ```text
-//! Camera → VideoCapture (mpsc channel) → ffmpeg stdin → libx264 → ffmpeg stdout → NAL extraction → MediaFrame
+//! Camera → VideoCapture (nokhwa) → VideoFrame{format,data}
+//!       → encoder::convert (MJPEG/YUYV → YUV420p)
+//!       → encoder::h264 (openh264) → Vec<NalUnit>
+//!       → one MediaFrame::Video per NAL (start code stripped)
+//!
+//! Microphone → AudioCapture (cpal) → AudioFrame{i16 PCM}
+//!           → encoder::audio (G.711 / AAC) → MediaFrame::Audio
 //! ```
 //!
-//! # Resource usage
+//! # Snapshot / preview JPEG tap
 //!
-//! One ffmpeg subprocess per source, one tokio process handle, one mpsc
-//! channel (16-frame buffer from capture crate).  Memory ≈ 64 MB (ffmpeg
-//! process overhead + H.264 reference frames).
+//! [`VideoCaptureSource`] also maintains a "latest JPEG" snapshot for the web
+//! UI's snapshot and live-preview endpoints. When the camera delivers MJPG the
+//! JPEG bytes are passed through untouched (zero-cost); for YUYV-only cameras
+//! a JPEG is re-encoded periodically.
+
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::future::Future;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
-use anyhow::{Context, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::broadcast;
+use anyhow::{Context, Result, bail};
+use parking_lot::Mutex;
+use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, info, warn};
 
+use crate::encoder::audio::{AudioEncoder, G711Encoder};
+use crate::encoder::convert::{Yuv420p, mjpeg_to_yuv420p, yuyv_to_yuv420p};
+use crate::encoder::h264::{H264Encoder, H264EncoderConfig, NalUnit};
 use crate::source::{MediaFrame, Source};
 use capture::audio::{AudioCapture, AudioFrame};
 use capture::video::{VideoCapture, VideoFrame};
 use cpal::traits::{DeviceTrait, HostTrait};
+
+/// Capacity of the JPEG preview broadcast (drop-oldest under backpressure).
+const JPEG_BROADCAST_CAPACITY: usize = 8;
+/// Re-encode a preview JPEG every Nth frame for YUYV cameras (to bound CPU).
+const YUYV_PREVIEW_EVERY_N_FRAMES: u64 = 6;
 
 // ---------------------------------------------------------------------------
 // VideoCaptureSource
@@ -36,50 +52,42 @@ use cpal::traits::{DeviceTrait, HostTrait};
 
 /// Bridge between a local camera and the streaming pipeline.
 ///
-/// Opens a camera via [`VideoCapture`], feeds raw frames to an ffmpeg
-/// subprocess encoding to H.264, reads back the Annex B byte stream,
-/// and emits individual NAL units as [`MediaFrame::Video`].
+/// Opens a camera via [`VideoCapture`] (nokhwa/V4L2), encodes each frame to
+/// H.264 via OpenH264, and emits individual NAL units as
+/// [`MediaFrame::Video`]. The first NAL of each access unit has
+/// `keyframe = true`.
 ///
-/// # Example
-///
-/// ```ignore
-/// let mut source = VideoCaptureSource::new(0);
-/// source.start().await?;
-/// while let Ok(frame) = source.next_frame().await {
-///     // frame is MediaFrame::Video { keyframe, data, timestamp }
-/// }
-/// source.stop().await?;
-/// ```
-#[allow(dead_code)]
+/// A JPEG tap is maintained in parallel for the web UI: callers can obtain the
+/// most recent JPEG via [`VideoCaptureSource::latest_jpeg`] or subscribe to a
+/// stream of them via [`VideoCaptureSource::subscribe_jpeg`].
 pub struct VideoCaptureSource {
     /// Camera device index (0 = `/dev/video0`).
     device_index: usize,
     /// Video capture controller, populated after `start()`.
     capture: Option<VideoCapture>,
     /// Frame channel receiver, created by [`VideoCapture::start_stream()`].
-    frame_rx: Option<broadcast::Receiver<VideoFrame>>,
-    /// Running ffmpeg child process (MJPEG/raw → H.264 encoding).
-    ffmpeg_child: Option<Child>,
-    /// Piped stdin: raw frame data written here.
-    ffmpeg_stdin: Option<ChildStdin>,
-    /// Piped stdout: H.264 Annex B byte stream read from here.
-    ffmpeg_stdout: Option<ChildStdout>,
-    /// Accumulated byte buffer for partial NAL data from ffmpeg stdout.
-    buffer: Vec<u8>,
+    frame_rx: Option<mpsc::Receiver<VideoFrame>>,
+    /// H.264 encoder (OpenH264).
+    encoder: Option<H264Encoder>,
+    /// NALs produced by the last `encode()` call, drained one per `next_frame()`.
+    pending_nals: std::collections::VecDeque<NalUnit>,
     /// Whether the source has been started.
     running: bool,
-    /// Consecutive ffmpeg crash count (reset after 30s uptime).
-    crash_count: u32,
-    /// When ffmpeg was last started, for uptime tracking.
-    ffmpeg_start_time: Option<Instant>,
-    /// Camera width (stored for ffmpeg restart).
-    camera_width: u32,
-    /// Camera height (stored for ffmpeg restart).
-    camera_height: u32,
-    /// Camera pixel format (stored for ffmpeg restart).
-    camera_format: String,
-    /// Camera framerate (stored for ffmpeg restart).
-    camera_framerate: String,
+    /// Stream start time, for presentation timestamps.
+    start_time: Option<Instant>,
+    /// Negotiated frame width (for the encoder config + diagnostics).
+    width: u32,
+    /// Negotiated frame height.
+    height: u32,
+    /// Negotiated frame rate (Hz).
+    fps: f32,
+    /// Most recent JPEG frame for snapshot/preview subscribers.
+    /// `Arc<[u8]>` so subscribers can share without copying.
+    latest_jpeg: Arc<Mutex<Option<Arc<[u8]>>>>,
+    /// Broadcast sender for live-preview subscribers.
+    jpeg_tx: Option<broadcast::Sender<Arc<[u8]>>>,
+    /// Frame counter, used to throttle YUYV→JPEG re-encoding.
+    frame_count: u64,
 }
 
 impl VideoCaptureSource {
@@ -87,23 +95,27 @@ impl VideoCaptureSource {
     ///
     /// `device_index` is the OS device index (e.g. `0` for `/dev/video0`).
     /// The camera is not opened until [`start()`](Self::start) is called.
+    ///
+    /// The JPEG-tap channels (latest-JPEG snapshot + preview broadcast) are
+    /// created at construction time so callers can obtain subscription handles
+    /// before the source has been started.
     #[tracing::instrument(skip_all, fields(device_index))]
     pub fn new(device_index: usize) -> Self {
+        let (jpeg_tx, _) = broadcast::channel::<Arc<[u8]>>(JPEG_BROADCAST_CAPACITY);
         Self {
             device_index,
             capture: None,
             frame_rx: None,
-            ffmpeg_child: None,
-            ffmpeg_stdin: None,
-            ffmpeg_stdout: None,
-            buffer: Vec::new(),
+            encoder: None,
+            pending_nals: Default::default(),
             running: false,
-            crash_count: 0,
-            ffmpeg_start_time: None,
-            camera_width: 0,
-            camera_height: 0,
-            camera_format: String::new(),
-            camera_framerate: String::new(),
+            start_time: None,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            latest_jpeg: Arc::new(Mutex::new(None)),
+            jpeg_tx: Some(jpeg_tx),
+            frame_count: 0,
         }
     }
 
@@ -118,388 +130,65 @@ impl VideoCaptureSource {
     pub fn device_index(&self) -> usize {
         self.device_index
     }
+
+    /// Return a clone of the latest-JPEG handle.
+    ///
+    /// Callers (the web UI snapshot endpoint) read this to serve a single
+    /// frame without joining the encode loop.
+    pub fn latest_jpeg_handle(&self) -> Arc<Mutex<Option<Arc<[u8]>>>> {
+        Arc::clone(&self.latest_jpeg)
+    }
+
+    /// Return the JPEG broadcast sender, if any subscribers should be created.
+    ///
+    /// Returns `None` before [`start()`](Self::start) has been called.
+    pub fn jpeg_sender(&self) -> Option<broadcast::Sender<Arc<[u8]>>> {
+        self.jpeg_tx.clone()
+    }
+
+    /// Return the most recent JPEG bytes, if available.
+    pub fn latest_jpeg(&self) -> Option<Arc<[u8]>> {
+        self.latest_jpeg.lock().clone()
+    }
 }
 
-// ---------------------------------------------------------------------------
-// FFmpeg crash restart decision logic
-// ---------------------------------------------------------------------------
-
-/// Decide whether to restart ffmpeg after a crash.
-///
-// Kept for future crash-recovery reimplementation. Currently unused because
-// next_frame() returns an error on stdout EOF instead of attempting restart.
-/// Otherwise, increments the counter and returns the exponential backoff
-/// delay (2s, 4s, 8s for attempts 1, 2, 3).
-fn check_ffmpeg_crash_restart(
-    crash_count: &mut u32,
-    ffmpeg_start_time: Instant,
-) -> Result<Duration> {
-    // Reset crash counter if ffmpeg ran for >30s
-    if ffmpeg_start_time.elapsed() > Duration::from_secs(30) {
-        *crash_count = 0;
-    }
-
-    if *crash_count >= 3 {
-        anyhow::bail!(
-            "ffmpeg crash limit reached ({crash_count} consecutive crashes) — \
-             encoder repeatedly failing",
-            crash_count = *crash_count
-        );
-    }
-
-    *crash_count += 1;
-    let delay = Duration::from_secs(1u64 << *crash_count);
-    Ok(delay)
-}
-
-// ---------------------------------------------------------------------------
-// Camera capability detection (v4l2-ctl)
-// ---------------------------------------------------------------------------
-
-/// Auto-detect camera capabilities by running `v4l2-ctl --list-formats-ext`.
-///
-/// Returns `(input_format, video_size, framerate)` suitable for ffmpeg's
-/// `-input_format`, `-video_size`, and `-framerate` options.
-///
-/// Fallback chain:
-///   Format: MJPEG -> YUYV -> NV12 -> first available
-///   Resolution: 1280x720 -> 960x540 -> 640x480 -> first available
-///   Framerate: 30 -> 15 -> 10 -> first available
-///
-/// If `v4l2-ctl` is not installed, falls back to MJPEG/1280x720/30 with a warning.
-#[tracing::instrument(skip_all, fields(device_index))]
-fn detect_camera_capabilities(device_index: usize) -> Result<(String, String, String)> {
-    let device_path = format!("/dev/video{}", device_index);
-
-    // Try to run v4l2-ctl
-    let output = match std::process::Command::new("v4l2-ctl")
-        .arg("--device")
-        .arg(&device_path)
-        .arg("--list-formats-ext")
-        .output()
-    {
-        Ok(output) => output,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!(
-                "v4l2-ctl not found - install v4l-utils for optimal camera parameters; falling back to MJPEG/1280x720/30"
-            );
-            return Ok((
-                "mjpeg".to_string(),
-                "1280x720".to_string(),
-                "30".to_string(),
-            ));
-        }
-        Err(e) => anyhow::bail!("failed to run v4l2-ctl: {}", e),
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(
-            "v4l2-ctl exited with status {} — falling back to MJPEG/1280x720/30: {}",
-            output.status,
-            stderr.trim()
-        );
-        return Ok((
-            "mjpeg".to_string(),
-            "1280x720".to_string(),
-            "30".to_string(),
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // ------------------------------------------------------------------
-    // Parse v4l2-ctl --list-formats-ext output
-    //
-    // Typical format:
-    //   [0]: 'MJPG' (Motion-JPEG, compressed)
-    //       Size: Discrete 1280x720
-    //           Interval: 30 fps (1/30 second)
-    //           Interval: 15 fps (1/15 second)
-    //       Size: Discrete 640x480
-    //           Interval: 30 fps (1/30 second)
-    //   [1]: 'YUYV' (YUYV 4:2:2)
-    //       Size: Discrete 640x480
-    //           Interval: 30 fps (1/30 second)
-    // ------------------------------------------------------------------
-
-    let format_map: &[(&str, &str)] = &[
-        ("MJPG", "mjpeg"),
-        ("YUYV", "yuyv422"),
-        ("NV12", "nv12"),
-        ("H264", "h264"),
-    ];
-
-    struct ResEntry {
-        size: String,
-        framerates: Vec<u32>,
-    }
-
-    struct FmtEntry {
-        fourcc: String,
-        resolutions: Vec<ResEntry>,
-    }
-
-    let mut formats: Vec<FmtEntry> = Vec::new();
-    let mut cur_fourcc: Option<String> = None;
-    let mut cur_resolutions: Vec<ResEntry> = Vec::new();
-    let mut cur_size: Option<String> = None;
-    let mut cur_framerates: Vec<u32> = Vec::new();
-
-    for line in stdout.lines() {
-        let t = line.trim();
-
-        // Format header: "[N]: 'FOURCC' (description)"
-        if t.starts_with('[') {
-            // Flush previous format
-            if let Some(fcc) = cur_fourcc.take() {
-                if let Some(sz) = cur_size.take() {
-                    cur_resolutions.push(ResEntry {
-                        size: sz,
-                        framerates: std::mem::take(&mut cur_framerates),
-                    });
-                }
-                formats.push(FmtEntry {
-                    fourcc: fcc,
-                    resolutions: std::mem::take(&mut cur_resolutions),
-                });
-            }
-
-            // Extract fourcc from between single quotes
-            if let Some(qs) = t.find('\'') {
-                if let Some(qe) = t[qs + 1..].find('\'') {
-                    cur_fourcc = Some(t[qs + 1..qs + 1 + qe].to_uppercase());
-                }
-            }
-        }
-        // Size line: "Size: Discrete WxH" or "Size: Discretes WxH"
-        else if t.starts_with("Size:") {
-            // Flush previous resolution
-            if let Some(sz) = cur_size.take() {
-                cur_resolutions.push(ResEntry {
-                    size: sz,
-                    framerates: std::mem::take(&mut cur_framerates),
-                });
-            }
-
-            let rest = t
-                .strip_prefix("Size:")
-                .unwrap_or("")
-                .trim_start_matches("Discrete")
-                .trim_start_matches("Discretes")
-                .trim();
-            if !rest.is_empty() && rest.contains('x') {
-                cur_size = Some(rest.to_string());
-            }
-        }
-        // Interval line: "Interval: FPS fps (1/DUR second)"
-        else if t.starts_with("Interval:") {
-            let rest = t.strip_prefix("Interval:").unwrap_or("").trim();
-            if let Some(fps_str) = rest.split_whitespace().next() {
-                if let Ok(fps) = fps_str.parse::<u32>() {
-                    cur_framerates.push(fps);
-                }
-            }
-        }
-    }
-
-    // Flush remaining entries
-    if let Some(fcc) = cur_fourcc.take() {
-        if let Some(sz) = cur_size.take() {
-            cur_resolutions.push(ResEntry {
-                size: sz,
-                framerates: std::mem::take(&mut cur_framerates),
-            });
-        }
-        formats.push(FmtEntry {
-            fourcc: fcc,
-            resolutions: std::mem::take(&mut cur_resolutions),
-        });
-    }
-
-    // ------------------------------------------------------------------
-    // Select best parameters via fallback chain
-    // ------------------------------------------------------------------
-
-    let preferred_formats = ["MJPG", "YUYV", "NV12"];
-    let preferred_resolutions = ["1280x720", "960x540", "640x480"];
-    let preferred_framerates = [30, 15, 10];
-
-    for &pf in &preferred_formats {
-        if let Some(entry) = formats.iter().find(|f| f.fourcc == pf) {
-            if let Some(ffmpeg_fmt) = format_map.iter().find(|(k, _)| *k == pf).map(|(_, v)| *v) {
-                for &pr in &preferred_resolutions {
-                    if let Some(res) = entry.resolutions.iter().find(|r| r.size == pr) {
-                        for &pfps in &preferred_framerates {
-                            if res.framerates.contains(&pfps) {
-                                return Ok((
-                                    ffmpeg_fmt.to_string(),
-                                    pr.to_string(),
-                                    pfps.to_string(),
-                                ));
-                            }
-                        }
-                        // Prefer highest available framerate
-                        if let Some(&fps) = res.framerates.first() {
-                            return Ok((ffmpeg_fmt.to_string(), pr.to_string(), fps.to_string()));
-                        }
-                        return Ok((ffmpeg_fmt.to_string(), pr.to_string(), "30".to_string()));
-                    }
-                }
-                // Preferred resolution not found — use first available
-                if let Some(res) = entry.resolutions.first() {
-                    if let Some(&fps) = res.framerates.first() {
-                        return Ok((ffmpeg_fmt.to_string(), res.size.clone(), fps.to_string()));
-                    }
-                    return Ok((ffmpeg_fmt.to_string(), res.size.clone(), "30".to_string()));
-                }
-            }
-        }
-    }
-
-    // Fallback to any available format
-    if let Some(entry) = formats.first() {
-        if let Some((_, ffmpeg_fmt)) = format_map.iter().find(|(k, _)| *k == entry.fourcc) {
-            if let Some(res) = entry.resolutions.first() {
-                if let Some(&fps) = res.framerates.first() {
-                    return Ok((ffmpeg_fmt.to_string(), res.size.clone(), fps.to_string()));
-                }
-                return Ok((ffmpeg_fmt.to_string(), res.size.clone(), "30".to_string()));
-            }
-        }
-    }
-
-    // Ultimate fallback — should not normally reach here
-    tracing::warn!("could not parse v4l2-ctl output — falling back to MJPEG/1280x720/30");
-    Ok((
-        "mjpeg".to_string(),
-        "1280x720".to_string(),
-        "30".to_string(),
-    ))
-}
 impl Source for VideoCaptureSource {
     #[tracing::instrument(skip_all)]
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        // Capture device_index by value (Copy) so the async block doesn't
-        // need a full &mut self borrow at construction time.
-        let index = self.device_index;
+        let device_index = self.device_index;
+        let latest_jpeg = Arc::clone(&self.latest_jpeg);
 
         Box::pin(async move {
-            let device_path = format!("/dev/video{}", index);
-
-            // Validate device exists
+            let device_path = format!("/dev/video{}", device_index);
             if !std::path::Path::new(&device_path).exists() {
-                anyhow::bail!("Video device {} not found", device_path);
+                bail!("Video device {} not found", device_path);
             }
 
-            // Auto-detect camera capabilities at runtime
-            let (input_format, video_size, framerate) = detect_camera_capabilities(index)
-                .context("failed to detect camera capabilities")?;
+            // Open the camera via nokhwa. `VideoCapture::new` negotiates the
+            // highest-resolution format; the actual fourcc is reported per
+            // frame via `VideoFrame.format`.
+            let mut capture = VideoCapture::new(device_index)
+                .context(format!("failed to open camera at index {device_index}"))?;
+            let rx = capture
+                .start_stream()
+                .context("failed to start video capture stream")?;
 
-            tracing::info!(
-                device = %device_path,
-                input_format = %input_format,
-                video_size = %video_size,
-                framerate = %framerate,
-                "detected camera capabilities"
-            );
-
-            let mut cmd = tokio::process::Command::new("ffmpeg");
-            cmd.arg("-y")
-                .arg("-f")
-                .arg("v4l2")
-                .arg("-input_format")
-                .arg(&input_format)
-                .arg("-video_size")
-                .arg(&video_size)
-                .arg("-framerate")
-                .arg(&framerate)
-                .arg("-i")
-                .arg(&device_path)
-                .arg("-pix_fmt")
-                .arg("yuv420p")
-                .arg("-c:v")
-                .arg("libx264")
-                .arg("-preset")
-                .arg("ultrafast")
-                .arg("-tune")
-                .arg("zerolatency")
-                .arg("-threads")
-                .arg("1")
-                .arg("-g")
-                .arg("30")
-                .arg("-x264-params")
-                .arg("repeat-headers=1")
-                .arg("-f")
-                .arg("h264")
-                .arg("pipe:1")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-
-            tracing::info!(device = %device_path, "spawning ffmpeg for direct V4L2 capture");
-
-            let mut child = cmd
-                .spawn()
-                .context("failed to spawn ffmpeg — is ffmpeg installed and in $PATH?")?;
-
-            let stdout = child
-                .stdout
-                .take()
-                .context("failed to capture ffmpeg stdout")?;
-
-            if let Some(stderr) = child.stderr.take() {
-                use tokio::io::{AsyncBufReadExt, BufReader};
-                let mut reader = BufReader::new(stderr);
-                tokio::spawn(async move {
-                    let mut line = String::new();
-                    loop {
-                        line.clear();
-                        match reader.read_line(&mut line).await {
-                            Ok(0) => break,
-                            Ok(_) => {
-                                let trimmed = line.trim_end();
-                                if !trimmed.is_empty() {
-                                    tracing::warn!("ffmpeg: {}", trimmed);
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                });
-            }
-
-            let stdout = stdout;
-
-            // Parse resolution string to store width/height
-            let (w, h) = {
-                let mut parts = video_size.splitn(2, 'x');
-                (
-                    parts
-                        .next()
-                        .and_then(|p| p.parse::<u32>().ok())
-                        .unwrap_or(1280),
-                    parts
-                        .next()
-                        .and_then(|p| p.parse::<u32>().ok())
-                        .unwrap_or(720),
-                )
-            };
-            self.camera_width = w;
-            self.camera_height = h;
-            self.camera_format = input_format.clone();
-            self.camera_framerate = framerate.clone();
-            self.ffmpeg_child = Some(child);
-            self.ffmpeg_stdout = Some(stdout);
+            // We don't know width/height/fps until the first frame arrives;
+            // the encoder is created lazily on the first next_frame() call.
+            self.capture = Some(capture);
+            self.frame_rx = Some(rx);
+            // jpeg_tx was created in new(); keep it so existing subscribers
+            // continue to receive frames across a stop/start cycle.
+            // Re-attach the latest_jpeg handle in case start() is called twice.
+            self.latest_jpeg = latest_jpeg;
+            self.pending_nals.clear();
+            self.frame_count = 0;
+            self.start_time = Some(Instant::now());
             self.running = true;
-            self.ffmpeg_start_time = Some(Instant::now());
 
-            tracing::info!(
-                device_index = index,
-                input_format = %input_format,
-                video_size = %video_size,
-                framerate = %framerate,
-                "VideoCaptureSource started (direct ffmpeg V4L2 mode with auto-detected params)"
+            info!(
+                device = %device_path,
+                "VideoCaptureSource started (native nokhwa + openh264 pipeline)"
             );
             Ok(())
         })
@@ -509,153 +198,116 @@ impl Source for VideoCaptureSource {
     fn next_frame(&mut self) -> Pin<Box<dyn Future<Output = Result<MediaFrame>> + Send + '_>> {
         Box::pin(async move {
             if !self.running {
-                anyhow::bail!("VideoCaptureSource not started");
+                bail!("VideoCaptureSource not started");
             }
 
-            let timestamp = self
-                .ffmpeg_start_time
-                .map(|t| t.elapsed().as_millis() as u64)
-                .unwrap_or(0);
+            // 1. Drain any NALs left over from the previous encode() call.
+            if let Some(nal) = self.pending_nals.pop_front() {
+                let timestamp = self
+                    .start_time
+                    .map(|t| t.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                return Ok(MediaFrame::Video {
+                    keyframe: nal.is_keyframe,
+                    data: nal.data,
+                    timestamp,
+                });
+            }
 
-            // Read from ffmpeg stdout until a complete NAL unit is available.
-            // stdin writes are handled by a separate task spawned in start(),
-            // which continuously feeds camera frames to ffmpeg. This decouples
-            // input from output and prevents pipe deadlock during ffmpeg's
-            // initial probe phase.
-            // stdout is obtained inside the loop so crash-restart can replace it.
+            // 2-7: Read a camera frame, convert, encode, emit NALs.
+            // Wrapped in a loop because openh264 occasionally returns an empty
+            // bitstream (FrameType::Skip) for rate control — we skip that frame
+            // and read the next one rather than killing the stream.
             loop {
-                // Try to extract a complete NAL unit from accumulated data.
-                if let Some((nal_data, keyframe, new_offset)) = extract_next_nal(&self.buffer, 0) {
-                    self.buffer = self.buffer[new_offset..].to_vec();
-                    return Ok(MediaFrame::Video {
-                        keyframe,
-                        data: nal_data,
-                        timestamp,
-                    });
+                // 2. Receive the next raw camera frame.
+                let video_frame = self
+                    .frame_rx
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("frame receiver not available"))?
+                    .recv()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("video frame channel closed"))?;
+
+                // 3. Lazily initialize the encoder on the first frame.
+                if self.encoder.is_none() {
+                    self.width = video_frame.width;
+                    self.height = video_frame.height;
+                    self.fps = 30.0;
+                    let config = H264EncoderConfig {
+                        width: self.width,
+                        height: self.height,
+                        fps: self.fps,
+                        bitrate_bps: bitrate_for_dimensions(self.width, self.height),
+                    };
+                    self.encoder = Some(H264Encoder::new(config).context("encoder init failed")?);
+                    info!(
+                        width = self.width,
+                        height = self.height,
+                        format = %video_frame.format,
+                        "encoder initialized for camera format"
+                    );
                 }
 
-                // Obtain stdout reference inside the loop — crash restart
-                // can replace self.ffmpeg_stdout and continue will pick it up.
-                let stdout = self
-                    .ffmpeg_stdout
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
+                // 4. Convert the raw frame to planar YUV420p.
+                let yuv: Yuv420p = if video_frame.format.contains("MJPEG") {
+                    mjpeg_to_yuv420p(&video_frame.data).context("MJPEG → YUV420p decode failed")?
+                } else if video_frame.format.contains("YUYV") {
+                    yuyv_to_yuv420p(&video_frame.data, video_frame.width, video_frame.height)
+                        .context("YUYV → YUV420p conversion failed")?
+                } else {
+                    debug!(format = %video_frame.format, "unknown camera format, attempting MJPEG decode");
+                    mjpeg_to_yuv420p(&video_frame.data).context("MJPEG → YUV420p decode failed")?
+                };
 
-                // Need more data — read a chunk from ffmpeg stdout.
-                let mut tmp = vec![0u8; 65536];
-                let n = stdout
-                    .read(&mut tmp)
-                    .await
-                    .context("error reading ffmpeg stdout")?;
-
-                if n == 0 {
-                    // ffmpeg stdout closed — encoder exited or crashed.
-                    // Attempt automatic restart with crash limit guarding.
-                    let start_time = self.ffmpeg_start_time.unwrap_or_else(Instant::now);
-                    match check_ffmpeg_crash_restart(&mut self.crash_count, start_time) {
-                        Ok(delay) => {
-                            tracing::warn!(
-                                delay_ms = delay.as_millis(),
-                                crash_count = self.crash_count,
-                                "ffmpeg crashed, restarting after backoff"
-                            );
-                            tokio::time::sleep(delay).await;
-
-                            // Clean up the old (already exited) process
-                            if let Some(mut child) = self.ffmpeg_child.take() {
-                                let _ = child.kill().await;
-                                let _ = child.wait().await;
-                            }
-                            self.ffmpeg_stdout = None;
-
-                            // Re-spawn ffmpeg with the same detected params
-                            let device_path = format!("/dev/video{}", self.device_index);
-                            let video_size =
-                                format!("{}x{}", self.camera_width, self.camera_height);
-
-                            let mut cmd = tokio::process::Command::new("ffmpeg");
-                            cmd.arg("-y")
-                                .arg("-f")
-                                .arg("v4l2")
-                                .arg("-input_format")
-                                .arg(&self.camera_format)
-                                .arg("-video_size")
-                                .arg(&video_size)
-                                .arg("-framerate")
-                                .arg(&self.camera_framerate)
-                                .arg("-i")
-                                .arg(&device_path)
-                                .arg("-c:v")
-                                .arg("libx264")
-                                .arg("-preset")
-                                .arg("ultrafast")
-                                .arg("-tune")
-                                .arg("zerolatency")
-                                .arg("-g")
-                                .arg("30")
-                                .arg("-x264-params")
-                                .arg("repeat-headers=1")
-                                .arg("-f")
-                                .arg("h264")
-                                .arg("pipe:1")
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::piped());
-
-                            let mut child = cmd
-                                .spawn()
-                                .context("failed to re-spawn ffmpeg after crash")?;
-
-                            let new_stdout = child
-                                .stdout
-                                .take()
-                                .context("failed to capture new ffmpeg stdout")?;
-
-                            // Spawn stderr log reader for the new process
-                            if let Some(stderr) = child.stderr.take() {
-                                use tokio::io::{AsyncBufReadExt, BufReader};
-                                let mut reader = BufReader::new(stderr);
-                                tokio::spawn(async move {
-                                    let mut line = String::new();
-                                    loop {
-                                        line.clear();
-                                        match reader.read_line(&mut line).await {
-                                            Ok(0) => break,
-                                            Ok(_) => {
-                                                let trimmed = line.trim_end();
-                                                if !trimmed.is_empty() {
-                                                    tracing::warn!(
-                                                        "ffmpeg (restarted): {}",
-                                                        trimmed
-                                                    );
-                                                }
-                                            }
-                                            Err(_) => break,
-                                        }
-                                    }
-                                });
-                            }
-
-                            self.ffmpeg_child = Some(child);
-                            self.ffmpeg_stdout = Some(new_stdout);
-                            self.ffmpeg_start_time = Some(Instant::now());
-                            self.buffer.clear();
-
-                            // Continue the loop to read from new stdout
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                            error = %e,
-                            "ffmpeg crash restart limit exceeded"
-                            );
-                            self.running = false;
-                            return Err(e);
-                        }
+                // 5. Update the JPEG tap.
+                self.frame_count += 1;
+                let jpeg_bytes: Option<Arc<[u8]>> = if video_frame.format.contains("MJPEG") {
+                    Some(Arc::from(video_frame.data.as_slice()))
+                } else if self.frame_count % YUYV_PREVIEW_EVERY_N_FRAMES == 0 {
+                    jpeg_encode_yuv(&yuv).map(Arc::from)
+                } else {
+                    None
+                };
+                if let Some(jpeg) = jpeg_bytes {
+                    *self.latest_jpeg.lock() = Some(Arc::clone(&jpeg));
+                    if let Some(tx) = &self.jpeg_tx {
+                        let _ = tx.send(jpeg);
                     }
                 }
 
-                self.buffer.extend_from_slice(&tmp[..n]);
+                // 6. Encode the YUV frame to H.264 NALs.
+                let timestamp_ms = self
+                    .start_time
+                    .map(|t| t.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                let encoder = self
+                    .encoder
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("encoder not initialized"))?;
+                let nals = encoder
+                    .encode(&yuv, timestamp_ms)
+                    .context("H.264 encode failed")?;
+
+                // 7. Queue all NALs. OpenH264 may return an empty bitstream
+                //    (FrameType::Skip) for rate control — that's normal; just
+                //    `continue` the loop to read the next camera frame.
+                for nal in nals {
+                    self.pending_nals.push_back(nal);
+                }
+                if self.pending_nals.is_empty() {
+                    continue;
+                }
+
+                let first = self
+                    .pending_nals
+                    .pop_front()
+                    .expect("just checked non-empty");
+
+                return Ok(MediaFrame::Video {
+                    keyframe: first.is_keyframe,
+                    data: first.data,
+                    timestamp: timestamp_ms,
+                });
             }
         })
     }
@@ -663,28 +315,77 @@ impl Source for VideoCaptureSource {
     #[tracing::instrument(skip_all)]
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // 1. stdin is owned by the spawned writer task. Dropping capture
-            //    (step 3) closes the broadcast channel, causing the writer
-            //    task to exit and drop stdin (sends EOF to ffmpeg).
-
-            // 2. Kill the ffmpeg process if it's still running.
-            if let Some(mut child) = self.ffmpeg_child.take() {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-            }
-
-            // 3. Drop capture — signals stop flag, releases camera device.
+            // Drop the capture — its Drop impl signals the stop flag and
+            // releases the V4L2 device. The frame channel closes automatically.
             self.capture = None;
             self.frame_rx = None;
-            self.ffmpeg_stdout = None;
-            self.buffer.clear();
+            self.encoder = None;
+            self.pending_nals.clear();
+            // Note: keep jpeg_tx alive so subscribers survive a restart cycle.
+            *self.latest_jpeg.lock() = None;
             self.running = false;
-            self.crash_count = 0;
-            self.ffmpeg_start_time = None;
-
-            tracing::info!("VideoCaptureSource stopped");
+            self.start_time = None;
+            info!("VideoCaptureSource stopped");
             Ok(())
         })
+    }
+}
+
+/// Pick a sane target bitrate for the given resolution.
+///
+/// Mirrors typical surveillance streaming defaults — biased toward low
+/// latency over visual quality.
+fn bitrate_for_dimensions(width: u32, height: u32) -> u32 {
+    let pixels = (width as u64) * (height as u64);
+    // ~0.1 bits per pixel per frame at 30fps → reasonable starting point.
+    match pixels {
+        p if p >= 1280 * 720 => 2_500_000,   // 720p+
+        p if p >= 640 * 480 => 1_200_000,   // VGA
+        p if p >= 320 * 240 => 400_000,     // QVGA
+        _ => 150_000,
+    }
+}
+
+/// Encode a YUV420p frame to baseline JPEG for the preview/snapshot path.
+///
+/// Used only for cameras that don't deliver MJPG (YUYV-only devices).
+/// `jpeg_encoder::Encoder::encode` consumes `self` and writes to the writer
+/// passed at construction without returning it, so we use a [`SharedBuffer`]
+/// (writes go to an `Rc<RefCell<Vec<u8>>>` we can read back afterward).
+fn jpeg_encode_yuv(yuv: &Yuv420p) -> Option<Vec<u8>> {
+    use crate::encoder::convert::yuv420p_to_rgb8;
+    use std::cell::RefCell;
+    use std::io::Write;
+    use std::rc::Rc;
+
+    /// A writer that forwards into a shared `Vec`, so the encoded bytes can be
+    /// recovered after `Encoder::encode` (which consumes the encoder) returns.
+    struct SharedBuffer(Rc<RefCell<Vec<u8>>>);
+    impl Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let rgb = yuv420p_to_rgb8(yuv);
+    let buf = Rc::new(RefCell::new(Vec::with_capacity(rgb.len() / 4)));
+    let encoder = jpeg_encoder::Encoder::new(SharedBuffer(Rc::clone(&buf)), 70);
+    // jpeg-encoder takes u16 dimensions.
+    let w: u16 = yuv.width.try_into().ok()?;
+    let h: u16 = yuv.height.try_into().ok()?;
+    encoder
+        .encode(&rgb, w, h, jpeg_encoder::ColorType::Rgb)
+        .ok()?;
+    // Extract the accumulated JPEG bytes.
+    let out = buf.borrow().clone();
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 
@@ -694,28 +395,9 @@ impl Source for VideoCaptureSource {
 
 /// Bridge between a local audio input device and the streaming pipeline.
 ///
-/// Opens a microphone via [`AudioCapture`], feeds raw PCM i16 samples to an
-/// ffmpeg subprocess encoding to AAC (ADTS), reads back the encoded frames,
-/// and emits them as [`MediaFrame::Audio`].
-///
-/// # Pipeline
-///
-/// ```text
-/// Microphone → AudioCapture (mpsc channel) → PCM i16 bytes → ffmpeg stdin →
-/// libfdk_aac/libfaac → ffmpeg stdout → ADTS frame extraction → MediaFrame::Audio
-/// ```
-///
-/// # Example
-///
-/// ```ignore
-/// let mut source = AudioCaptureSource::new();
-/// source.start().await?;
-/// while let Ok(frame) = source.next_frame().await {
-///     // frame is MediaFrame::Audio { data, timestamp }
-/// }
-/// source.stop().await?;
-/// ```
-#[allow(dead_code)]
+/// Opens a microphone via [`AudioCapture`] (cpal/ALSA), encodes the i16 PCM
+/// samples to G.711 μ-law (default) or AAC (`aac` feature), and emits each
+/// encoded chunk as [`MediaFrame::Audio`].
 pub struct AudioCaptureSource {
     /// Optional device name override. If set, enumerate devices to find match.
     device_name: Option<String>,
@@ -727,14 +409,8 @@ pub struct AudioCaptureSource {
     capture: Option<AudioCapture>,
     /// Frame channel receiver, created by [`AudioCapture::start()`].
     frame_rx: Option<broadcast::Receiver<AudioFrame>>,
-    /// Running ffmpeg child process (PCM i16 → AAC encoding).
-    ffmpeg_child: Option<Child>,
-    /// Piped stdin: raw PCM i16 bytes written here.
-    ffmpeg_stdin: Option<ChildStdin>,
-    /// Piped stdout: AAC ADTS frames read from here.
-    ffmpeg_stdout: Option<ChildStdout>,
-    /// Accumulated byte buffer for partial ADTS data from ffmpeg stdout.
-    buffer: Vec<u8>,
+    /// Audio encoder (G.711 by default; AAC under `aac` feature).
+    encoder: Option<Box<dyn AudioEncoder>>,
     /// Whether the source has been started.
     running: bool,
 }
@@ -749,10 +425,7 @@ impl AudioCaptureSource {
             channels: 0,
             capture: None,
             frame_rx: None,
-            ffmpeg_child: None,
-            ffmpeg_stdin: None,
-            ffmpeg_stdout: None,
-            buffer: Vec::new(),
+            encoder: None,
             running: false,
         }
     }
@@ -766,10 +439,7 @@ impl AudioCaptureSource {
             channels: 0,
             capture: None,
             frame_rx: None,
-            ffmpeg_child: None,
-            ffmpeg_stdin: None,
-            ffmpeg_stdout: None,
-            buffer: Vec::new(),
+            encoder: None,
             running: false,
         }
     }
@@ -790,15 +460,12 @@ impl Default for AudioCaptureSource {
 impl Source for AudioCaptureSource {
     #[tracing::instrument(skip_all)]
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
-        // Clone for device lookup inside async block.
         let target_device = self.device_name.clone();
 
         Box::pin(async move {
-            // -- 1. Open audio device ------------------------------------------
+            // 1. Open the audio device.
             let host = cpal::default_host();
-
             let device = if let Some(ref name) = target_device {
-                // Find device by name.
                 let devices = host
                     .input_devices()
                     .context("failed to enumerate audio input devices")?;
@@ -822,14 +489,14 @@ impl Source for AudioCaptureSource {
             let sample_rate = config.sample_rate();
             let channels = config.channels();
 
-            // -- 2. Create AudioCapture and start streaming -------------------
+            // 2. Start cpal capture.
             let mut capture =
                 AudioCapture::new(&device, &config).context("failed to create AudioCapture")?;
             let mut rx = capture
                 .start(&device, &config)
                 .context("failed to start audio capture")?;
 
-            // Create bounded broadcast channel with drop-oldest semantics
+            // Bridge the mpsc receiver to a broadcast so multiple consumers work.
             let (b_tx, b_rx) = broadcast::channel::<AudioFrame>(120);
             tokio::spawn(async move {
                 while let Some(frame) = rx.recv().await {
@@ -839,51 +506,24 @@ impl Source for AudioCaptureSource {
                 }
             });
 
+            // 3. Construct the encoder. Default to G.711 μ-law.
+            //    (AAC requires the `aac` feature and explicit opt-in elsewhere.)
+            let encoder: Box<dyn AudioEncoder> = Box::new(G711Encoder::mulaw(
+                sample_rate,
+                channels,
+            ));
+
             self.sample_rate = sample_rate;
             self.channels = channels;
-
-            // -- 3. Build ffmpeg command --------------------------------------
-            let mut cmd = tokio::process::Command::new("ffmpeg");
-            cmd.arg("-f")
-                .arg("s16le")
-                .arg("-ar")
-                .arg(sample_rate.to_string())
-                .arg("-ac")
-                .arg(channels.to_string())
-                .arg("-i")
-                .arg("pipe:0")
-                .arg("-c:a")
-                .arg("aac")
-                .arg("-f")
-                .arg("adts")
-                .arg("pipe:1")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null());
-
-            let mut child = cmd
-                .spawn()
-                .context("failed to spawn ffmpeg - is ffmpeg installed and in $PATH?")?;
-
-            let stdin = child
-                .stdin
-                .take()
-                .context("failed to capture ffmpeg stdin")?;
-            let stdout = child
-                .stdout
-                .take()
-                .context("failed to capture ffmpeg stdout")?;
-
-            // -- 4. Store handles ---------------------------------------------
             self.capture = Some(capture);
             self.frame_rx = Some(b_rx);
-            self.ffmpeg_child = Some(child);
-            self.ffmpeg_stdin = Some(stdin);
-            self.ffmpeg_stdout = Some(stdout);
+            self.encoder = Some(encoder);
             self.running = true;
 
-            tracing::info!(sample_rate, channels, "AudioCaptureSource started");
-
+            info!(
+                sample_rate,
+                channels, codec = "G.711 μ-law", "AudioCaptureSource started"
+            );
             Ok(())
         })
     }
@@ -892,10 +532,10 @@ impl Source for AudioCaptureSource {
     fn next_frame(&mut self) -> Pin<Box<dyn Future<Output = Result<MediaFrame>> + Send + '_>> {
         Box::pin(async move {
             if !self.running {
-                anyhow::bail!("AudioCaptureSource not started");
+                bail!("AudioCaptureSource not started");
             }
 
-            // -- 1. Receive the next AudioFrame from the capture channel -------
+            // Receive the next AudioFrame from the capture channel.
             let frame: AudioFrame = loop {
                 match self
                     .frame_rx
@@ -906,218 +546,45 @@ impl Source for AudioCaptureSource {
                 {
                     Ok(frame) => break frame,
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "audio frame buffer full, dropped oldest frame(s)");
+                        warn!(skipped, "audio frame buffer full, dropped oldest frame(s)");
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
-                        anyhow::bail!("audio frame channel closed");
+                        bail!("audio frame channel closed");
                     }
                 }
             };
 
             let timestamp = frame.timestamp.elapsed().as_millis() as u64;
 
-            // -- 2. Convert i16 samples to raw PCM bytes ----------------------
-            let raw_bytes: Vec<u8> = frame.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-
-            // -- 3. Write raw PCM bytes to ffmpeg stdin -----------------------
-            let stdin = self
-                .ffmpeg_stdin
+            // Encode the i16 PCM samples in-place.
+            let encoder = self
+                .encoder
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdin not available"))?;
+                .ok_or_else(|| anyhow::anyhow!("audio encoder not available"))?;
+            let encoded = encoder
+                .encode(&frame.samples)
+                .context("audio encode failed")?;
 
-            stdin
-                .write_all(&raw_bytes)
-                .await
-                .context("failed to write audio data to ffmpeg stdin")?;
-            stdin
-                .flush()
-                .await
-                .context("failed to flush ffmpeg stdin")?;
-
-            // -- 4. Read from ffmpeg stdout until a complete ADTS frame --------
-            let stdout = self
-                .ffmpeg_stdout
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout not available"))?;
-
-            loop {
-                // Try to extract a complete ADTS frame from accumulated data.
-                if let Some((adts_frame, new_offset)) = extract_adts_frame(&self.buffer) {
-                    // Keep any remaining bytes for the next call.
-                    self.buffer = self.buffer[new_offset..].to_vec();
-                    return Ok(MediaFrame::Audio {
-                        data: adts_frame,
-                        timestamp,
-                    });
-                }
-
-                // Need more data - read a chunk from ffmpeg stdout.
-                let mut tmp = vec![0u8; 65536];
-                let n = stdout
-                    .read(&mut tmp)
-                    .await
-                    .context("error reading ffmpeg stdout")?;
-
-                if n == 0 {
-                    anyhow::bail!(
-                        "ffmpeg stdout closed unexpectedly - encoder may have crashed or exited"
-                    );
-                }
-
-                self.buffer.extend_from_slice(&tmp[..n]);
-            }
+            Ok(MediaFrame::Audio {
+                data: encoded,
+                timestamp,
+            })
         })
     }
 
     #[tracing::instrument(skip_all)]
     fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            // 1. Drop stdin - closes the pipe, sending EOF to ffmpeg.
-            drop(self.ffmpeg_stdin.take());
-
-            // 2. Kill the ffmpeg process if it's still running.
-            if let Some(mut child) = self.ffmpeg_child.take() {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-            }
-
-            // 3. Drop AudioCapture - drops stream, releases audio device.
+            // Drop capture → drops the cpal stream → releases the audio device.
             self.capture = None;
             self.frame_rx = None;
-            self.ffmpeg_stdout = None;
-            self.buffer.clear();
+            self.encoder = None;
             self.running = false;
-
-            tracing::info!("AudioCaptureSource stopped");
+            info!("AudioCaptureSource stopped");
             Ok(())
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// H.264 Annex B NAL unit extraction
-// ---------------------------------------------------------------------------
-
-/// Extract the next complete H.264 NAL unit from an Annex B byte stream.
-///
-/// Scans `buf` starting at `offset` for an Annex B start code
-/// (`00 00 01` or `00 00 00 01`), reads the NAL unit that follows it
-/// (up to the next start code), and returns:
-///
-/// * `nal_data` — the raw NAL unit payload bytes (including the NAL header
-///   byte but excluding the start code).
-/// * `is_keyframe` — `true` if the NAL unit type is IDR (5), SPS (7), or
-///   PPS (8).
-/// * `new_offset` — position of the next start code in `buf`, suitable
-///   for passing back as `offset` on the next call.
-///
-/// Returns `None` if no complete NAL unit can be found (e.g. the buffer
-/// does not yet contain a second start code to delimit the end of the
-/// current NAL unit).  The caller should accumulate more data and retry.
-fn extract_next_nal(buf: &[u8], offset: usize) -> Option<(Vec<u8>, bool, usize)> {
-    if offset >= buf.len() {
-        return None;
-    }
-
-    // Find the first start code at or after `offset`.
-    let (sc_pos, sc_len) = find_next_start_code(buf, offset)?;
-    let nal_start = sc_pos + sc_len;
-
-    // Find the *next* start code to delimit this NAL unit.
-    let next_sc = find_next_start_code(buf, nal_start);
-    let (nal_end, next_offset) = match next_sc {
-        Some((pos, _)) => (pos, pos),
-        None => return None, // Incomplete NAL unit — need more data.
-    };
-
-    if nal_start >= nal_end {
-        return None; // Empty NAL unit.
-    }
-
-    let nal_data = buf[nal_start..nal_end].to_vec();
-    let nal_type = nal_data[0] & 0x1F;
-    let is_keyframe = matches!(nal_type, 5 | 7 | 8); // IDR | SPS | PPS
-
-    Some((nal_data, is_keyframe, next_offset))
-}
-
-/// Find the next H.264 Annex B start code in `buf` at or after `offset`.
-///
-/// Returns `(position, length)` where `length` is 3 for `00 00 01` or
-/// 4 for `00 00 00 01`.
-fn find_next_start_code(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
-    let mut i = offset;
-
-    while i + 2 < buf.len() {
-        if buf[i] == 0 && buf[i + 1] == 0 {
-            // Check for 4-byte start code: 00 00 00 01
-            if i + 3 < buf.len() && buf[i + 2] == 0 && buf[i + 3] == 1 {
-                return Some((i, 4));
-            }
-            // Check for 3-byte start code: 00 00 01
-            if buf[i + 2] == 1 {
-                return Some((i, 3));
-            }
-        }
-        i += 1;
-    }
-
-    None
-}
-
-// ---------------------------------------------------------------------------
-// AAC ADTS frame extraction
-// ---------------------------------------------------------------------------
-
-/// Parse the AAC frame length from a 7-byte ADTS header.
-///
-/// ADTS header structure:
-/// - Sync word: first 12 bits (should be 0xFFF)
-/// - Frame length: 13 bits spanning bytes 3-5
-///
-/// Returns `None` if the header is too short, has invalid sync,
-/// or the frame length is less than 7 (minimum ADTS header size).
-fn parse_adts_frame_length(header: &[u8]) -> Option<usize> {
-    if header.len() < 7 {
-        return None;
-    }
-    // Check sync word: first 12 bits should be 0xFFF
-    if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 {
-        return None;
-    }
-    // Frame length is a 13-bit value:
-    //   bits 30-31 (header[3] low 2 bits)
-    //   bits 32-39 (header[4] all 8 bits)
-    //   bits 40-42 (header[5] high 3 bits)
-    let length = ((header[3] as usize & 0x03) << 11)
-        | ((header[4] as usize) << 3)
-        | ((header[5] as usize) >> 5);
-
-    if length < 7 {
-        return None; // Minimum ADTS frame is 7 bytes (header only)
-    }
-
-    Some(length)
-}
-
-/// Extract a complete ADTS frame from the beginning of `buf`.
-///
-/// Returns `(adts_frame, new_offset)` where `new_offset` is the position
-/// after the frame, or `None` if no complete frame is available.
-fn extract_adts_frame(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
-    if buf.len() < 7 {
-        return None;
-    }
-
-    let frame_len = parse_adts_frame_length(buf)?;
-
-    if buf.len() < frame_len {
-        return None; // Incomplete frame
-    }
-
-    let frame = buf[..frame_len].to_vec();
-    Some((frame, frame_len))
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,7 +595,7 @@ fn extract_adts_frame(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
 mod tests {
     use super::*;
 
-    // ── Constructor tests ──────────────────────────────────────────────
+    // ── Constructor tests ──────────────────────────────────────────────────
 
     #[test]
     fn test_video_capture_source_new() {
@@ -1137,7 +604,7 @@ mod tests {
         assert!(!source.running);
         assert!(source.capture.is_none());
         assert!(source.frame_rx.is_none());
-        assert!(source.buffer.is_empty());
+        assert!(source.pending_nals.is_empty());
     }
 
     #[test]
@@ -1146,273 +613,37 @@ mod tests {
         assert_eq!(source.device_index(), 3);
         assert!(!source.is_running());
     }
-    // ── NAL parsing: extract_next_nal ──────────────────────────────────
 
-    /// H.264 Annex B stream with SPS (4-byte SC), PPS (3-byte SC), IDR
-    /// (4-byte SC), and a trailing start code to terminate the last NAL.
-    const ANNEX_B_STREAM: &[u8] = &[
-        // SPS (NAL type 7)
-        0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1e, 0xd9, 0x00, 0x78, 0x02, 0x27, 0xd5, 0x05,
-        0x71, // PPS (NAL type 8) with 3-byte start code
-        0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80,
-        // IDR slice (NAL type 5) with 4-byte start code
-        0x00, 0x00, 0x00, 0x01, 0x65, 0xb8, 0x00, 0x04,
-        // Trailing start code to delimit the IDR slice
-        0x00, 0x00, 0x00, 0x01,
-    ];
-
-    #[test]
-    fn test_extract_next_nal_sps() {
-        let (nal, keyframe, new_offset) = extract_next_nal(ANNEX_B_STREAM, 0).unwrap();
-
-        // SPS header byte: 0x67 → nal_unit_type = 7
-        assert_eq!(nal[0], 0x67, "first NAL should be SPS");
-        assert!(keyframe, "SPS should be detected as keyframe");
-        // After the first 4-byte SC (4) + 12 bytes SPS = 16 → next SC at 16
-        assert_eq!(new_offset, 16, "next SC should be at position 16");
-    }
-
-    #[test]
-    fn test_extract_next_nal_pps() {
-        // Skip past SPS (start code at position 0, SPS ends before position 16)
-        let (nal, keyframe, new_offset) = extract_next_nal(ANNEX_B_STREAM, 16).unwrap();
-
-        // PPS header byte: 0x68 → nal_unit_type = 8
-        assert_eq!(nal[0], 0x68, "second NAL should be PPS");
-        assert!(keyframe, "PPS should be detected as keyframe");
-        // 3-byte SC at 16 (len 3) → PPS starts at 19, 4 bytes → next SC at 23
-        assert_eq!(new_offset, 23, "next SC should be at position 23");
-    }
-
-    #[test]
-    fn test_extract_next_nal_idr() {
-        // Skip past SPS and PPS
-        let (nal, keyframe, new_offset) = extract_next_nal(ANNEX_B_STREAM, 23).unwrap();
-
-        // IDR header byte: 0x65 → nal_unit_type = 5
-        assert_eq!(nal[0], 0x65, "third NAL should be IDR");
-        assert!(keyframe, "IDR should be detected as keyframe");
-        // 4-byte SC at 23 (len 4) → IDR starts at 27, 4 bytes → trailing SC at 31
-        assert_eq!(new_offset, 31, "next SC should be at position 31");
-    }
-
-    #[test]
-    fn test_extract_next_nal_exhausted() {
-        // After all NAL units, verify no more are returned.
-        let result = extract_next_nal(ANNEX_B_STREAM, 31);
-        assert!(
-            result.is_none(),
-            "no more NAL units should be extractable after the trailing SC"
-        );
-    }
-
-    #[test]
-    fn test_extract_next_nal_all_three() {
-        // Extract all three NAL units in sequence.
-        let (nal1, kf1, off1) = extract_next_nal(ANNEX_B_STREAM, 0).unwrap();
-        assert_eq!(nal1[0] & 0x1F, 7); // SPS
-        assert!(kf1);
-
-        let (nal2, kf2, off2) = extract_next_nal(ANNEX_B_STREAM, off1).unwrap();
-        assert_eq!(nal2[0] & 0x1F, 8); // PPS
-        assert!(kf2);
-
-        let (nal3, kf3, _off3) = extract_next_nal(ANNEX_B_STREAM, off2).unwrap();
-        assert_eq!(nal3[0] & 0x1F, 5); // IDR
-        assert!(kf3);
-    }
-
-    // ── NAL parsing: edge cases ────────────────────────────────────────
-
-    #[test]
-    fn test_extract_next_nal_empty_buffer() {
-        assert!(extract_next_nal(&[], 0).is_none());
-    }
-
-    #[test]
-    fn test_extract_next_nal_no_start_code() {
-        // Arbitrary data with no start code pattern.
-        let data = &[0x00, 0x01, 0x02, 0x03, 0x04];
-        assert!(extract_next_nal(data, 0).is_none());
-    }
-
-    #[test]
-    fn test_extract_next_nal_offset_past_end() {
-        assert!(extract_next_nal(&[0x00, 0x00, 0x01, 0x67], 10).is_none());
-    }
-
-    #[test]
-    fn test_extract_next_nal_incomplete_no_trailing_sc() {
-        // Buffer has SPS with start code but no trailing start code.
-        let data = &[
-            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1e, // SPS, no SC after
-        ];
-        assert!(
-            extract_next_nal(data, 0).is_none(),
-            "should not return a NAL without a following start code"
-        );
-    }
-
-    #[test]
-    fn test_extract_next_nal_3byte_start_code() {
-        // 3-byte start code only (00 00 01)
-        let data = &[
-            0x00, 0x00, 0x01, 0x67, 0x42, // SPS
-            0x00, 0x00, 0x01, 0x68, 0xce, // PPS
-            0x00, 0x00, 0x01, // trailing SC to delimit PPS
-        ];
-        let (nal, keyframe, off) = extract_next_nal(data, 0).unwrap();
-        assert_eq!(nal[0] & 0x1F, 7);
-        assert!(keyframe);
-        assert_eq!(off, 5); // Next SC at position 5
-
-        let (nal, keyframe, _off) = extract_next_nal(data, off).unwrap();
-        assert_eq!(nal[0] & 0x1F, 8);
-        assert!(keyframe);
-    }
-
-    #[test]
-    fn test_extract_next_nal_mixed_start_codes() {
-        // Mix of 3-byte and 4-byte start codes.
-        let data = &[
-            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, // 4-byte SC, SPS
-            0x00, 0x00, 0x01, 0x65, 0xb8, // 3-byte SC, IDR
-            0x00, 0x00, 0x00, 0x01, // trailing SC
-        ];
-        let (nal1, kf1, off1) = extract_next_nal(data, 0).unwrap();
-        assert_eq!(nal1[0] & 0x1F, 7);
-        assert!(kf1);
-
-        let (nal2, kf2, _off2) = extract_next_nal(data, off1).unwrap();
-        assert_eq!(nal2[0] & 0x1F, 5);
-        assert!(kf2);
-    }
-
-    // ── Keyframe detection ─────────────────────────────────────────────
-
-    #[test]
-    fn test_keyframe_detection_idr() {
-        // NAL type 5 = IDR slice → keyframe
-        let (_, keyframe, _) =
-            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
-        assert!(keyframe);
-    }
-
-    #[test]
-    fn test_keyframe_detection_sps() {
-        // NAL type 7 = SPS → keyframe
-        let (_, keyframe, _) =
-            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
-        assert!(keyframe);
-    }
-
-    #[test]
-    fn test_keyframe_detection_pps() {
-        // NAL type 8 = PPS → keyframe
-        let (_, keyframe, _) =
-            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
-        assert!(keyframe);
-    }
-
-    #[test]
-    fn test_keyframe_detection_non_idr_slice() {
-        // NAL type 1 = non-IDR slice → NOT a keyframe
-        let (_, keyframe, _) =
-            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
-        assert!(!keyframe, "non-IDR slice should not be keyframe");
-    }
-
-    #[test]
-    fn test_keyframe_detection_sei() {
-        // NAL type 6 = SEI → NOT a keyframe
-        let (_, keyframe, _) =
-            extract_next_nal(&[0x00, 0x00, 0x00, 0x01, 0x46, 0x00, 0x00, 0x00, 0x01], 0).unwrap();
-        assert!(!keyframe, "SEI should not be keyframe");
-    }
-
-    // ── find_next_start_code tests ─────────────────────────────────────
-
-    #[test]
-    fn test_find_start_code_4byte() {
-        let data = &[0x00, 0x00, 0x00, 0x01, 0x67];
-        let result = find_next_start_code(data, 0);
-        assert_eq!(result, Some((0, 4)));
-    }
-
-    #[test]
-    fn test_find_start_code_3byte() {
-        let data = &[0x00, 0x00, 0x01, 0x67];
-        let result = find_next_start_code(data, 0);
-        assert_eq!(result, Some((0, 3)));
-    }
-
-    #[test]
-    fn test_find_start_code_with_offset() {
-        let data = &[
-            0xff, 0xff, 0xff, // garbage
-            0x00, 0x00, 0x00, 0x01, 0x67, // start code at pos 3
-        ];
-        let result = find_next_start_code(data, 0);
-        assert_eq!(result, Some((3, 4)));
-    }
-
-    #[test]
-    fn test_find_start_code_none() {
-        assert_eq!(find_next_start_code(&[0x00, 0x01, 0x02], 0), None);
-        assert_eq!(find_next_start_code(&[], 0), None);
-    }
-
-    #[test]
-    fn test_find_start_code_offset_skips_earlier() {
-        let data = &[
-            0x00, 0x00, 0x00, 0x01, 0x67, // SC at 0
-            0x00, 0x00, 0x01, 0x68, // SC at 5
-        ];
-        // Start searching from after the first SC.
-        let result = find_next_start_code(data, 5);
-        assert_eq!(result, Some((5, 3)));
-    }
-
-    // ── Round-trip: extraction followed by reconstruction ──────────────
-
-    #[test]
-    fn test_nal_roundtrip_concatenation() {
-        // Extract all three NAL units, then verify they can be reassembled
-        // into a valid Annex B stream.
-        let (nal1, .., off1) = extract_next_nal(ANNEX_B_STREAM, 0).unwrap();
-        let (nal2, .., off2) = extract_next_nal(ANNEX_B_STREAM, off1).unwrap();
-        let (nal3, .., _off3) = extract_next_nal(ANNEX_B_STREAM, off2).unwrap();
-
-        // Rebuild: each NAL unit prefixed with 4-byte start code.
-        let mut rebuilt = Vec::new();
-        rebuilt.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        rebuilt.extend_from_slice(&nal1);
-        rebuilt.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        rebuilt.extend_from_slice(&nal2);
-        rebuilt.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        rebuilt.extend_from_slice(&nal3);
-
-        // The NAL data should be identical (modulo start code style).
-        assert_eq!(rebuilt[4], 0x67);
-        assert_eq!(rebuilt[4 + nal1.len() + 4], 0x68);
-        assert_eq!(rebuilt[4 + nal1.len() + 4 + nal2.len() + 4], 0x65);
-    }
-
-    // ── no_ffmpeg_in_dependency test ───────────────────────────────────
-
-    /// Verify that we can construct a VideoCaptureSource without needing
-    /// ffmpeg or a camera — just the struct and its trivial methods.
     #[test]
     fn test_capture_source_no_hardware() {
         let source = VideoCaptureSource::new(99);
         assert_eq!(source.device_index(), 99);
         assert!(!source.is_running());
-        // stop() without start() should not panic.
-        // We can't easily test this without async, so we just verify
-        // the struct is well-formed.
+        assert!(source.latest_jpeg().is_none());
     }
 
-    // ── AudioCaptureSource tests ─────────────────────────────────────────
+    #[test]
+    fn test_bitrate_for_dimensions() {
+        assert_eq!(bitrate_for_dimensions(1280, 720), 2_500_000);
+        assert_eq!(bitrate_for_dimensions(640, 480), 1_200_000);
+        assert_eq!(bitrate_for_dimensions(320, 240), 400_000);
+        assert_eq!(bitrate_for_dimensions(160, 120), 150_000);
+    }
+
+    #[test]
+    fn test_jpeg_encode_yuv_produces_valid_jpeg() {
+        let mut yuv = Yuv420p::new(8, 8);
+        // Fill with a simple pattern.
+        for (i, b) in yuv.y_plane_mut().iter_mut().enumerate() {
+            *b = (i * 10) as u8;
+        }
+        let jpeg = jpeg_encode_yuv(&yuv).expect("JPEG encode should succeed");
+        // JPEG magic bytes.
+        assert_eq!(jpeg[0..2], [0xFF, 0xD8]);
+        assert_eq!(jpeg[jpeg.len() - 2..], [0xFF, 0xD9]);
+    }
+
+    // ── AudioCaptureSource tests ───────────────────────────────────────────
 
     #[test]
     fn test_audio_capture_source_new() {
@@ -1421,7 +652,6 @@ mod tests {
         assert!(!source.running);
         assert!(source.capture.is_none());
         assert!(source.frame_rx.is_none());
-        assert!(source.buffer.is_empty());
     }
 
     #[test]
@@ -1436,273 +666,5 @@ mod tests {
         let source = AudioCaptureSource::default();
         assert!(source.device_name.is_none());
         assert!(!source.running);
-    }
-
-    #[test]
-    fn test_adts_frame_length_parsing_valid() {
-        // Construct an ADTS header with frame length = 200
-        let mut header = vec![0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF0;
-        // 200 = 0xC8
-        // bits 10-3 = (200 >> 3) & 0xFF = 25 = 0x19
-        // bits 2-0 = 200 & 0x07 = 0
-        // header[3] low 2 bits = (200 >> 11) & 0x03 = 0
-        header[3] = 0;
-        header[4] = 25; // 0x19
-        header[5] = 0;
-
-        let len = parse_adts_frame_length(&header).unwrap();
-        assert_eq!(len, 200);
-    }
-
-    #[test]
-    fn test_adts_frame_length_parsing_invalid_sync() {
-        let mut header = vec![0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF0;
-        header[3] = 0;
-        header[4] = 25;
-        header[5] = 0;
-
-        // Corrupt sync word
-        header[0] = 0xFE;
-        assert!(parse_adts_frame_length(&header).is_none());
-    }
-
-    #[test]
-    fn test_adts_frame_length_parsing_too_short() {
-        assert!(parse_adts_frame_length(&[0xFF, 0xF0, 0x00]).is_none());
-        assert!(parse_adts_frame_length(&[]).is_none());
-    }
-
-    #[test]
-    fn test_adts_frame_length_parsing_minimum() {
-        let mut header = vec![0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF0;
-        // Set frame length bits to produce value 7 (minimum valid)
-        // bits 2-0 = 7, bits 10-3 = 0, bits 12-11 = 0
-        header[3] = 0;
-        header[4] = 0;
-        header[5] = 7 << 5; // 224 = 0xE0
-
-        let len = parse_adts_frame_length(&header).unwrap();
-        assert_eq!(len, 7);
-    }
-
-    #[test]
-    fn test_adts_frame_length_below_minimum() {
-        let mut header = vec![0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF0;
-        // Frame length = 6 (below minimum 7)
-        // bits 2-0 = 6, bits 10-3 = 0, bits 12-11 = 0
-        header[3] = 0;
-        header[4] = 0;
-        header[5] = 6 << 5; // 192
-        assert!(parse_adts_frame_length(&header).is_none());
-    }
-
-    #[test]
-    fn test_adts_extraction_exact_buffer() {
-        // Create an ADTS frame of length 100
-        let mut header = vec![0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF0;
-        // 100 = 0x64
-        // bits 10-3 = (100 >> 3) & 0xFF = 12 = 0x0C
-        // bits 2-0 = 100 & 0x07 = 4
-        header[3] = 0;
-        header[4] = 12; // 0x0C
-        header[5] = 4 << 5; // 128 = 0x80
-
-        let mut frame_data = [0u8; 100];
-        frame_data[..7].copy_from_slice(&header);
-        for (i, byte) in frame_data.iter_mut().enumerate().skip(7) {
-            *byte = (i & 0xFF) as u8;
-        }
-
-        let (extracted, offset) = extract_adts_frame(&frame_data).unwrap();
-        assert_eq!(extracted.len(), 100);
-        assert_eq!(extracted, frame_data);
-        assert_eq!(offset, 100);
-    }
-
-    #[test]
-    fn test_adts_extraction_with_trailing_data() {
-        let mut header = vec![0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF0;
-        // Frame length = 50
-        // bits 10-3 = (50 >> 3) & 0xFF = 6
-        // bits 2-0 = 50 & 0x07 = 2
-        header[3] = 0;
-        header[4] = 6;
-        header[5] = 2 << 5; // 64
-
-        let mut frame_data = vec![0u8; 50];
-        frame_data[..7].copy_from_slice(&header);
-
-        // Buffer with trailing data after the ADTS frame
-        let mut larger = frame_data.clone();
-        larger.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
-
-        let (extracted, offset) = extract_adts_frame(&larger).unwrap();
-        assert_eq!(extracted.len(), 50);
-        assert_eq!(offset, 50);
-    }
-
-    #[test]
-    fn test_adts_extraction_incomplete() {
-        let mut header = vec![0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF0;
-        header[3] = 0;
-        header[4] = 25; // frame length 200
-        header[5] = 0;
-
-        let mut frame_data = [0u8; 200];
-        frame_data[..7].copy_from_slice(&header);
-
-        // Only provide first 50 bytes
-        assert!(extract_adts_frame(&frame_data[..50]).is_none());
-    }
-
-    #[test]
-    fn test_adts_extraction_empty() {
-        assert!(extract_adts_frame(&[]).is_none());
-    }
-
-    #[test]
-    fn test_adts_extraction_no_valid_header() {
-        assert!(extract_adts_frame(&[0x00; 7]).is_none());
-    }
-
-    // ── FFmpeg crash restart decision logic ──────────────────────────
-
-    #[test]
-    fn test_ffmpeg_crash_restart_first_crash() {
-        let mut count = 0;
-        let start = Instant::now();
-        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(delay, Duration::from_secs(2));
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_second_crash() {
-        let mut count = 1;
-        let start = Instant::now();
-        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!(count, 2);
-        assert_eq!(delay, Duration::from_secs(4));
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_third_crash() {
-        let mut count = 2;
-        let start = Instant::now();
-        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!(count, 3);
-        assert_eq!(delay, Duration::from_secs(8));
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_limit_reached() {
-        let mut count = 3;
-        let start = Instant::now();
-        let result = check_ffmpeg_crash_restart(&mut count, start);
-        assert!(result.is_err());
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_limit_beyond() {
-        let mut count = 5;
-        let start = Instant::now();
-        let result = check_ffmpeg_crash_restart(&mut count, start);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_uptime_reset() {
-        // Simulate ffmpeg running for 31 seconds — counter should reset.
-        let mut count = 2;
-        let start = Instant::now() - Duration::from_secs(31);
-        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(delay, Duration::from_secs(2));
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_uptime_exact_30s_no_reset() {
-        // Very recent Instant (elapsed ≈ 0, well below 30s).
-        let mut count = 2;
-        let start = Instant::now();
-        let delay = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!(count, 3);
-        assert_eq!(delay, Duration::from_secs(8));
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_sequence() {
-        // Full crash sequence: 3 crashes, then limit.
-        let mut count = 0;
-        let start = Instant::now();
-
-        let d1 = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!((count, d1), (1, Duration::from_secs(2)));
-
-        let d2 = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!((count, d2), (2, Duration::from_secs(4)));
-
-        let d3 = check_ffmpeg_crash_restart(&mut count, start).unwrap();
-        assert_eq!((count, d3), (3, Duration::from_secs(8)));
-
-        assert!(check_ffmpeg_crash_restart(&mut count, start).is_err());
-    }
-
-    #[test]
-    fn test_ffmpeg_crash_restart_uptime_resets_then_recrash() {
-        // Crash twice, then long uptime resets counter, then crash again.
-        let mut count = 0;
-        let recent = Instant::now();
-
-        let _ = check_ffmpeg_crash_restart(&mut count, recent).unwrap();
-        assert_eq!(count, 1);
-
-        let _ = check_ffmpeg_crash_restart(&mut count, recent).unwrap();
-        assert_eq!(count, 2);
-
-        // Long uptime resets counter.
-        let old_start = Instant::now() - Duration::from_secs(60);
-        let _ = check_ffmpeg_crash_restart(&mut count, old_start).unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[tokio::test]
-    async fn test_bounded_channel_drops_oldest() {
-        // Broadcast rounds capacity to next power of 2 (2 → 2).
-        // Sending 3 items to a channel(2) overflows oldest: 10 is overwritten.
-        let (tx, mut rx) = broadcast::channel::<u32>(2);
-
-        tx.send(10).unwrap();
-        tx.send(20).unwrap();
-        // Buffer now full (2 slots). Next send overwrites oldest (10).
-        tx.send(30).unwrap();
-
-        // Receiver detects 1 dropped message
-        match rx.recv().await {
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                assert_eq!(n, 1, "should lag by exactly 1 (oldest overwritten)");
-            }
-            Ok(val) => panic!("expected Lagged, got value {val}"),
-            Err(e) => panic!("unexpected error: {e:?}"),
-        }
-
-        // Remaining messages arrive in order (oldest 10 dropped)
-        assert_eq!(rx.recv().await.unwrap(), 20);
-        assert_eq!(rx.recv().await.unwrap(), 30);
     }
 }

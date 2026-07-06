@@ -30,11 +30,13 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tokio::sync::{RwLock, oneshot, watch};
+use tokio::sync::{RwLock, broadcast, oneshot, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -96,6 +98,10 @@ pub struct StreamInfo {
 
 // ── StreamHandle ─────────────────────────────────────────────────────────────
 
+/// Latest-JPEG snapshot handle, shared between the capture source and the web
+/// UI's snapshot endpoint. `None` until the first frame has been encoded.
+pub type LatestJpeg = Arc<Mutex<Option<Arc<[u8]>>>>;
+
 struct StreamHandle {
     /// Join handle for the spawned pipeline task.
     join_handle: Option<tokio::task::JoinHandle<()>>,
@@ -108,6 +114,10 @@ struct StreamHandle {
     /// Handle for attaching outputs at runtime (None if stream not running
     /// or hub handle already extracted).
     hub_handle: Option<HubHandle>,
+    /// Latest-JPEG snapshot handle (for the snapshot endpoint).
+    latest_jpeg: Option<LatestJpeg>,
+    /// JPEG preview broadcast sender (for the MJPEG live-preview endpoint).
+    jpeg_tx: Option<broadcast::Sender<Arc<[u8]>>>,
     /// Current status.
     status: StreamStatus,
 }
@@ -243,7 +253,16 @@ impl StreamManager {
         }
 
         // ── 3. Create source based on camera type ───────────────────────
-        let source: Box<dyn Source> = match camera_type {
+        //
+        // We need to extract the JPEG-tap handles (latest_jpeg, jpeg sender)
+        // *before* the source is boxed as `dyn Source`, since those methods
+        // are specific to `VideoCaptureSource`. So we keep the typed value
+        // around for handle extraction, then box it.
+        let (source, latest_jpeg, jpeg_tx): (
+            Box<dyn Source>,
+            Option<LatestJpeg>,
+            Option<broadcast::Sender<Arc<[u8]>>>,
+        ) = match camera_type {
             "usb" => {
                 let device_index = config
                     .get("device_index")
@@ -251,9 +270,12 @@ impl StreamManager {
                     .ok_or_else(|| {
                         anyhow::anyhow!("USB camera config must include 'device_index'")
                     })?;
-                Box::new(streaming::capture_source::VideoCaptureSource::new(
+                let vcs = streaming::capture_source::VideoCaptureSource::new(
                     device_index as usize,
-                ))
+                );
+                let latest = vcs.latest_jpeg_handle();
+                let tx = vcs.jpeg_sender();
+                (Box::new(vcs), Some(latest), tx)
             }
             other => anyhow::bail!("unsupported camera type: {other}"),
         };
@@ -434,6 +456,8 @@ impl StreamManager {
             rtsp_url: rtsp_url.clone(),
             rtmp_url: rtmp_url.clone(),
             hub_handle,
+            latest_jpeg,
+            jpeg_tx,
             status: StreamStatus::Running,
         };
 
@@ -539,6 +563,32 @@ impl StreamManager {
     /// (active).
     pub async fn has_stream(&self, camera_id: &str) -> bool {
         self.streams.read().await.contains_key(camera_id)
+    }
+
+    /// Return the most recent JPEG frame for a camera, if available.
+    ///
+    /// Used by the snapshot endpoint to serve a single frame without joining
+    /// the encode loop. Returns `None` if the camera has no active stream or
+    /// no frame has been captured yet (the first frame may take ~100 ms).
+    pub async fn latest_jpeg(&self, camera_id: &str) -> Option<Arc<[u8]>> {
+        let streams = self.streams.read().await;
+        let handle = streams.get(camera_id)?;
+        let latest = handle.latest_jpeg.as_ref()?;
+        latest.lock().clone()
+    }
+
+    /// Subscribe to the JPEG preview broadcast for a camera.
+    ///
+    /// Used by the MJPEG live-preview endpoint to stream frames to a web
+    /// client. Returns `None` if the camera has no active stream.
+    pub async fn subscribe_jpeg(
+        &self,
+        camera_id: &str,
+    ) -> Option<broadcast::Receiver<Arc<[u8]>>> {
+        let streams = self.streams.read().await;
+        let handle = streams.get(camera_id)?;
+        let tx = handle.jpeg_tx.as_ref()?;
+        Some(tx.subscribe())
     }
 
     /// Attach a new output to an already-running stream.
@@ -688,6 +738,8 @@ mod tests {
                 rtsp_url: None,
                 rtmp_url: None,
                 hub_handle: None,
+                latest_jpeg: None,
+                jpeg_tx: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("cam-1".into(), handle);
@@ -720,6 +772,8 @@ mod tests {
                 rtsp_url: Some("rtsp://localhost:8554/live/test".into()),
                 rtmp_url: None,
                 hub_handle: None,
+                latest_jpeg: None,
+                jpeg_tx: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -753,6 +807,8 @@ mod tests {
                 rtsp_url: None,
                 rtmp_url: None,
                 hub_handle: None,
+                latest_jpeg: None,
+                jpeg_tx: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -784,6 +840,8 @@ mod tests {
                 rtsp_url: None,
                 rtmp_url: None,
                 hub_handle: None,
+                latest_jpeg: None,
+                jpeg_tx: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("a".into(), handle);
@@ -798,6 +856,8 @@ mod tests {
                 rtsp_url: None,
                 rtmp_url: None,
                 hub_handle: None,
+                latest_jpeg: None,
+                jpeg_tx: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("b".into(), handle);

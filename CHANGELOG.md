@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — ffmpeg dependency fully removed (native codec stack)
+
+All five former `ffmpeg` subprocess invocations have been replaced with
+in-process Rust crates. **`ffmpeg` is no longer a runtime dependency** —
+the Docker image, systemd service, and bare-metal install instructions
+no longer require it. This eliminates per-source subprocess overhead
+(~64 MB/camera), removes the noisy stderr log spam, and makes the
+encoding pipeline crash-recoverable without process supervision.
+
+| Former ffmpeg role | Replacement | Crate / module |
+|--------------------|-------------|----------------|
+| H.264 video encode (V4L2 → libx264 → Annex B) | OpenH264 (Cisco BSD-2) | `openh264` via `streaming::encoder::h264` |
+| MJPEG → pixels decode | `jpeg-decoder` | `streaming::encoder::convert` |
+| YUYV → JPEG (preview re-encode) | `jpeg-encoder` | `streaming::encoder::convert` |
+| AAC audio encode | G.711 μ-law (default) / FDK-AAC (`aac` feature) | `streaming::encoder::audio` |
+| MP4 segment muxing | `muxide` (pure-Rust fMP4) | `streaming::output::file` |
+| JPEG snapshot (RTSP → 1 frame) | direct cache read from capture loop | `web::routes::streams::snapshot` |
+| MJPEG live preview (RTSP → transcode) | JPEG broadcast subscription | `web::routes::streams::live_preview` |
+
+**Architecture changes:**
+- `VideoCaptureSource` re-activates the previously-disconnected
+  `capture::video::VideoCapture` (nokhwa) path — the camera is now read
+  natively via V4L2 in-process, frames converted to YUV420p, and encoded
+  to H.264 via OpenH264. The `v4l2-ctl` capability-detection subprocess
+  is also gone (nokhwa's `compatible_camera_formats()` is used instead).
+- A JPEG tap is maintained in the capture loop: for MJPG cameras the
+  raw JPEG bytes are forwarded zero-cost; for YUYV-only cameras a JPEG
+  is re-encoded every Nth frame. The snapshot and live-preview endpoints
+  consume this tap directly — no RTSP loopback, no transcoding.
+- The `MediaFrame::Video` NAL-per-frame contract is preserved (start
+  code stripped, `data[0] & 0x1f` is the NAL type), so the downstream
+  protocol stack (RTSP/RTMP/GB28181/ONVIF) required **zero changes**.
+- `AudioCaptureSource` now encodes i16 PCM to G.711 μ-law in-process
+  (pure Rust, reuses `protocols::audio_codec`). AAC encoding is gated
+  behind the new `aac` cargo feature (`fdk-aac`) for RTMP/MP4 audio
+  compliance — off by default.
+- `FileOutput` now uses `muxide` to write rolling MP4 segments directly,
+  with no subprocess. Segment rotation happens at keyframe boundaries.
+- Profile/level: Baseline, low complexity, GOP = 1 s — mirrors the old
+  `libx264 -preset ultrafast -tune zerolatency -g 30` baseline.
+
+**Cross-compile / deploy:** added `scripts/docker-build.sh`,
+`scripts/deploy.sh`, `scripts/service.sh`, and four test scripts
+(`test-smoke.sh`, `test-perf.sh`, `test-features.sh`, `soak-report.sh`)
+to cross-compile from Windows via Docker and deploy to the two test
+devices over SSH. See `scripts/README.md`.
+
 ### Fixed — MJPEG live preview corruption + camera view re-entry crash
 - **MJPEG live preview corruption resolved** (horizontal tearing, green blocks, mosaic artifacts):
   - Root cause 1: ffmpeg capture command missing `-pix_fmt yuv420p` — pixel format mismatch caused decoder corruption.

@@ -1,18 +1,30 @@
 # =============================================================================
 # Dockerfile — mibee-rec (MiBee Rec)
-# Multi-stage build: builder (rust:1.85-slim) → runtime (debian:bookworm-slim)
+# Multi-stage build: builder (rust:1-slim, latest stable) → runtime (debian:bookworm-slim)
 # =============================================================================
 
 # ---------- Builder Stage ----------
-FROM rust:1.85-slim AS builder
+# Pin to rust:1.88-bookworm to get a rustc new enough for modern deps (≥1.88
+# required by rcgen/time/tonic/image/jpeg-encoder) while staying on Debian
+# Bookworm (glibc 2.36) for runtime stability — Trixie (the default for
+# rust:1-slim / latest) has shown a userspace CPU-spin issue on the target
+# kernels.
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /usr/src/mibee-rec
 
-# Install build-time system dependencies
+# Install build-time system dependencies.
+# g++ (C++ compiler) is required by openh264-sys2's build.rs — it compiles the
+#   vendored Cisco OpenH264 C++ source via the `cc` crate. libclang-dev alone
+#   provides headers/libclang but not the `c++` binary.
+# libv4l-dev + libasound2-dev are needed by nokhwa (V4L2) and cpal (ALSA).
+# libssl-dev is needed by openssl-sys (pulled in transitively by reqwest/tokio).
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ \
     libv4l-dev \
     libasound2-dev \
     libclang-dev \
+    libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,7 +34,6 @@ COPY crates/ ./crates/
 COPY src/ ./src/
 COPY migrations/ ./migrations/
 COPY config.toml ./
-COPY tls/ ./tls/
 
 # Build release binary
 RUN cargo build --release
@@ -30,13 +41,16 @@ RUN cargo build --release
 # ---------- Runtime Stage ----------
 FROM debian:bookworm-slim
 
-# Install runtime system dependencies (ALSA + V4L libraries)
+# Install runtime system dependencies.
+# No more ffmpeg — encoding is now done in-process via openh264 + muxide.
+# libasound2 + libv4l-0 are needed for ALSA audio capture and V4L2 device access.
+# libssl3 is needed by the OpenSSL-linked TLS stack (reqwest/tokio).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
-    libv4l-1 \
+    libv4l-0 \
+    libssl3 \
     curl \
     ca-certificates \
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary (renamed from mibee-rec to mibee-rec for consistency)
