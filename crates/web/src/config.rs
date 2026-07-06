@@ -227,3 +227,50 @@ impl Default for RecordingConfig {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// WebRTC
+// ---------------------------------------------------------------------------
+
+/// WebRTC streaming configuration.
+///
+/// When enabled, exposes WHIP/WHEP (ingest/egress) endpoints so browsers can
+/// play a camera stream via RTCPeerConnection for sub-second latency. Disabled
+/// by default — the MSE/fMP4 path (1-3s latency, no signalling required) is
+/// the default transport; WebRTC is for cases that need the lowest possible
+/// latency (e.g. live monitoring, future talk-back audio).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WebRtcConfig {
+    /// Master enable toggle.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// UDP port range start for ICE candidate gathering (host candidates).
+    /// The server uses a small ephemeral range; 0 = let the OS choose.
+    #[serde(default)]
+    pub udp_port_min: u16,
+
+    /// UDP port range end (inclusive).
+    #[serde(default = "default_webrtc_udp_port_max")]
+    pub udp_port_max: u16,
+
+    /// Comma-separated list of STUN server URLs (e.g.
+    /// `stun:stun.l.google.com:19302`). Empty = host candidates only (LAN).
+    #[serde(default)]
+    pub stun_servers: String,
+}
+
+fn default_webrtc_udp_port_max() -> u16 {
+    0
+}
+
+impl Default for WebRtcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            udp_port_min: 0,
+            udp_port_max: 0,
+            stun_servers: String::new(),
+        }
+    }
+}
