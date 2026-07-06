@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 // These types live in `web::config` so the protocol REST API can derive
 // JSON Schemas via `schemars` without a circular dependency.
 use std::path::Path;
-pub use web::config::{Gb28181Config, OnvifConfig, RecordingConfig, RtmpPushConfig};
+pub use web::config::{Gb28181Config, OnvifConfig, RecordingConfig, RtmpPushConfig, WebRtcConfig};
 
 // ---------------------------------------------------------------------------
 // Web
@@ -266,6 +266,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub recording: RecordingConfig,
+
+    #[serde(default)]
+    pub webrtc: WebRtcConfig,
 
     #[serde(default)]
     pub database: DatabaseConfig,

@@ -126,6 +126,9 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/cameras/{id}/live", get(routes::streams::live_preview))
         // MSE / fMP4 stream for <video> (H.264, hardware-decoded by browser)
         .route("/api/cameras/{id}/stream.mse", get(routes::mse::stream_mse))
+        // WebRTC WHIP/WHEP signalling (sub-second latency; gated by [webrtc].enabled)
+        .route("/api/webrtc/whep/{id}", post(routes::webrtc::whep))
+        .route("/api/webrtc/whip/{id}", post(routes::webrtc::whip))
         // Settings
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
@@ -161,6 +164,14 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route(
             "/api/protocols/recording",
             put(routes::protocols::update_protocols_recording),
+        )
+        .route(
+            "/api/protocols/webrtc",
+            get(routes::protocols::get_protocols_webrtc),
+        )
+        .route(
+            "/api/protocols/webrtc",
+            put(routes::protocols::update_protocols_webrtc),
         )
         .route(
             "/api/protocols/runtime-status",

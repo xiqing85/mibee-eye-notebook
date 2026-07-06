@@ -21,6 +21,7 @@ pub mod mse;
 pub mod protocols;
 pub mod settings;
 pub mod streams;
+pub mod webrtc;
 
 use crate::errors::ApiError;
 
