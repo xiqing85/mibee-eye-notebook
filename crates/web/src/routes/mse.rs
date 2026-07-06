@@ -49,6 +49,12 @@ pub async fn stream_mse(
     // naturally back to the encoder.
     let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, Infallible>>(16);
     let mut remuxer = Fmp4Remuxer::new();
+    // Bootstrap the init segment with cached SPS/PPS so the browser can start
+    // decoding the very first media segment, rather than stalling until the
+    // next IDR (which may be a full GOP away) re-emits the parameter sets.
+    if let Some((sps, pps)) = stream_manager.sps_pps(&camera_id).await {
+        remuxer.seed_sps_pps(sps, pps);
+    }
 
     tokio::spawn(async move {
         loop {

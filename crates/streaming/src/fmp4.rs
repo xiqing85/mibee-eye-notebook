@@ -118,6 +118,17 @@ impl Fmp4Remuxer {
         }
     }
 
+    /// Pre-seed the remuxer with cached SPS/PPS so it can build the init
+    /// segment immediately, without waiting for the next IDR to carry fresh
+    /// parameter sets. Safe to call before the first [`push`](Self::push);
+    /// any subsequently harvested SPS/PPS from the stream overrides the seed.
+    pub fn seed_sps_pps(&mut self, sps: Vec<u8>, pps: Vec<u8>) {
+        if self.inner.is_none() {
+            self.pending_sps = Some(sps);
+            self.pending_pps = Some(pps);
+        }
+    }
+
     /// Push an encoded frame and return any init/segment chunks ready to emit.
     ///
     /// Non-keyframe frames received before the first keyframe are dropped
