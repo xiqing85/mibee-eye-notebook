@@ -30,12 +30,31 @@ export function CameraDetail({ cameraId }) {
   const running = !!urls[cameraId];
   const rtspUrl = urls[cameraId]?.rtsp_url;
 
+  // On first mount, reconcile the local stream-state cache with the server's
+  // view. A page refresh empties the store, but the stream may still be
+  // running server-side — if the camera JSON carries an rtsp_url the server
+  // considers it active, so reflect that in the store and render the preview
+  // instead of showing a dead "Start" button.
+  useEffect(() => {
+    if (cam && cam.rtsp_url && !running) {
+      streamUrls.value = { ...streamUrls.value, [cameraId]: { rtsp_url: cam.rtsp_url } };
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cam]);
+
   async function start() {
     const res = await api.post(`/api/cameras/${cameraId}/start`);
     if (res.ok) {
       showToast(t('stream.started'), 'success');
       streamUrls.value = { ...streamUrls.value, [cameraId]: { rtsp_url: res.data.rtsp_url } };
-    } else if (res.status !== 409) {
+    } else if (res.status === 409) {
+      // Stream is already running server-side (e.g. after a page refresh).
+      // Reconcile the local store so the preview renders.
+      const info = await api.get(`/api/cameras/${cameraId}`);
+      if (info.ok && info.data?.rtsp_url) {
+        streamUrls.value = { ...streamUrls.value, [cameraId]: { rtsp_url: info.data.rtsp_url } };
+      }
+    } else {
       showToast(t('error.failed'), 'error');
     }
   }
@@ -94,7 +113,9 @@ export function CameraDetail({ cameraId }) {
       <div class="camera-layout">
         <div class="camera-stage">
           {running ? (
-            <LivePreview cameraId={cameraId} transport={transport} />
+            <div key={`preview-${transport}-${cameraId}`} class="preview-wrapper">
+              <LivePreview cameraId={cameraId} transport={transport} />
+            </div>
           ) : (
             <div class="preview-placeholder">
               <div class="play-icon">▶</div>

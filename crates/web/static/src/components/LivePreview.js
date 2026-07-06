@@ -69,6 +69,7 @@ export function LivePreview({ cameraId, transport = 'mse', autoMjpegFallback = t
   return (
     <div class={`preview-tile mse status-${status}`}>
       <video
+        key={`vid-${cameraId}`}
         ref={videoRef}
         autoplay
         muted
@@ -77,7 +78,7 @@ export function LivePreview({ cameraId, transport = 'mse', autoMjpegFallback = t
         onWaiting={() => setStatus('connecting')}
         onError={() => { if (autoMjpegFallback) setEffective('mjpeg'); }}
       />
-      <MseEngine videoRef={videoRef} cameraId={cameraId} setStatus={setStatus}
+      <MseEngine key={`eng-${cameraId}`} videoRef={videoRef} cameraId={cameraId} setStatus={setStatus}
                  onGiveUp={() => autoMjpegFallback && setEffective('mjpeg')} />
       {status !== 'live' && (
         <div class="preview-overlay">
