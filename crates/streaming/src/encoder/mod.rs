@@ -20,6 +20,7 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 pub mod audio;
+pub mod backend;
 pub mod convert;
 pub mod h264;
 
@@ -27,6 +28,7 @@ pub mod h264;
 pub use audio::{AudioCodec, AudioEncoder, G711Encoder};
 #[cfg(feature = "aac")]
 pub use audio::AacEncoder;
+pub use backend::{select_best, BackendConfig, EncoderBackend, SoftwareBackend};
 pub use convert::Yuv420p;
 pub use h264::{H264Encoder, H264EncoderConfig, NalUnit};
 

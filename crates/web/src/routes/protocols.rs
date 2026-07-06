@@ -36,6 +36,7 @@ fn schema_for(protocol: &str) -> serde_json::Value {
         "gb28181" => schemars::schema_for!(crate::config::Gb28181Config),
         "rtmp_push" => schemars::schema_for!(crate::config::RtmpPushConfig),
         "recording" => schemars::schema_for!(crate::config::RecordingConfig),
+        "webrtc" => schemars::schema_for!(crate::config::WebRtcConfig),
         _ => return serde_json::json!({}),
     };
     serde_json::to_value(&schema).unwrap_or_else(|_| serde_json::json!({}))
@@ -395,6 +396,40 @@ pub async fn update_protocols_recording(
     Json(payload): Json<serde_json::Value>,
 ) -> axum::response::Response {
     match handle_put_and_get(&db, "recording", payload).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "ok"})),
+        )
+            .into_response(),
+        Err(resp) => resp,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WebRTC config
+// ---------------------------------------------------------------------------
+
+/// GET /api/protocols/webrtc — return WebRTC streaming config as JSON.
+#[tracing::instrument(skip_all)]
+pub async fn get_protocols_webrtc(
+    Extension(db): Extension<Db>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    handle_get(&db, "webrtc").await
+}
+
+/// PUT /api/protocols/webrtc — update WebRTC config (partial, validated).
+///
+/// Persists the config. The WebRTC runtime (WHIP/WHEP endpoints) reads this
+/// flag at request time, so toggling takes effect immediately for new
+/// peer connections.
+#[tracing::instrument(skip_all)]
+pub async fn update_protocols_webrtc(
+    Extension(db): Extension<Db>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Json(payload): Json<serde_json::Value>,
+) -> axum::response::Response {
+    match handle_put_and_get(&db, "webrtc", payload).await {
         Ok(_) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "ok"})),

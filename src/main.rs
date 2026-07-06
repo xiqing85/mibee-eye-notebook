@@ -105,6 +105,12 @@ async fn main() -> anyhow::Result<()> {
             &serde_json::to_value(&config.recording)?,
         )
         .await?;
+        web::db::set_protocol_config(
+            &pool,
+            "webrtc",
+            &serde_json::to_value(&config.webrtc)?,
+        )
+        .await?;
     } else {
         tracing::debug!("protocol_configs table already populated; keeping persisted values");
     }
