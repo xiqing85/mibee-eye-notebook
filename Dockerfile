@@ -19,6 +19,8 @@ WORKDIR /usr/src/mibee-rec
 #   provides headers/libclang but not the `c++` binary.
 # libv4l-dev + libasound2-dev are needed by nokhwa (V4L2) and cpal (ALSA).
 # libssl-dev is needed by openssl-sys (pulled in transitively by reqwest/tokio).
+# nodejs+npm are needed only at build time: crates/web/build.rs invokes esbuild
+#   to bundle the Preact SPA (preact is a devDependency installed via npm).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     libv4l-dev \
@@ -26,6 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libclang-dev \
     libssl-dev \
     pkg-config \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy manifests first to leverage Docker layer caching
@@ -34,8 +38,20 @@ COPY crates/ ./crates/
 COPY src/ ./src/
 COPY migrations/ ./migrations/
 COPY config.toml ./
+# Frontend build inputs: Preact SPA sources + the vendored esbuild binary +
+# package.json (declares preact as a build-time devDependency).
+COPY package.json ./
+COPY tools/ ./tools/
 
-# Build release binary
+# Install Preact (build-time devDependency). esbuild bundles it into the
+# final app.bundle.js at cargo build time; npm/node are NOT needed at runtime.
+RUN npm install --no-save
+
+# Make the vendored esbuild binary executable (Docker COPY drops the x bit).
+RUN chmod +x tools/esbuild-linux-x64
+
+# Build release binary. This also triggers crates/web/build.rs which runs
+# tools/esbuild-linux-x64 to bundle the Preact SPA + inline it into index.html.
 RUN cargo build --release
 
 # ---------- Runtime Stage ----------
