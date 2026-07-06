@@ -6,10 +6,10 @@
 // multiple tiles in a grid are independent.
 //
 // Robustness: the MSE fetch + append loop self-heals — on any stream error,
-// reader EOF, or SourceBuffer quota exhaustion the component tears down its
-// MediaSource and reconnects with exponential backoff, so a transient
-// hiccup doesn't permanently freeze the tile (the previous version needed a
-// full page reload to recover).
+// reader EOF, or SourceBuffer issue the component tears down its MediaSource
+// and reconnects with exponential backoff. A stall timer fires if no chunk
+// arrives within the window. The SourceBuffer is actively pruned so buffered
+// data doesn't grow unbounded and freeze playback.
 
 import { h } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -23,10 +23,13 @@ function mseSupported() {
          MediaSource.isTypeSupported('video/mp4; codecs="avc1.640028"');
 }
 
-/// Maximum backoff between reconnect attempts.
 const MAX_BACKOFF_MS = 8000;
-/// If no chunk arrives within this window, assume the stream stalled and reconnect.
-const STALL_TIMEOUT_MS = 12000;
+/// If no chunk arrives within this window, assume the stream stalled.
+const STALL_TIMEOUT_MS = 10000;
+/// How much buffered video (seconds) to keep ahead of the playhead. Pruning
+/// behind this keeps memory bounded so the SourceBuffer never saturates and
+/// freezes the picture.
+const MAX_BUFFER_SECS = 8;
 
 /**
  * @param {object} props
@@ -38,9 +41,7 @@ export function LivePreview({ cameraId, transport = 'mse', autoMjpegFallback = t
   const videoRef = useRef(null);
   const [effective, setEffective] = useState(transport);
   const [status, setStatus] = useState('connecting');
-  const attemptRef = useRef(0);
 
-  // Decide effective transport upfront.
   useEffect(() => {
     if (transport === 'mse' && !mseSupported()) {
       setEffective(autoMjpegFallback ? 'mjpeg' : 'mse');
@@ -49,9 +50,6 @@ export function LivePreview({ cameraId, transport = 'mse', autoMjpegFallback = t
     }
   }, [transport, autoMjpegFallback]);
 
-  // MJPEG path: just point an <img> at the multipart endpoint. The browser
-  // handles reconnection for multipart/x-mixed-replace natively, so no extra
-  // healing logic is needed here.
   if (effective === 'mjpeg') {
     return (
       <div class="preview-tile mjpeg">
@@ -69,7 +67,6 @@ export function LivePreview({ cameraId, transport = 'mse', autoMjpegFallback = t
   return (
     <div class={`preview-tile mse status-${status}`}>
       <video
-        key={`vid-${cameraId}`}
         ref={videoRef}
         autoplay
         muted
@@ -78,7 +75,7 @@ export function LivePreview({ cameraId, transport = 'mse', autoMjpegFallback = t
         onWaiting={() => setStatus('connecting')}
         onError={() => { if (autoMjpegFallback) setEffective('mjpeg'); }}
       />
-      <MseEngine key={`eng-${cameraId}`} videoRef={videoRef} cameraId={cameraId} setStatus={setStatus}
+      <MseEngine videoRef={videoRef} cameraId={cameraId} setStatus={setStatus}
                  onGiveUp={() => autoMjpegFallback && setEffective('mjpeg')} />
       {status !== 'live' && (
         <div class="preview-overlay">
@@ -90,10 +87,10 @@ export function LivePreview({ cameraId, transport = 'mse', autoMjpegFallback = t
   );
 }
 
-/// Internal: drives the MSE fetch+append loop with self-healing. Rendered as a
-/// child so it gets its own lifecycle (clean tear-down on unmount).
+/// Internal: drives the MSE fetch+append loop with self-healing + active
+/// SourceBuffer pruning. Headless (renders null); operates on the video
+/// element via ref.
 function MseEngine({ videoRef, cameraId, setStatus, onGiveUp }) {
-  // All mutable state lives in refs so re-renders don't restart the effect.
   const msRef = useRef(null);
   const sbRef = useRef(null);
   const queueRef = useRef([]);
@@ -101,13 +98,12 @@ function MseEngine({ videoRef, cameraId, setStatus, onGiveUp }) {
   const stallTimerRef = useRef(null);
   const deadRef = useRef(false);
   const retryCountRef = useRef(0);
+  const pruningRef = useRef(false);
 
   useEffect(() => {
     deadRef.current = false;
     startSession();
-
     return () => {
-      // Component unmounting or deps changing — tear everything down.
       deadRef.current = true;
       cleanup();
     };
@@ -118,23 +114,19 @@ function MseEngine({ videoRef, cameraId, setStatus, onGiveUp }) {
     if (abortRef.current) { try { abortRef.current.abort(); } catch {} abortRef.current = null; }
     if (stallTimerRef.current) { clearTimeout(stallTimerRef.current); stallTimerRef.current = null; }
     const sb = sbRef.current;
-    if (sb) {
-      try { sb.onerror = null; sb.onupdateend = null; } catch {}
-    }
+    if (sb) { try { sb.onupdateend = null; sb.onerror = null; } catch {} }
     const ms = msRef.current;
-    if (ms && ms.readyState === 'open') {
-      try { ms.endOfStream(); } catch {}
-    }
+    if (ms && ms.readyState === 'open') { try { ms.endOfStream(); } catch {} }
     msRef.current = null;
     sbRef.current = null;
     queueRef.current = [];
+    pruningRef.current = false;
   }
 
   function resetStallTimer() {
     if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
     stallTimerRef.current = setTimeout(() => {
-      // No data for too long — the upstream likely died. Reconnect.
-      console.warn('[mse] stall detected, reconnecting');
+      console.warn('[mse] stall — no chunks for', STALL_TIMEOUT_MS + 'ms, reconnecting');
       reconnect();
     }, STALL_TIMEOUT_MS);
   }
@@ -143,27 +135,27 @@ function MseEngine({ videoRef, cameraId, setStatus, onGiveUp }) {
     cleanup();
     if (deadRef.current) return;
     retryCountRef.current += 1;
-    const backoff = Math.min(MAX_BACKOFF_MS, 500 * 2 ** (retryCountRef.current - 1));
-    setStatus(retryCountRef.current > 1 ? 'connecting' : 'connecting');
-    setTimeout(() => {
-      if (!deadRef.current) startSession();
-    }, backoff);
+    const backoff = Math.min(MAX_BACKOFF_MS, 500 * 2 ** Math.min(retryCountRef.current - 1, 4));
+    setStatus('connecting');
+    setTimeout(() => { if (!deadRef.current) startSession(); }, backoff);
   }
 
   function startSession() {
     const video = videoRef.current;
     if (!video || deadRef.current) return;
 
+    // Start the stall timer immediately so a sourceopen/fetch that never
+    // delivers still triggers a reconnect.
+    resetStallTimer();
+
     let ms;
-    try {
-      ms = new MediaSource();
-    } catch {
-      onGiveUp();
-      return;
-    }
+    try { ms = new MediaSource(); } catch { onGiveUp(); return; }
     msRef.current = ms;
     const url = URL.createObjectURL(ms);
     video.src = url;
+    // Force the element to pick up the new src — without this, a reconnect
+    // after a previous endOfStream can leave the video frozen on the old frame.
+    video.load();
 
     ms.addEventListener('sourceopen', onSourceOpen);
 
@@ -179,9 +171,8 @@ function MseEngine({ videoRef, cameraId, setStatus, onGiveUp }) {
       }
       sbRef.current = sb;
       sb.mode = 'segments';
-      sb.addEventListener('updateend', drainQueue);
+      sb.addEventListener('updateend', onSbUpdateEnd);
       sb.addEventListener('error', onSbError);
-      resetStallTimer();
       startFetch();
     }
 
@@ -196,49 +187,94 @@ function MseEngine({ videoRef, cameraId, setStatus, onGiveUp }) {
           });
           if (!resp.ok || !resp.body) { reconnect(); return; }
           const reader = resp.body.getReader();
-          // The first chunk is the init segment; subsequent chunks are media
-          // segments. Append each, maintaining the queue so we never call
-          // appendBuffer while an update is in flight.
           for (;;) {
             if (deadRef.current) return;
             const { done, value } = await reader.read();
             if (done) { reconnect(); return; }
             if (value && value.length) {
               queueRef.current.push(value);
-              drainQueue();
+              pump();
               resetStallTimer();
-              // Reset the reconnect counter once we're successfully feeding
-              // the decoder — the connection is healthy.
               retryCountRef.current = 0;
             }
           }
         } catch (e) {
           if (deadRef.current) return;
-          if (e.name === 'AbortError') return; // intentional teardown
+          if (e.name === 'AbortError') return;
           console.warn('[mse] fetch error, reconnecting:', e);
           reconnect();
         }
       })();
     }
 
-    function drainQueue() {
+    function onSbUpdateEnd() {
+      pruningRef.current = false;
+      pump();
+    }
+
+    function onSbError() {
+      console.warn('[mse] SourceBuffer error, reconnecting');
+      reconnect();
+    }
+
+    /// Append the next queued chunk if the SourceBuffer is idle, and prune the
+    /// buffered range when it grows past MAX_BUFFER_SECS so the buffer never
+    /// saturates and freezes playback.
+    function pump() {
       const sb = sbRef.current;
-      if (!sb || sb.updating || queueRef.current.length === 0) return;
+      if (!sb || sb.updating || deadRef.current) return;
+
+      // Active pruning: keep at most MAX_BUFFER_SECS behind the current
+      // position. This is the key fix for the "frozen frame" issue — without
+      // pruning, the SourceBuffer accumulates the entire stream and the
+      // browser eventually stops accepting new data.
+      const video = videoRef.current;
+      if (!pruningRef.current && video && sb.buffered.length > 0) {
+        const current = video.currentTime;
+        // Find the start of the buffered range we're playing in.
+        for (let i = 0; i < sb.buffered.length; i++) {
+          const start = sb.buffered.start(i);
+          const end = sb.buffered.end(i);
+          if (current >= start && current <= end) {
+            if (current - start > MAX_BUFFER_SECS) {
+              const removeEnd = current - MAX_BUFFER_SECS / 2;
+              if (removeEnd > start) {
+                pruningRef.current = true;
+                try { sb.remove(start, removeEnd); return; }
+                catch (e) { pruningRef.current = false; }
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      if (queueRef.current.length === 0) return;
       const chunk = queueRef.current.shift();
       try {
         sb.appendBuffer(chunk);
         setStatus('live');
+        // Nudge the playhead forward if it lags too far behind live (common
+        // after a transient stall) — otherwise the video element pauses on a
+        // stale frame and never catches up.
+        if (video && sb.buffered.length > 0) {
+          const end = sb.buffered.end(sb.buffered.length - 1);
+          if (end - video.currentTime > MAX_BUFFER_SECS) {
+            video.currentTime = end - 0.3;
+          }
+        }
       } catch (e) {
         if (e.name === 'QuotaExceededError') {
-          // Decoder buffer full — prune everything except the latest GOP.
-          try {
-            const buffered = sb.buffered;
-            if (buffered.length > 0) {
-              const keepFrom = Math.max(0, buffered.end(buffered.length - 1) - 2);
-              if (keepFrom > 0) sb.remove(0, keepFrom);
+          // Buffer full — force a prune of the oldest range and requeue.
+          if (sb.buffered.length > 0 && !pruningRef.current) {
+            pruningRef.current = true;
+            const start = sb.buffered.start(0);
+            const pruneTo = sb.buffered.end(sb.buffered.length - 1) - 2;
+            if (pruneTo > start) {
+              try { sb.remove(start, pruneTo); queueRef.current.unshift(chunk); return; }
+              catch { pruningRef.current = false; }
             }
-          } catch {}
-          // Re-queue the chunk for the next updateend.
+          }
           queueRef.current.unshift(chunk);
         } else {
           console.warn('[mse] appendBuffer error, reconnecting:', e);
@@ -246,12 +282,7 @@ function MseEngine({ videoRef, cameraId, setStatus, onGiveUp }) {
         }
       }
     }
-
-    function onSbError() {
-      console.warn('[mse] SourceBuffer error, reconnecting');
-      reconnect();
-    }
   }
 
-  return null; // headless — only manages the video element via ref.
+  return null;
 }
