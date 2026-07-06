@@ -19,7 +19,11 @@ rate_limit_max = 20
 rate_limit_window_secs = 60
 
 [observability]
-otel_endpoint = "http://localhost:4317"
+# OTLP trace exporter endpoint (gRPC). Empty by default — set to your
+# collector's address (e.g. "http://localhost:4317") to enable tracing.
+# Leaving this empty avoids the BatchSpanProcessor busy-looping when no
+# collector is reachable (default-OFF per the project's outbound policy).
+otel_endpoint = ""
 log_level = "info"
 
 # ---------------------------------------------------------------------------

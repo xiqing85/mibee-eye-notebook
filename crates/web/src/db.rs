@@ -85,12 +85,27 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             .await
             .unwrap_or(0);
 
-    // Discover migration files: look for `{migrations_dir}/NNN_*.sql`
-    let migrations_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(|p| p.join("migrations"))
-        .unwrap_or_else(|| Path::new("migrations").to_path_buf());
+    // Discover migration files: look for `{migrations_dir}/NNN_*.sql`.
+    //
+    // Resolution order (first existing dir wins):
+    //   1. `migrations/` relative to the current working directory — this is
+    //      what deployed instances use (WorkingDirectory=~/mibee-rec, with
+    //      migrations/ deployed alongside the binary).
+    //   2. The build-time path `{CARGO_MANIFEST_DIR}/../../migrations` — used
+    //      during `cargo run` from the source tree. In a deployed binary this
+    //      path points to the build container and won't exist, so we fall back.
+    let migrations_dir = {
+        let cwd_migrations = Path::new("migrations");
+        if cwd_migrations.is_dir() {
+            cwd_migrations.to_path_buf()
+        } else {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .map(|p| p.join("migrations"))
+                .unwrap_or_else(|| Path::new("migrations").to_path_buf())
+        }
+    };
 
     if !migrations_dir.exists() {
         // No migrations directory — nothing to do
