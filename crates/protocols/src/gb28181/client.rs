@@ -94,7 +94,7 @@ impl SipDeviceClient {
     #[tracing::instrument(skip_all)]
     pub fn build_register_with_auth(&self, auth: &DigestAuthParams) -> SipMessage {
         metrics::increment_gb28181_register_status("registered");
-        let uri = format!("sip:{}@{}", self.device_id, self.domain);
+        let uri = format!("sip:{}@{}", self.domain, self.domain);
         let auth_header = build_digest_auth(
             &self.username,
             &auth.realm,
