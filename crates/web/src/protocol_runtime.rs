@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use protocols::gb28181::{SipMessage, SipMethod};
+use protocols::gb28181::SipMessage;
 use protocols::onvif::{OnvifDeviceConfig, WsDiscoveryServer};
 use serde::Serialize;
 use streaming::output::Gb28181Output;
@@ -983,43 +983,19 @@ fn build_keepalive_message(
     sn: u32,
     cseq: u32,
 ) -> anyhow::Result<SipMessage> {
-    let notify =
-        protocols::gb28181::client::build_keepalive_notify(&sn.to_string(), device_id, "OK")?;
-    let mut headers = Vec::new();
-    headers.push((
-        "Via".to_string(),
-        format!(
-            "SIP/2.0/UDP {}:{};rport;branch=z9hG4bK{}",
-            local_ip, 5060, cseq
-        ),
-    ));
-    headers.push((
-        "From".to_string(),
-        format!("<sip:{}@{}>;tag={}", device_id, sip_domain, cseq),
-    ));
-    headers.push((
-        "To".to_string(),
-        format!("<sip:{}@{}>", sip_domain, sip_domain),
-    ));
-    headers.push(("Call-ID".to_string(), format!("{}-{}", device_id, sn)));
-    headers.push(("CSeq".to_string(), format!("{} MESSAGE", cseq)));
-    headers.push(("Max-Forwards".to_string(), "70".to_string()));
-    headers.push(("User-Agent".to_string(), "mibee-rec/0.1".to_string()));
-    headers.push((
-        "Content-Type".to_string(),
-        "Application/MANSCDP+xml".to_string(),
-    ));
-    headers.push(("Content-Length".to_string(), notify.body.len().to_string()));
-
-    Ok(SipMessage {
-        start_line: format!("MESSAGE sip:{} SIP/2.0", sip_domain),
-        method: Some(SipMethod::Message),
-        status_code: None,
-        uri: Some(format!("sip:{}", sip_domain)),
-        version: "SIP/2.0".to_string(),
-        headers,
-        body: notify.body,
-    })
+    let mut msg = protocols::gb28181::client::build_keepalive_notify(
+        &sn.to_string(),
+        device_id,
+        sip_domain,
+        local_ip,
+        5060,
+        "OK",
+        cseq,
+    )?;
+    // Extra header preserved from the previous wrapper implementation.
+    msg.headers
+        .push(("User-Agent".to_string(), "mibee-rec/0.1".to_string()));
+    Ok(msg)
 }
 
 /// Build the device SDP answer for a SIP INVITE (GB/T 28181-2022).
@@ -1311,7 +1287,7 @@ mod tests {
     fn build_mock_invite(sdp_body: &str) -> SipMessage {
         SipMessage {
             start_line: "INVITE sip:34020000001320000001@3402000000 SIP/2.0".to_string(),
-            method: Some(SipMethod::Invite),
+            method: Some(protocols::gb28181::SipMethod::Invite),
             status_code: None,
             uri: Some("sip:34020000001320000001@3402000000".to_string()),
             version: "SIP/2.0".to_string(),
@@ -1428,7 +1404,10 @@ mod tests {
             .unwrap();
         let data = std::str::from_utf8(&buf[..len]).unwrap();
         assert!(data.contains("<CmdType>Keepalive</CmdType>"));
-        assert!(data.contains("MESSAGE sip:3402000000 SIP/2.0"));
+        assert!(data.contains("MESSAGE sip:3402000000@3402000000 SIP/2.0"));
+        assert!(data.contains("Via: SIP/2.0/UDP 127.0.0.1:5060;rport;branch=z9hG4bK1"));
+        assert!(data.contains("CSeq: 1 MESSAGE"));
+        assert!(data.contains("Max-Forwards: 70"));
 
         let _ = shutdown_tx.send(true);
         handle.await.unwrap();
