@@ -14,6 +14,8 @@ sha2 = "0.10"
 rand.workspace = true
 observability = { path = "../observability" }
 base64.workspace = true
+serde.workspace = true
+serde-xml-rs = "0.6"
 parking_lot = "0.12"
 
 [dev-dependencies]
