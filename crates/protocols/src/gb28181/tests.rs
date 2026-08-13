@@ -432,7 +432,10 @@ fn test_parse_invite_with_ssrc() {
     assert_eq!(info.call_id, "invite-call-789");
     assert_eq!(info.media_address, "192.168.1.200");
     assert_eq!(info.media_port, 20000);
-    assert_eq!(info.ssrc, 12345678, "SSRC should be parsed from y= field (decimal)");
+    assert_eq!(
+        info.ssrc, 12345678,
+        "SSRC should be parsed from y= field (decimal)"
+    );
     assert_eq!(info.payload_type, 96);
 }
 
@@ -608,7 +611,11 @@ fn test_sdp_parses_y_ssrc_decimal() {
                 a=rtpmap:96 PS/90000\r\n";
 
     let parsed = SdpSession::parse(sdp).expect("Failed to parse SDP");
-    assert_eq!(parsed.ssrc, Some(100000001), "SSRC should be parsed from y= field as decimal");
+    assert_eq!(
+        parsed.ssrc,
+        Some(100000001),
+        "SSRC should be parsed from y= field as decimal"
+    );
 }
 
 #[test]
@@ -640,7 +647,10 @@ fn test_parse_invite_uses_y_field_not_a_ssrc() {
     assert_eq!(info.call_id, "test-y-field-001");
     assert_eq!(info.media_address, "192.168.1.200");
     assert_eq!(info.media_port, 20000);
-    assert_eq!(info.ssrc, 100000001, "SSRC should come from y= field (decimal)");
+    assert_eq!(
+        info.ssrc, 100000001,
+        "SSRC should come from y= field (decimal)"
+    );
     assert_eq!(info.payload_type, 96);
 }
 
@@ -648,19 +658,24 @@ fn test_parse_invite_uses_y_field_not_a_ssrc() {
 
 #[test]
 fn test_digest_defaults_to_md5_when_absent() {
-    let challenge = parse_digest_auth(
-        "Digest realm=\"TestRealm\", nonce=\"abcdef123456\"",
-    ).expect("Failed to parse challenge");
+    let challenge = parse_digest_auth("Digest realm=\"TestRealm\", nonce=\"abcdef123456\"")
+        .expect("Failed to parse challenge");
 
     assert_eq!(challenge.realm, "TestRealm");
     assert_eq!(challenge.nonce, "abcdef123456");
-    assert_eq!(challenge.algorithm, None, "Algorithm should be None when not specified");
+    assert_eq!(
+        challenge.algorithm, None,
+        "Algorithm should be None when not specified"
+    );
 
     // When building auth header with no algorithm, should default to MD5
     let username = "testuser";
     let password = "testpass";
     let algorithm = challenge.algorithm.as_deref().unwrap_or("MD5");
-    assert_eq!(algorithm, "MD5", "Should default to MD5 per RFC 2617 §3.2.1");
+    assert_eq!(
+        algorithm, "MD5",
+        "Should default to MD5 per RFC 2617 §3.2.1"
+    );
 
     // Build auth header should work with MD5 algorithm
     let uri = "sip:34020000201180000001@3402000000";
@@ -674,7 +689,10 @@ fn test_digest_defaults_to_md5_when_absent() {
         algorithm,
     );
 
-    assert!(auth_header.contains("algorithm=MD5"), "Auth header should specify MD5 algorithm");
+    assert!(
+        auth_header.contains("algorithm=MD5"),
+        "Auth header should specify MD5 algorithm"
+    );
     assert!(auth_header.contains(&format!("username=\"{}\"", username)));
     assert!(auth_header.contains(&format!("realm=\"{}\"", challenge.realm)));
     assert!(auth_header.contains(&format!("nonce=\"{}\"", challenge.nonce)));
