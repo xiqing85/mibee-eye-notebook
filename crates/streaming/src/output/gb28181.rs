@@ -8,13 +8,18 @@ use anyhow::Result;
 
 use crate::output::{Output, parse_h264_nal_units};
 use crate::source::MediaFrame;
-use protocols::rtp::{RTP_HEADER_SIZE, RTP_MTU, RtpHeaderFlags, RtpPacket, fragment_nal};
+use protocols::rtp::{RtpHeaderFlags, RtpPacket};
 
 // ---------------------------------------------------------------------------
 // Gb28181Output
 // ---------------------------------------------------------------------------
 
 /// GB/T 28181 RTP push output.
+///
+/// Receives H.264 frames and sends them as PS-over-RTP/UDP packets to the
+/// destination address specified in a SIP INVITE. PS data is fragmented
+/// across MTU 1400 with the marker bit set on the last packet of each
+/// access unit (per GB/T 28181).
 ///
 /// Receives H.264 frames and sends them as RTP/UDP packets to the
 /// destination address specified in a SIP INVITE. For large NAL units
@@ -87,9 +92,12 @@ impl Output for Gb28181Output {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         match frame {
             MediaFrame::Video {
-                data, timestamp, ..
+                keyframe,
+                data,
+                timestamp,
             } => {
                 let data = data.clone();
+                let is_keyframe = *keyframe;
                 let ts_ms = *timestamp;
                 Box::pin(async move {
                     if !self.started {
@@ -108,62 +116,55 @@ impl Output for Gb28181Output {
                     }
 
                     // Convert ms timestamp to 90kHz RTP clock
-                    let ts_rtp = (ts_ms as u32).wrapping_mul(90);
+                    let ts_rtp_64 = (ts_ms as u64).wrapping_mul(90);
+                    let ts_rtp = ts_rtp_64 as u32;
 
-                    for nal in &nal_units {
-                        if nal.len() <= RTP_MTU.saturating_sub(RTP_HEADER_SIZE) {
-                            // Single NAL unit packet (RFC 6184 Section 5.6)
-                            let packet = RtpPacket {
-                                flags: RtpHeaderFlags {
-                                    version: 2,
-                                    padding: false,
-                                    extension: false,
-                                    csrc_count: 0,
-                                    marker: false,
-                                    payload_type: self.payload_type,
-                                },
-                                sequence_number: self.sequence_number,
-                                timestamp: ts_rtp,
-                                ssrc: self.ssrc,
-                                csrc_list: vec![],
-                                extension_profile: None,
-                                extension_data: vec![],
-                                payload: nal.clone(),
-                            };
-                            let bytes = packet.to_bytes();
-                            socket
-                                .send(&bytes)
-                                .await
-                                .map_err(|e| anyhow::anyhow!("Failed to send RTP packet: {e}"))?;
-                            self.sequence_number = self.sequence_number.wrapping_add(1);
-                        } else {
-                            // FU-A fragmentation (RFC 6184 Section 5.8)
-                            let nal_header = nal[0];
-                            let nal_ref_idc = (nal_header >> 5) & 0x03;
-                            let nal_unit_type = nal_header & 0x1F;
-                            let nal_body = &nal[1..];
+                    // Mux H.264 NAL units to MPEG-2 PS
+                    // The muxer handles PSM inclusion on keyframes automatically
+                    let ps_data = protocols::gb28181::ps::mux_h264_to_ps(
+                        &nal_units.iter().map(|n| n.as_slice()).collect::<Vec<_>>(),
+                        is_keyframe,
+                        ts_rtp_64,
+                        ts_rtp_64,
+                    );
 
-                            let packets = fragment_nal(
-                                nal_body,
-                                nal_ref_idc,
-                                nal_unit_type,
-                                self.payload_type,
-                                self.sequence_number,
-                                ts_rtp,
-                                self.ssrc,
-                                RTP_MTU,
-                            )?;
+                    if ps_data.is_empty() {
+                        return Ok(());
+                    }
 
-                            for pkt in &packets {
-                                let bytes = pkt.to_bytes();
-                                socket.send(&bytes).await.map_err(|e| {
-                                    anyhow::anyhow!("Failed to send FU-A fragment: {e}")
-                                })?;
-                            }
+                    // Fragment PS data across RTP packets (MTU 1400)
+                    // GB/T 28181 mandates PT=96 for PS-over-RTP
+                    const PS_MTU: usize = 1400;
+                    let total_len = ps_data.len();
+                    let mut offset = 0;
+                    while offset < total_len {
+                        let chunk_end = (offset + PS_MTU).min(total_len);
+                        let is_last = chunk_end == total_len;
 
-                            self.sequence_number =
-                                self.sequence_number.wrapping_add(packets.len() as u16);
-                        }
+                        let packet = RtpPacket {
+                            flags: RtpHeaderFlags {
+                                version: 2,
+                                padding: false,
+                                extension: false,
+                                csrc_count: 0,
+                                marker: is_last, // Marker bit on LAST packet of access unit
+                                payload_type: 96, // PT=96 for PS-over-RTP per GB28181
+                            },
+                            sequence_number: self.sequence_number,
+                            timestamp: ts_rtp,
+                            ssrc: self.ssrc,
+                            csrc_list: vec![],
+                            extension_profile: None,
+                            extension_data: vec![],
+                            payload: ps_data[offset..chunk_end].to_vec(),
+                        };
+                        let bytes = packet.to_bytes();
+                        socket
+                            .send(&bytes)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to send RTP packet: {e}"))?;
+                        self.sequence_number = self.sequence_number.wrapping_add(1);
+                        offset = chunk_end;
                     }
 
                     // Advance internal timestamp for next frame
@@ -288,26 +289,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gb28181_output_fua_fragmentation() {
-        // Create a large NAL unit that exceeds MTU
-        let nal_body: Vec<u8> = (0..2000).map(|i| (i % 256) as u8).collect();
-        let mut nal = vec![0x65]; // header: ref_idc=3, type=5 (IDR)
-        nal.extend_from_slice(&nal_body);
+    async fn test_gb28181_output_sends_ps_over_rtp() {
+        // Verify PS-over-RTP packetization
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:22000")
+            .await
+            .unwrap();
+        let dest: SocketAddr = receiver.local_addr().unwrap();
 
-        // Use protocols::rtp::fragment_nal directly to verify FU-A
-        let packets = fragment_nal(&nal_body, 3, 5, 96, 0, 1000, 0xABCD, RTP_MTU).unwrap();
+        let mut out = Gb28181Output::new(dest, 0x12345678, 96, "test-ps-rtp");
+        out.start().await.unwrap();
 
-        assert!(packets.len() > 1, "Large NAL should produce >1 fragment");
-        assert_eq!(packets[0].ssrc, 0xABCD);
-        assert_eq!(packets[0].timestamp, 1000);
-        // First fragment has start=1, end=0
-        let first_fh = protocols::rtp::parse_fua_header(packets[0].payload[1]);
-        assert!(first_fh.start);
-        assert!(!first_fh.end);
+        // Send a small IDR frame (SPS + PPS + IDR slice)
+        let frame = MediaFrame::Video {
+            keyframe: true,
+            data: vec![
+                0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80, 0x1E, 0xD9, // SPS
+                0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80,         // PPS
+                0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00, 0x01, 0x23, 0x45, // IDR
+            ],
+            timestamp: 100,
+        };
+        out.send_frame(&frame).await.unwrap();
 
-        // Last fragment has start=0, end=1
-        let last_fh = protocols::rtp::parse_fua_header(packets.last().unwrap().payload[1]);
-        assert!(!last_fh.start);
-        assert!(last_fh.end);
+        // Verify RTP packet was received
+        let mut buf = vec![0u8; 1500];
+        let len = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            receiver.recv(&mut buf),
+        )
+        .await
+        .expect("Should receive RTP packet")
+        .expect("recv should succeed");
+
+        // RTP header is 12 bytes, PS payload follows
+        assert!(len > 12, "RTP packet too short: {}", len);
+        // Verify RTP version (first 2 bits = 2)
+        assert_eq!(buf[0] >> 6, 2, "RTP version should be 2");
+        // Verify payload type (PT=96 for PS-over-RTP)
+        assert_eq!(buf[1] & 0x7F, 96, "Payload type should be 96 for PS");
+        // Verify SSRC from INVITE
+        let ssrc_be = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        assert_eq!(ssrc_be, 0x12345678, "SSRC should match INVITE value");
+        // Verify PS data starts with pack header 0x00 0x00 0x01 0xBA
+        assert!(buf[12..].starts_with(&[0x00, 0x00, 0x01, 0xBA]), "Should start with PS pack header");
+
+        out.stop().await.unwrap();
     }
 }
