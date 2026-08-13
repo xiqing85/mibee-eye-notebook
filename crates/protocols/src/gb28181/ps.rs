@@ -3,7 +3,7 @@
 //! Extracts H.264 NAL units from MPEG-2 Program Stream encapsulation
 //! used by GB/T 28181 for RTP media transport.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// MPEG-2 Program Stream pack header.
 #[derive(Debug, Clone, PartialEq, Eq)]

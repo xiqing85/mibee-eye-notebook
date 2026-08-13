@@ -14,10 +14,10 @@
 //! All tests use in-memory UDP loopback — no real network dependency.
 
 use protocols::gb28181::{
-    build_invite_response, build_register_request, parse_401_challenge, parse_invite, RtpPusher,
-    SdpMedia, SdpSession, SipDeviceClient, SipMessage, SipMethod, SipStatusCode,
+    RtpPusher, SdpMedia, SdpSession, SipDeviceClient, SipMessage, SipMethod, SipStatusCode,
+    build_invite_response, build_register_request, parse_401_challenge, parse_invite,
 };
-use protocols::rtp::{RtpPacket, H264_PAYLOAD_TYPE};
+use protocols::rtp::{H264_PAYLOAD_TYPE, RtpPacket};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 // ─── Helpers ──────────────────────────────────────────────────────────────────
