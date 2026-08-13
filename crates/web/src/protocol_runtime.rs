@@ -19,7 +19,7 @@ use protocols::gb28181::{SipMessage, SipMethod};
 use protocols::onvif::{OnvifDeviceConfig, WsDiscoveryServer};
 use serde::Serialize;
 use streaming::output::Gb28181Output;
-use tokio::sync::{mpsc, watch, Notify};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -106,7 +106,10 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
     };
 
     Gb28181RuntimeConfig {
-        enabled: db_config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+        enabled: db_config
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
         device_id: get_str("device_id", "34020000002000000001"),
         sip_addr: get_str("platform_sip_address", "127.0.0.1"),
         sip_port: get_u16("platform_sip_port", 5060),
@@ -980,26 +983,32 @@ fn build_keepalive_message(
     sn: u32,
     cseq: u32,
 ) -> anyhow::Result<SipMessage> {
-    let notify = protocols::gb28181::client::build_keepalive_notify(
-        &sn.to_string(),
-        device_id,
-        "OK",
-    )?;
+    let notify =
+        protocols::gb28181::client::build_keepalive_notify(&sn.to_string(), device_id, "OK")?;
     let mut headers = Vec::new();
     headers.push((
         "Via".to_string(),
-        format!("SIP/2.0/UDP {}:{};rport;branch=z9hG4bK{}", local_ip, 5060, cseq),
+        format!(
+            "SIP/2.0/UDP {}:{};rport;branch=z9hG4bK{}",
+            local_ip, 5060, cseq
+        ),
     ));
     headers.push((
         "From".to_string(),
         format!("<sip:{}@{}>;tag={}", device_id, sip_domain, cseq),
     ));
-    headers.push(("To".to_string(), format!("<sip:{}@{}>", sip_domain, sip_domain)));
+    headers.push((
+        "To".to_string(),
+        format!("<sip:{}@{}>", sip_domain, sip_domain),
+    ));
     headers.push(("Call-ID".to_string(), format!("{}-{}", device_id, sn)));
     headers.push(("CSeq".to_string(), format!("{} MESSAGE", cseq)));
     headers.push(("Max-Forwards".to_string(), "70".to_string()));
     headers.push(("User-Agent".to_string(), "mibee-rec/0.1".to_string()));
-    headers.push(("Content-Type".to_string(), "Application/MANSCDP+xml".to_string()));
+    headers.push((
+        "Content-Type".to_string(),
+        "Application/MANSCDP+xml".to_string(),
+    ));
     headers.push(("Content-Length".to_string(), notify.body.len().to_string()));
 
     Ok(SipMessage {
@@ -1404,7 +1413,7 @@ mod tests {
             "127.0.0.1".to_string(),
             "3402000000".to_string(),
             1, // heartbeat_interval_secs (first tick fires immediately)
-            3,  // heartbeat_timeout_count
+            3, // heartbeat_timeout_count
             shutdown_rx,
             response_rx,
             re_register,
@@ -1413,13 +1422,10 @@ mod tests {
         // The first interval tick fires immediately, so the first Keepalive
         // MESSAGE is sent right away. Wait for it with a real-time bound.
         let mut buf = [0u8; 2048];
-        let (len, _) = tokio::time::timeout(
-            Duration::from_secs(5),
-            platform.recv_from(&mut buf),
-        )
-        .await
-        .expect("keepalive MESSAGE should arrive within 5s")
-        .unwrap();
+        let (len, _) = tokio::time::timeout(Duration::from_secs(5), platform.recv_from(&mut buf))
+            .await
+            .expect("keepalive MESSAGE should arrive within 5s")
+            .unwrap();
         let data = std::str::from_utf8(&buf[..len]).unwrap();
         assert!(data.contains("<CmdType>Keepalive</CmdType>"));
         assert!(data.contains("MESSAGE sip:3402000000 SIP/2.0"));
