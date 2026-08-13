@@ -6,13 +6,13 @@
 
 use std::net::SocketAddr;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use observability::metrics;
 
 use super::manscdp::{ChannelItem, DeviceItem, DeviceList, Notify, Query, Response};
 use super::sip::{
-    DigestAuthParams, SdpSession, SipMessage, build_bye_request, build_digest_auth,
-    build_register_request, SipMethod, SipStatusCode,
+    build_bye_request, build_digest_auth, build_register_request, DigestAuthParams, SdpSession,
+    SipMessage, SipMethod, SipStatusCode,
 };
 use crate::rtp::H264_PAYLOAD_TYPE;
 
@@ -238,7 +238,10 @@ pub fn build_catalog_response(
         .map_err(|e| anyhow!("Failed to serialize Catalog response: {}", e))?;
 
     let mut headers = Vec::new();
-    headers.push(("Content-Type".to_string(), "Application/MANSCDP+xml".to_string()));
+    headers.push((
+        "Content-Type".to_string(),
+        "Application/MANSCDP+xml".to_string(),
+    ));
     headers.push(("Content-Length".to_string(), body.len().to_string()));
 
     Ok(SipMessage {
@@ -275,7 +278,10 @@ pub fn build_device_info_response(
         .map_err(|e| anyhow!("Failed to serialize DeviceInfo response: {}", e))?;
 
     let mut headers = Vec::new();
-    headers.push(("Content-Type".to_string(), "Application/MANSCDP+xml".to_string()));
+    headers.push((
+        "Content-Type".to_string(),
+        "Application/MANSCDP+xml".to_string(),
+    ));
     headers.push(("Content-Length".to_string(), body.len().to_string()));
 
     Ok(SipMessage {
@@ -294,11 +300,7 @@ pub fn build_device_info_response(
 /// Per GB/T 28181-2022 §7.7, the Keepalive Notify indicates the device is online.
 /// Default status is "OK".
 #[tracing::instrument(skip_all)]
-pub fn build_keepalive_notify(
-    sn: &str,
-    device_id: &str,
-    status: &str,
-) -> Result<SipMessage> {
+pub fn build_keepalive_notify(sn: &str, device_id: &str, status: &str) -> Result<SipMessage> {
     let notify = Notify {
         cmd_type: "Keepalive".to_string(),
         sn: sn.to_string(),
@@ -310,7 +312,10 @@ pub fn build_keepalive_notify(
         .map_err(|e| anyhow!("Failed to serialize Keepalive Notify: {}", e))?;
 
     let mut headers = Vec::new();
-    headers.push(("Content-Type".to_string(), "Application/MANSCDP+xml".to_string()));
+    headers.push((
+        "Content-Type".to_string(),
+        "Application/MANSCDP+xml".to_string(),
+    ));
     headers.push(("Content-Length".to_string(), body.len().to_string()));
 
     Ok(SipMessage {
@@ -340,12 +345,13 @@ pub fn build_keepalive_notify(
 /// * Unknown - Log warning, return 200 OK only
 #[tracing::instrument(skip_all)]
 pub fn dispatch_inbound_message(msg: &SipMessage) -> Result<(SipMessage, Option<SipMessage>)> {
-    let content_type = msg
-        .get_header("Content-Type")
-        .unwrap_or("");
+    let content_type = msg.get_header("Content-Type").unwrap_or("");
 
     if content_type != "Application/MANSCDP+xml" {
-        tracing::warn!("Received MESSAGE with unsupported Content-Type: {}", content_type);
+        tracing::warn!(
+            "Received MESSAGE with unsupported Content-Type: {}",
+            content_type
+        );
         return build_200_ok_response(msg);
     }
 
@@ -355,14 +361,22 @@ pub fn dispatch_inbound_message(msg: &SipMessage) -> Result<(SipMessage, Option<
             "Catalog" => {
                 // Platform queries catalog → return 200 OK + queue Catalog response
                 // Note: caller must provide the actual channel items via build_catalog_response
-                tracing::info!("Received Catalog Query SN={} from {}", query.sn, query.device_id);
+                tracing::info!(
+                    "Received Catalog Query SN={} from {}",
+                    query.sn,
+                    query.device_id
+                );
                 let ok_response = build_200_ok_response(msg)?.0;
                 // Caller must build the actual catalog response with real data
                 // For now, return None to indicate caller needs to build it
                 Ok((ok_response, None))
             }
             "DeviceInfo" => {
-                tracing::info!("Received DeviceInfo Query SN={} from {}", query.sn, query.device_id);
+                tracing::info!(
+                    "Received DeviceInfo Query SN={} from {}",
+                    query.sn,
+                    query.device_id
+                );
                 let ok_response = build_200_ok_response(msg)?.0;
                 // Caller must build the actual device info response
                 Ok((ok_response, None))
@@ -419,7 +433,6 @@ fn build_200_ok_response(request: &SipMessage) -> Result<(SipMessage, Option<Sip
     Ok((response, None))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,10 +488,16 @@ mod tests {
 
         let mut headers = Vec::new();
         headers.push(("From".to_string(), "<sip:platform@domain>".to_string()));
-        headers.push(("To".to_string(), "<sip:31011500991320000001@domain>".to_string()));
+        headers.push((
+            "To".to_string(),
+            "<sip:31011500991320000001@domain>".to_string(),
+        ));
         headers.push(("Call-ID".to_string(), "test-call-id".to_string()));
         headers.push(("CSeq".to_string(), "1 MESSAGE".to_string()));
-        headers.push(("Content-Type".to_string(), "Application/MANSCDP+xml".to_string()));
+        headers.push((
+            "Content-Type".to_string(),
+            "Application/MANSCDP+xml".to_string(),
+        ));
         headers.push(("Content-Length".to_string(), query_xml.len().to_string()));
 
         let inbound_msg = SipMessage {
@@ -512,10 +531,16 @@ mod tests {
 
         let mut headers = Vec::new();
         headers.push(("From".to_string(), "<sip:platform@domain>".to_string()));
-        headers.push(("To".to_string(), "<sip:31011500991320000001@domain>".to_string()));
+        headers.push((
+            "To".to_string(),
+            "<sip:31011500991320000001@domain>".to_string(),
+        ));
         headers.push(("Call-ID".to_string(), "test-call-id".to_string()));
         headers.push(("CSeq".to_string(), "1 MESSAGE".to_string()));
-        headers.push(("Content-Type".to_string(), "Application/MANSCDP+xml".to_string()));
+        headers.push((
+            "Content-Type".to_string(),
+            "Application/MANSCDP+xml".to_string(),
+        ));
         headers.push(("Content-Length".to_string(), query_xml.len().to_string()));
 
         let inbound_msg = SipMessage {

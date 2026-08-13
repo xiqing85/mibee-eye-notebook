@@ -14,10 +14,10 @@
 //! All tests use in-memory UDP loopback — no real network dependency.
 
 use protocols::gb28181::{
-    RtpPusher, SdpMedia, SdpSession, SipDeviceClient, SipMessage, SipMethod, SipStatusCode,
-    build_invite_response, build_register_request, parse_401_challenge, parse_invite,
+    build_invite_response, build_register_request, parse_401_challenge, parse_invite, RtpPusher,
+    SdpMedia, SdpSession, SipDeviceClient, SipMessage, SipMethod, SipStatusCode,
 };
-use protocols::rtp::{H264_PAYLOAD_TYPE, RtpPacket};
+use protocols::rtp::{RtpPacket, H264_PAYLOAD_TYPE};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -833,7 +833,10 @@ y=4275878552\r\n",
         info.media_port, invite_media_port,
         "Media port should match what server sent"
     );
-    assert_eq!(info.ssrc, 4275878552, "SSRC from SDP y= field should be parsed");
+    assert_eq!(
+        info.ssrc, 4275878552,
+        "SSRC from SDP y= field should be parsed"
+    );
     assert_eq!(info.payload_type, 96, "Payload type should be 96");
 
     // ── Phase 8: Build and send 200 OK with SDP ──
@@ -860,7 +863,15 @@ y=4275878552\r\n",
         .and_then(|c| c.split_whitespace().next())
         .and_then(|n| n.parse().ok())
         .unwrap_or(1);
-    let response = build_invite_response(&invite_msg, device_id, &local_sdp_str, 42, invite_cseq, "127.0.0.1", 5060);
+    let response = build_invite_response(
+        &invite_msg,
+        device_id,
+        &local_sdp_str,
+        42,
+        invite_cseq,
+        "127.0.0.1",
+        5060,
+    );
     let response_data = response.serialize();
     client_socket
         .send_to(response_data.as_bytes(), sip_server_addr)
