@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use anyhow::{Result, anyhow};
 use observability::metrics;
 
-use super::manscdp::{ChannelItem, DeviceItem, DeviceList, Notify, Query, Response};
+use super::manscdp::{ChannelItem, DeviceItem, Notify, Query};
 use super::sip::{
     DigestAuthParams, SdpSession, SipMessage, SipMethod, SipStatusCode, build_bye_request,
     build_digest_auth, build_register_request,
@@ -235,19 +235,20 @@ pub fn build_catalog_response(
     items: &[ChannelItem],
     request: &SipMessage,
 ) -> Result<SipMessage> {
-    let response = Response {
-        cmd_type: "Catalog".to_string(),
-        sn: sn.to_string(),
-        device_id: device_id.to_string(),
-        sum_num: Some(items.len() as u32),
-        device_list: Some(DeviceList {
-            item: items.to_vec(),
-        }),
-        device: None,
-    };
-
-    let body = serde_xml_rs::to_string(&response)
-        .map_err(|e| anyhow!("Failed to serialize Catalog response: {}", e))?;
+    let body = format!(
+        "<Response CmdType=\"Catalog\" SN=\"{}\"><DeviceID>{}</DeviceID><SumNum>{}</SumNum><DeviceList Num=\"{}\">{}</DeviceList></Response>",
+        sn,
+        device_id,
+        items.len(),
+        items.len(),
+        items
+            .iter()
+            .map(|item| format!(
+                "<Item><DeviceID>{}</DeviceID><Name>{}</Name><Manufacturer>{}</Manufacturer><Model>{}</Model><Status>{}</Status></Item>",
+                item.device_id, item.name, item.manufacturer, item.model, item.status
+            ))
+            .collect::<String>()
+    );
 
     let mut headers = Vec::new();
     // SIP routing headers — copy from the inbound query so the response is
@@ -302,17 +303,10 @@ pub fn build_device_info_response(
     info: &DeviceItem,
     request: &SipMessage,
 ) -> Result<SipMessage> {
-    let response = Response {
-        cmd_type: "DeviceInfo".to_string(),
-        sn: sn.to_string(),
-        device_id: device_id.to_string(),
-        sum_num: None,
-        device_list: None,
-        device: Some(info.clone()),
-    };
-
-    let body = serde_xml_rs::to_string(&response)
-        .map_err(|e| anyhow!("Failed to serialize DeviceInfo response: {}", e))?;
+    let body = format!(
+        "<Response CmdType=\"DeviceInfo\" SN=\"{}\"><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>{}</DeviceName><Manufacturer>{}</Manufacturer><Model>{}</Model><Firmware>{}</Firmware></Response>",
+        sn, device_id, info.name, info.manufacturer, info.model, info.firmware
+    );
 
     let mut headers = Vec::new();
     // SIP routing headers — copy from the inbound query so the response is
@@ -370,15 +364,10 @@ pub fn build_keepalive_notify(
     status: &str,
     cseq: u32,
 ) -> Result<SipMessage> {
-    let notify = Notify {
-        cmd_type: "Keepalive".to_string(),
-        sn: sn.to_string(),
-        device_id: device_id.to_string(),
-        status: Some(status.to_string()),
-    };
-
-    let body = serde_xml_rs::to_string(&notify)
-        .map_err(|e| anyhow!("Failed to serialize Keepalive Notify: {}", e))?;
+    let body = format!(
+        "<Notify CmdType=\"Keepalive\" SN=\"{}\"><DeviceID>{}</DeviceID><Status>{}</Status></Notify>",
+        sn, device_id, status
+    );
 
     let mut headers = Vec::new();
     // SIP routing headers (REQUIRED by all SIP proxies/servers)
@@ -568,8 +557,7 @@ mod tests {
         assert!(result.is_ok());
 
         let msg = result.unwrap();
-        assert!(msg.body.contains("<Notify>"));
-        assert!(msg.body.contains("<CmdType>Keepalive</CmdType>"));
+        assert!(msg.body.contains("<Notify CmdType=\"Keepalive\" SN=\"456\">"));
         assert!(msg.body.contains("<Status>OK</Status>"));
         // SIP routing headers required by the platform (NVR drops MESSAGE without Via)
         assert!(msg.get_header("Via").is_some());
