@@ -293,10 +293,13 @@ pub struct SdpSession {
     pub connection_address: Option<String>,
     /// Bandwidth (b= line), optional
     pub bandwidth: Option<String>,
+    /// SSRC from y= line (GB28181-specific, decimal)
+    pub ssrc: Option<u32>,
     /// Media descriptions
     pub media: Vec<SdpMedia>,
 }
 
+/// SDP media description.
 /// SDP media description.
 #[derive(Debug, Clone)]
 pub struct SdpMedia {
@@ -330,6 +333,7 @@ impl SdpSession {
         let mut session_name = String::new();
         let mut connection_address: Option<String> = None;
         let mut bandwidth: Option<String> = None;
+        let mut ssrc: Option<u32> = None;
         let mut media: Vec<SdpMedia> = Vec::new();
 
         for line in data.lines() {
@@ -343,6 +347,12 @@ impl SdpSession {
                 b's' => session_name = value.to_string(),
                 b'c' => connection_address = Some(value.to_string()),
                 b'b' => bandwidth = Some(value.to_string()),
+                b'y' => {
+                    // GB28181-specific session-level SSRC field (decimal, 10-digit u32)
+                    if let Ok(parsed) = value.trim().parse::<u32>() {
+                        ssrc = Some(parsed);
+                    }
+                }
                 b'm' => {
                     let parts: Vec<&str> = value.splitn(4, ' ').collect();
                     if parts.len() >= 3 {
@@ -400,10 +410,10 @@ impl SdpSession {
             session_name,
             connection_address,
             bandwidth,
+            ssrc,
             media,
         })
     }
-
     /// Serialize to SDP string.
     #[tracing::instrument(skip_all)]
     pub fn serialize(&self) -> String {
@@ -547,6 +557,8 @@ pub fn build_bye_request(
 /// * `local_sdp` - SDP body describing the media being sent (video stream)
 /// * `local_tag` - Tag to add to To header for dialog identification
 /// * `cseq` - CSeq number from INVITE
+/// * `device_ip` - This device's IP address for Contact header
+/// * `local_sip_port` - Local SIP port for Contact header
 #[tracing::instrument(skip_all)]
 pub fn build_invite_response(
     invite: &SipMessage,
@@ -554,6 +566,8 @@ pub fn build_invite_response(
     local_sdp: &str,
     local_tag: u32,
     cseq: u32,
+    device_ip: &str,
+    local_sip_port: u16,
 ) -> SipMessage {
     let mut headers = Vec::new();
 
@@ -586,9 +600,10 @@ pub fn build_invite_response(
     headers.push(("CSeq".to_string(), format!("{} INVITE", cseq)));
     headers.push((
         "Contact".to_string(),
-        format!("<sip:{}@{}:5060>", local_id, local_id),
+        format!("<sip:{}@{}:{}>", local_id, device_ip, local_sip_port),
     ));
     headers.push(("Content-Type".to_string(), "application/sdp".to_string()));
+    headers.push(("Content-Length".to_string(), local_sdp.len().to_string()));
     headers.push(("Content-Length".to_string(), local_sdp.len().to_string()));
 
     // Extract URI from INVITE Request-Line

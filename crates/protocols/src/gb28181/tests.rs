@@ -146,6 +146,7 @@ fn test_sdp_roundtrip() {
         session_name: "Play".to_string(),
         connection_address: Some("IN IP4 192.168.1.10".to_string()),
         bandwidth: None,
+        ssrc: None,
         media: vec![SdpMedia {
             media_type: "video".to_string(),
             port: 10000,
@@ -157,7 +158,6 @@ fn test_sdp_roundtrip() {
             ],
         }],
     };
-
     let serialized = original.serialize();
     let parsed = SdpSession::parse(&serialized).unwrap();
     assert_eq!(parsed.origin, original.origin);
@@ -422,17 +422,17 @@ fn test_parse_invite_with_ssrc() {
                   s=Play\r\n\
                   c=IN IP4 192.168.1.200\r\n\
                   t=0 0\r\n\
+                  y=12345678\r\n\
                   m=video 20000 RTP/AVP 96\r\n\
                   a=recvonly\r\n\
-                  a=rtpmap:96 PS/90000\r\n\
-                  a=ssrc:12345678\r\n";
+                  a=rtpmap:96 PS/90000\r\n";
 
     let msg = SipMessage::parse(invite).unwrap();
     let info = parse_invite(&msg).unwrap();
     assert_eq!(info.call_id, "invite-call-789");
     assert_eq!(info.media_address, "192.168.1.200");
     assert_eq!(info.media_port, 20000);
-    assert_eq!(info.ssrc, 0x12345678);
+    assert_eq!(info.ssrc, 12345678, "SSRC should be parsed from y= field (decimal)");
     assert_eq!(info.payload_type, 96);
 }
 
@@ -591,4 +591,91 @@ fn test_parse_invite_missing_call_id() {
                   t=0 0\r\n";
     let msg = SipMessage::parse(invite).unwrap();
     assert!(parse_invite(&msg).is_err());
+}
+
+// ─── SDP y= SSRC Field Tests ───────────────────────────────────────────
+
+#[test]
+fn test_sdp_parses_y_ssrc_decimal() {
+    let sdp = "v=0\r\n\
+                o=- 0 0 IN IP4 192.168.1.1\r\n\
+                s=Play\r\n\
+                c=IN IP4 192.168.1.100\r\n\
+                y=0100000001\r\n\
+                t=0 0\r\n\
+                m=video 0 RTP/AVP 96\r\n\
+                a=sendonly\r\n\
+                a=rtpmap:96 PS/90000\r\n";
+
+    let parsed = SdpSession::parse(sdp).expect("Failed to parse SDP");
+    assert_eq!(parsed.ssrc, Some(100000001), "SSRC should be parsed from y= field as decimal");
+}
+
+#[test]
+fn test_parse_invite_uses_y_field_not_a_ssrc() {
+    // INVITE with y= field but no a=ssrc:
+    let invite_raw = "INVITE sip:34020000201180000001@3402000000 SIP/2.0\r\n\
+                         Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK1234;rport\r\n\
+                         From: <sip:34020000002000000001@3402000000>;tag=abc123\r\n\
+                         To: <sip:34020000201180000001@3402000000>\r\n\
+                         Call-ID: test-y-field-001\r\n\
+                         CSeq: 1 INVITE\r\n\
+                         Contact: <sip:192.168.1.200:5060>\r\n\
+                         Content-Type: application/sdp\r\n\
+                         Content-Length: 150\r\n\
+                         \r\n\
+                         v=0\r\n\
+                         o=- 0 0 IN IP4 192.168.1.200\r\n\
+                         s=Play\r\n\
+                         c=IN IP4 192.168.1.200\r\n\
+                         y=0100000001\r\n\
+                         t=0 0\r\n\
+                         m=video 20000 RTP/AVP 96\r\n\
+                         a=sendonly\r\n\
+                         a=rtpmap:96 PS/90000\r\n";
+
+    let invite_msg = SipMessage::parse(invite_raw).expect("Failed to parse INVITE");
+    let info = parse_invite(&invite_msg).expect("Failed to parse INVITE");
+
+    assert_eq!(info.call_id, "test-y-field-001");
+    assert_eq!(info.media_address, "192.168.1.200");
+    assert_eq!(info.media_port, 20000);
+    assert_eq!(info.ssrc, 100000001, "SSRC should come from y= field (decimal)");
+    assert_eq!(info.payload_type, 96);
+}
+
+// ─── Digest Auth MD5 Default Tests ─────────────────────────────────────
+
+#[test]
+fn test_digest_defaults_to_md5_when_absent() {
+    let challenge = parse_digest_auth(
+        "Digest realm=\"TestRealm\", nonce=\"abcdef123456\"",
+    ).expect("Failed to parse challenge");
+
+    assert_eq!(challenge.realm, "TestRealm");
+    assert_eq!(challenge.nonce, "abcdef123456");
+    assert_eq!(challenge.algorithm, None, "Algorithm should be None when not specified");
+
+    // When building auth header with no algorithm, should default to MD5
+    let username = "testuser";
+    let password = "testpass";
+    let algorithm = challenge.algorithm.as_deref().unwrap_or("MD5");
+    assert_eq!(algorithm, "MD5", "Should default to MD5 per RFC 2617 §3.2.1");
+
+    // Build auth header should work with MD5 algorithm
+    let uri = "sip:34020000201180000001@3402000000";
+    let auth_header = build_digest_auth(
+        username,
+        &challenge.realm,
+        password,
+        &challenge.nonce,
+        uri,
+        "REGISTER",
+        algorithm,
+    );
+
+    assert!(auth_header.contains("algorithm=MD5"), "Auth header should specify MD5 algorithm");
+    assert!(auth_header.contains(&format!("username=\"{}\"", username)));
+    assert!(auth_header.contains(&format!("realm=\"{}\"", challenge.realm)));
+    assert!(auth_header.contains(&format!("nonce=\"{}\"", challenge.nonce)));
 }
