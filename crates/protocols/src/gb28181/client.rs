@@ -103,6 +103,7 @@ impl SipDeviceClient {
             &uri,
             "REGISTER",
             auth.algorithm.as_deref().unwrap_or("MD5"),
+            auth.qop.as_deref(),
         );
         build_register_request(
             &self.device_id,

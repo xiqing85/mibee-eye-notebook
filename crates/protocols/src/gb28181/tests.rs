@@ -290,6 +290,7 @@ fn test_build_digest_auth() {
         "sip:3402000000@3402000000",
         "REGISTER",
         "SHA-256",
+        None,
     );
     assert!(auth.contains("username=\"34020000002000000001\""));
     assert!(auth.contains("realm=\"3402000000\""));
@@ -687,6 +688,7 @@ fn test_digest_defaults_to_md5_when_absent() {
         uri,
         "REGISTER",
         algorithm,
+        None,
     );
 
     assert!(
@@ -696,4 +698,70 @@ fn test_digest_defaults_to_md5_when_absent() {
     assert!(auth_header.contains(&format!("username=\"{}\"", username)));
     assert!(auth_header.contains(&format!("realm=\"{}\"", challenge.realm)));
     assert!(auth_header.contains(&format!("nonce=\"{}\"", challenge.nonce)));
+}
+
+// ─── Digest Auth qop / algorithm Tests ─────────────────────────────────
+
+#[test]
+fn test_build_digest_auth_md5_rfc2617_vector() {
+    // RFC 2617 §3.5 example (no qop):
+    //   response = MD5(MD5(user:realm:pass):nonce:MD5(method:uri))
+    let auth = build_digest_auth(
+        "Mufasa",
+        "testrealm@host.com",
+        "Circle Of Life",
+        "dcd98b7102dd2f0e8b11d0f600bfb0c093",
+        "/dir/index.html",
+        "GET",
+        "MD5",
+        None,
+    );
+    assert!(auth.contains("response=\"670fd8c2df070c60b045671b8b24ff02\""));
+    assert!(auth.contains("algorithm=MD5"));
+}
+
+#[test]
+fn test_build_digest_auth_qop_auth() {
+    let auth = build_digest_auth(
+        "Mufasa",
+        "testrealm@host.com",
+        "Circle Of Life",
+        "dcd98b7102dd2f0e8b11d0f600bfb0c093",
+        "/dir/index.html",
+        "GET",
+        "MD5",
+        Some("auth"),
+    );
+    assert!(auth.contains("qop=auth"));
+    assert!(auth.contains("nc=00000001"));
+    assert!(auth.contains("cnonce=\""));
+    let response = auth
+        .split("response=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("response field present");
+    assert_eq!(response.len(), 32, "MD5 response must be 32 hex chars");
+    assert!(response.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[test]
+fn test_build_digest_auth_sha256_qop() {
+    let auth = build_digest_auth(
+        "user",
+        "realm",
+        "pass",
+        "nonce",
+        "sip:3402000000@3402000000",
+        "REGISTER",
+        "SHA-256",
+        Some("auth"),
+    );
+    assert!(auth.contains("qop=auth"));
+    assert!(auth.contains("nc=00000001"));
+    let response = auth
+        .split("response=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("response field present");
+    assert_eq!(response.len(), 64, "SHA-256 response must be 64 hex chars");
 }
