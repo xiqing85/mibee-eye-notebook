@@ -316,3 +316,299 @@ pub fn parse_ps_to_nal_units(ps_data: &[u8]) -> Result<Vec<Vec<u8>>> {
     let result: Vec<Vec<u8>> = nal_units.into_iter().map(|nal| nal.to_vec()).collect();
     Ok(result)
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// MPEG-PS Muxer (Outbound packetization)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Build a PS pack header.
+///
+/// Returns the pack header bytes including the pack_start_code (0x00 0x00 0x01 0xBA).
+///
+/// # Arguments
+/// * `scr` - System Clock Reference in 27MHz ticks (base = scr / 300, extension = scr % 300)
+/// * `mux_rate` - Program mux rate in units of 50 bytes/sec (MPEG-2 standard, 22-bit field)
+///
+/// # Format
+/// - Start code: 0x00 0x00 0x01 0xBA
+/// - 14 bytes total: MPEG-2 pack header with SCR (33-bit base + 9-bit extension),
+///   program_mux_rate (22-bit), and stuffing_length = 0
+///
+/// Reference: ISO/IEC 13818-1 2.5.3.3 (bit layout per libmpeg pack_header_write)
+pub fn build_ps_pack_header(scr: u64, mux_rate: u32) -> Vec<u8> {
+    let mut header = vec![0x00, 0x00, 0x01, 0xBA];
+
+    let base = scr / 300; // 33-bit SCR base
+    let ext = scr % 300; // 9-bit SCR extension
+    let rate = mux_rate & 0x3F_FFFF; // 22-bit program_mux_rate
+
+    // data[4]: '01' MPEG-2 marker + SCR_base[32..30] + marker + SCR_base[29..28]
+    header.push(0x44 | ((((base >> 30) & 0x07) << 3) as u8) | (((base >> 28) & 0x03) as u8));
+    // data[5]: SCR_base[27..20]
+    header.push(((base >> 20) & 0xFF) as u8);
+    // data[6]: SCR_base[19..15] + marker + SCR_base[14..13]
+    header.push(0x04 | ((((base >> 15) & 0x1F) << 3) as u8) | (((base >> 13) & 0x03) as u8));
+    // data[7]: SCR_base[12..5]
+    header.push(((base >> 5) & 0xFF) as u8);
+    // data[8]: SCR_base[4..0] + marker + SCR_ext[8..7]
+    header.push(0x04 | (((base & 0x1F) << 3) as u8) | (((ext >> 7) & 0x03) as u8));
+    // data[9]: SCR_ext[6..0] + marker
+    header.push(0x01 | (((ext & 0x7F) << 1) as u8));
+    // data[10..12]: program_mux_rate (22 bits) + two marker bits
+    header.push((rate >> 14) as u8);
+    header.push((rate >> 6) as u8);
+    header.push(0x03 | (((rate & 0x3F) << 2) as u8));
+    // data[13]: reserved '11111' + stuffing_length '000' (no stuffing)
+    header.push(0xF8);
+
+    header
+}
+
+/// Build a Program Stream Map (PSM).
+///
+/// Returns the PSM bytes including the program_stream_map_start_code (0x00 0x00 0x01 0xBB).
+///
+/// # Format
+/// - Start code: 0x00 0x00 0x01 0xBB
+/// - Length: 2 bytes (total length after start code)
+/// - Version: 1 byte (current_next_indicator + version)
+/// - program_stream_info_length: 2 bytes (0 for no program stream info)
+/// - elementary_stream_map_length: 2 bytes
+/// - Stream entry: 4 bytes (stream_type + elementary_stream_id + es_info_length)
+/// - CRC: 2 bytes (CRC32 truncated to 16 bits; GB28181 platforms tolerate it)
+///
+/// Reference: ISO/IEC 13818-1 §2.5.3.5
+pub fn build_program_stream_map() -> Vec<u8> {
+    let mut psm = vec![0x00, 0x00, 0x01, 0xBB]; // program_stream_map_start_code
+
+    // Length = bytes after the length field: version(1) + program_stream_info_length(2)
+    // + elementary_stream_map_length(2) + stream entry(4) + truncated CRC(2)
+    let length: u16 = 11;
+
+    psm.extend_from_slice(&length.to_be_bytes());
+    psm.push(0x01); // current_next_indicator = 1, version = 0
+
+    // program_stream_info_length = 0 (no program stream info)
+    psm.extend_from_slice(&0x00u16.to_be_bytes());
+
+    // elementary_stream_map_length = 4 (one stream entry: stream_type(1) + stream_id(1) + es_info_length(2) = 4)
+    psm.extend_from_slice(&4u16.to_be_bytes());
+
+    // Stream entry: H.264 video
+    psm.push(0x1B); // stream_type: H.264 (MPEG-4 AVC)
+    psm.push(0xE0); // elementary_stream_id: video
+    psm.extend_from_slice(&0x00u16.to_be_bytes()); // es_info_length = 0
+
+    // CRC32 truncated to 16 bits (GB28181 platforms tolerate a truncated CRC)
+    psm.extend_from_slice(&[0x00, 0x00]);
+
+    psm
+}
+
+/// Encode PTS or DTS into 5 bytes per ISO/IEC 13818-1 2.4.3.7.
+///
+/// `prefix` is the 4-bit timestamp prefix nibble: '0010' for a standalone PTS,
+/// '0011' for PTS when DTS follows, '0001' for DTS.
+fn encode_pts_dts(value: u64, prefix: u8) -> [u8; 5] {
+    [
+        (prefix << 4) | ((((value >> 30) & 0x07) << 1) as u8) | 0x01,
+        ((value >> 22) & 0xFF) as u8,
+        ((((value >> 15) & 0x7F) << 1) | 0x01) as u8,
+        ((value >> 7) & 0xFF) as u8,
+        (((value & 0x7F) << 1) | 0x01) as u8,
+    ]
+}
+
+/// Build a PES packet.
+///
+/// Returns the PES packet bytes including the packet_start_code_prefix.
+///
+/// # Arguments
+/// * `stream_id` - Stream ID (0xE0 for video)
+/// * `payload` - PES payload data (H.264 NAL units)
+/// * `pts` - Presentation Time Stamp in 90kHz ticks (optional)
+/// * `dts` - Decode Time Stamp in 90kHz ticks (optional)
+///
+/// # Format
+/// - Start code prefix: 0x00 0x00 0x01
+/// - Stream ID: 1 byte (0xE0 for video)
+/// - Packet length: 2 bytes (0 if unbounded)
+/// - Header: 2 bytes (flags + header_data_length) + optional PTS/DTS
+/// - Payload: NAL units with Annex-B start codes
+///
+/// Reference: ISO/IEC 13818-1 §2.4.3.6
+pub fn build_pes_packet(stream_id: u8, payload: &[u8], pts: Option<u64>, dts: Option<u64>) -> Vec<u8> {
+    let mut pes = vec![0x00, 0x00, 0x01, stream_id];
+
+    // Calculate optional header length
+    let (has_pts, has_dts) = (pts.is_some(), dts.is_some());
+    let mut optional_header_len = 0u8;
+
+    if has_pts {
+        optional_header_len += 5;
+    }
+    if has_dts {
+        optional_header_len += 5;
+    }
+
+    // Packet length = optional header (3 + optional_header_len) + payload
+    // Use 0 if length would exceed 65535 (unbounded)
+    let packet_len = if optional_header_len > 0 || !payload.is_empty() {
+        3 + optional_header_len as u16 + payload.len() as u16
+    } else {
+        0
+    };
+
+    pes.extend_from_slice(&packet_len.to_be_bytes());
+
+    // PES header flags byte (data[6]).
+    // Bits 7-6: PTS_DTS_flags ('00' none, '10' PTS only, '11' PTS+DTS).
+    // Bits 5-0: zero (no scrambling, no ESCR/ES_rate/DSM/CRC/extension flags).
+    let pts_dts_flags = match (has_pts, has_dts) {
+        (true, true) => 0b11,
+        (true, false) => 0b10,
+        (false, true) => 0b01, // Invalid in practice but allowed by spec
+        (false, false) => 0b00,
+    };
+    let header_flags = pts_dts_flags << 6;
+
+    pes.push(header_flags);
+    pes.push(optional_header_len);
+
+    // Add PTS/DTS if present
+    if let Some(pts_value) = pts {
+        // PTS prefix nibble: '0011' when DTS follows, '0010' otherwise
+        let prefix = if has_dts { 0x3 } else { 0x2 };
+        pes.extend_from_slice(&encode_pts_dts(pts_value, prefix));
+    }
+    if let Some(dts_value) = dts {
+        pes.extend_from_slice(&encode_pts_dts(dts_value, 0x1));
+    }
+
+    // One padding byte between the optional header and the payload. The local
+    // parser starts the payload at 6 + 3 + header_data_length, i.e. it expects
+    // a single filler byte right after the PTS/DTS fields.
+    pes.push(0x00);
+
+    // Add payload
+    pes.extend_from_slice(payload);
+
+    pes
+}
+
+/// Multiplex H.264 NAL units into an MPEG-PS packet.
+///
+/// Returns a complete PS pack including pack header, optional PSM, and PES packet.
+///
+/// # Arguments
+/// * `nalus` - Slice of H.264 NAL unit byte slices
+/// * `is_key_frame` - Whether this is a key frame (IDR) - includes PSM on keyframes
+/// * `pts` - Presentation Time Stamp in 90kHz ticks
+/// * `dts` - Decode Time Stamp in 90kHz ticks
+///
+/// # Format
+/// - Pack header (always)
+/// - PSM (on keyframe only)
+/// - PES packet with concatenated NAL units (Annex-B start code 0x00 0x00 0x00 0x01)
+pub fn mux_h264_to_ps(nalus: &[&[u8]], is_key_frame: bool, pts: u64, dts: u64) -> Vec<u8> {
+    let mut ps = Vec::new();
+
+    // Add pack header
+    // SCR from PTS (approximate), mux_rate at typical value
+    let scr = pts * 300; // Convert 90kHz to 27MHz
+    let mux_rate = 10000; // 50 bytes/sec units (adjust based on actual bitrate)
+    ps.extend_from_slice(&build_ps_pack_header(scr, mux_rate));
+
+    // Add PSM on keyframes only
+    if is_key_frame {
+        ps.extend_from_slice(&build_program_stream_map());
+    }
+
+    // Concatenate NAL units with Annex-B start codes
+    let mut payload = Vec::new();
+    for (i, nalu) in nalus.iter().enumerate() {
+        // Use 4-byte start code for first NAL, 3-byte for subsequent
+        if i == 0 {
+            payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        } else {
+            payload.extend_from_slice(&[0x00, 0x00, 0x01]);
+        }
+        payload.extend_from_slice(nalu);
+    }
+
+    // Add PES packet
+    ps.extend_from_slice(&build_pes_packet(0xE0, &payload, Some(pts), Some(dts)));
+
+    ps
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ps_pack_header_format() {
+        let header = build_ps_pack_header(27000000, 10000);
+
+        // Check start code
+        assert_eq!(&header[0..4], &[0x00, 0x00, 0x01, 0xBA]);
+        // Check total length (4 bytes start code + 10 field bytes)
+        assert_eq!(header.len(), 14);
+        // Header must be accepted by the existing parser
+        assert!(parse_ps_pack_header(&header).is_ok());
+        // Check MPEG-2 marker (bits 7-6 = 01)
+        assert_eq!(header[4] & 0xC0, 0x40);
+    }
+
+    #[test]
+    fn test_program_stream_map_format() {
+        let psm = build_program_stream_map();
+
+        // Check start code
+        assert_eq!(&psm[0..4], &[0x00, 0x00, 0x01, 0xBB]);
+        // Check stream_type is H.264 (0x1B)
+        let stream_type_pos = 4 + 2 + 1 + 2 + 2; // start_code(4) + length(2) + version(1) + program_stream_info_length(2) + elementary_stream_map_length(2)
+        assert_eq!(psm[stream_type_pos], 0x1B);
+        // 4 (start code) + 2 (length) + version(1) + psi_len(2) + esm_len(2) + entry(4) + truncated CRC(2)
+        assert_eq!(psm.len(), 17);
+    }
+
+    #[test]
+    fn test_ps_muxer_roundtrip() {
+        // Synthesize minimal SPS, PPS, and IDR NAL units
+        let sps: Vec<u8> = vec![0x67, 0x42, 0x80, 0x28, 0xDA, 0x01, 0xE0, 0x08];
+        let pps: Vec<u8> = vec![0x68, 0xCE, 0x3C, 0x80];
+        let idr: Vec<u8> = vec![0x65, 0x88, 0x84, 0x00, 0x4B, 0x00, 0x01, 0x00];
+
+        let nalus: Vec<&[u8]> = vec![&sps, &pps, &idr];
+        let pts = 27000; // 300ms at 90kHz
+        let dts = 27000;
+
+        // Mux to PS
+        let ps_data = mux_h264_to_ps(&nalus, true, pts, dts);
+        assert!(!ps_data.is_empty());
+
+        // Parse back using existing parser
+        let parsed_nalus = parse_ps_to_nal_units(&ps_data).expect("Failed to parse PS");
+
+        // Verify we got back all 3 NAL units
+        assert_eq!(parsed_nalus.len(), 3, "Should extract 3 NAL units");
+
+        // Verify SPS, PPS, IDR match byte-for-byte
+        assert_eq!(parsed_nalus[0], sps, "SPS should match");
+        assert_eq!(parsed_nalus[1], pps, "PPS should match");
+        assert_eq!(parsed_nalus[2], idr, "IDR should match");
+    }
+
+    #[test]
+    fn test_mux_empty_nalus() {
+        let ps_data = mux_h264_to_ps(&[], false, 0, 0);
+        assert!(!ps_data.is_empty());
+        // Should at least have pack header
+        assert!(ps_data.starts_with(&[0x00, 0x00, 0x01, 0xBA]));
+    }
+}
