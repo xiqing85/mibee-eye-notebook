@@ -3,7 +3,7 @@
 //! Extracts H.264 NAL units from MPEG-2 Program Stream encapsulation
 //! used by GB/T 28181 for RTP media transport.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 /// MPEG-2 Program Stream pack header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,7 +437,12 @@ fn encode_pts_dts(value: u64, prefix: u8) -> [u8; 5] {
 /// - Payload: NAL units with Annex-B start codes
 ///
 /// Reference: ISO/IEC 13818-1 §2.4.3.6
-pub fn build_pes_packet(stream_id: u8, payload: &[u8], pts: Option<u64>, dts: Option<u64>) -> Vec<u8> {
+pub fn build_pes_packet(
+    stream_id: u8,
+    payload: &[u8],
+    pts: Option<u64>,
+    dts: Option<u64>,
+) -> Vec<u8> {
     let mut pes = vec![0x00, 0x00, 0x01, stream_id];
 
     // Calculate optional header length

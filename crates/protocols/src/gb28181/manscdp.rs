@@ -168,9 +168,7 @@ mod tests {
             sn: "123".to_string(),
             device_id: "31011500991320000001".to_string(),
             sum_num: Some(1),
-            device_list: Some(DeviceList {
-                item: vec![],
-            }),
+            device_list: Some(DeviceList { item: vec![] }),
             device: None,
         };
         assert_eq!(response.cmd_type, "Catalog");
