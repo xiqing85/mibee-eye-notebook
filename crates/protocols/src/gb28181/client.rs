@@ -102,7 +102,7 @@ impl SipDeviceClient {
             &auth.nonce,
             &uri,
             "REGISTER",
-            auth.algorithm.as_deref().unwrap_or("SHA-256"),
+            auth.algorithm.as_deref().unwrap_or("MD5"),
         );
         build_register_request(
             &self.device_id,
@@ -202,17 +202,8 @@ pub fn parse_invite(msg: &SipMessage) -> Result<InviteInfo> {
         .copied()
         .unwrap_or(H264_PAYLOAD_TYPE);
 
-    // SSRC may be specified as an SDP attribute
-    let ssrc = media
-        .get_attr("ssrc")
-        .and_then(|s| {
-            // Format: "ssrc:12345678" or just the hex value
-            let val = s.split_whitespace().next().unwrap_or(s);
-            let val = val.strip_prefix("ssrc:").unwrap_or(val);
-            u32::from_str_radix(val, 16).ok()
-        })
-        .unwrap_or(0);
-
+    // SSRC from GB28181 y= field (session-level, decimal)
+    let ssrc = sdp.ssrc.unwrap_or(0);
     Ok(InviteInfo {
         call_id,
         media_address: ip,

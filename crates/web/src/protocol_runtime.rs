@@ -620,7 +620,7 @@ async fn run_gb28181_loop(
                                                     let response =
                                                         protocols::gb28181::build_invite_response(
                                                             &msg, &device_id, &local_sdp,
-                                                            local_tag, cseq,
+                                                            local_tag, cseq, &local_ip, 5060,
                                                         );
                                                     let serialized = response.serialize();
                                                     if let Err(e) = sip_socket
