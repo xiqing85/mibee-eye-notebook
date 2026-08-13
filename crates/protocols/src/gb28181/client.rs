@@ -214,6 +214,16 @@ pub fn parse_invite(msg: &SipMessage) -> Result<InviteInfo> {
     })
 }
 
+/// Extract the request-URI for a response MESSAGE from the inbound query's
+/// From header (the platform that sent the query).
+fn response_target_uri(request: &SipMessage, device_id: &str) -> String {
+    request
+        .get_header("From")
+        .and_then(|from| from.split(';').next())
+        .map(|uri| uri.trim().trim_matches('<').trim_matches('>').to_string())
+        .unwrap_or_else(|| format!("sip:{}", device_id))
+}
+
 /// Build a SIP MESSAGE with Catalog response.
 ///
 /// Per GB/T 28181-2022 §7.6, the Catalog response contains a list of
@@ -223,6 +233,7 @@ pub fn build_catalog_response(
     sn: &str,
     device_id: &str,
     items: &[ChannelItem],
+    request: &SipMessage,
 ) -> Result<SipMessage> {
     let response = Response {
         cmd_type: "Catalog".to_string(),
@@ -239,17 +250,41 @@ pub fn build_catalog_response(
         .map_err(|e| anyhow!("Failed to serialize Catalog response: {}", e))?;
 
     let mut headers = Vec::new();
+    // SIP routing headers — copy from the inbound query so the response is
+    // routable back to the platform (Via is required by SIP servers).
+    if let Some(via) = request.get_header("Via") {
+        headers.push(("Via".to_string(), via.to_string()));
+    }
+    if let Some(from) = request.get_header("From") {
+        headers.push(("From".to_string(), from.to_string()));
+    }
+    if let Some(to) = request.get_header("To") {
+        if to.contains("tag=") {
+            headers.push(("To".to_string(), to.to_string()));
+        } else {
+            headers.push(("To".to_string(), format!("{};tag={}", to, sn)));
+        }
+    }
+    if let Some(call_id) = request.get_header("Call-ID") {
+        headers.push(("Call-ID".to_string(), call_id.to_string()));
+    }
+    if let Some(cseq) = request.get_header("CSeq") {
+        headers.push(("CSeq".to_string(), cseq.to_string()));
+    }
+    headers.push(("Max-Forwards".to_string(), "70".to_string()));
+    // Content headers
     headers.push((
         "Content-Type".to_string(),
         "Application/MANSCDP+xml".to_string(),
     ));
     headers.push(("Content-Length".to_string(), body.len().to_string()));
 
+    let target_uri = response_target_uri(request, device_id);
     Ok(SipMessage {
-        start_line: "MESSAGE sip:platform SIP/2.0".to_string(),
+        start_line: format!("MESSAGE {} SIP/2.0", target_uri),
         method: Some(SipMethod::Message),
         status_code: None,
-        uri: Some(format!("sip:{}", device_id)),
+        uri: Some(target_uri),
         version: "SIP/2.0".to_string(),
         headers,
         body,
@@ -265,6 +300,7 @@ pub fn build_device_info_response(
     sn: &str,
     device_id: &str,
     info: &DeviceItem,
+    request: &SipMessage,
 ) -> Result<SipMessage> {
     let response = Response {
         cmd_type: "DeviceInfo".to_string(),
@@ -279,17 +315,41 @@ pub fn build_device_info_response(
         .map_err(|e| anyhow!("Failed to serialize DeviceInfo response: {}", e))?;
 
     let mut headers = Vec::new();
+    // SIP routing headers — copy from the inbound query so the response is
+    // routable back to the platform (Via is required by SIP servers).
+    if let Some(via) = request.get_header("Via") {
+        headers.push(("Via".to_string(), via.to_string()));
+    }
+    if let Some(from) = request.get_header("From") {
+        headers.push(("From".to_string(), from.to_string()));
+    }
+    if let Some(to) = request.get_header("To") {
+        if to.contains("tag=") {
+            headers.push(("To".to_string(), to.to_string()));
+        } else {
+            headers.push(("To".to_string(), format!("{};tag={}", to, sn)));
+        }
+    }
+    if let Some(call_id) = request.get_header("Call-ID") {
+        headers.push(("Call-ID".to_string(), call_id.to_string()));
+    }
+    if let Some(cseq) = request.get_header("CSeq") {
+        headers.push(("CSeq".to_string(), cseq.to_string()));
+    }
+    headers.push(("Max-Forwards".to_string(), "70".to_string()));
+    // Content headers
     headers.push((
         "Content-Type".to_string(),
         "Application/MANSCDP+xml".to_string(),
     ));
     headers.push(("Content-Length".to_string(), body.len().to_string()));
 
+    let target_uri = response_target_uri(request, device_id);
     Ok(SipMessage {
-        start_line: "MESSAGE sip:platform SIP/2.0".to_string(),
+        start_line: format!("MESSAGE {} SIP/2.0", target_uri),
         method: Some(SipMethod::Message),
         status_code: None,
-        uri: Some(format!("sip:{}", device_id)),
+        uri: Some(target_uri),
         version: "SIP/2.0".to_string(),
         headers,
         body,
@@ -301,7 +361,15 @@ pub fn build_device_info_response(
 /// Per GB/T 28181-2022 §7.7, the Keepalive Notify indicates the device is online.
 /// Default status is "OK".
 #[tracing::instrument(skip_all)]
-pub fn build_keepalive_notify(sn: &str, device_id: &str, status: &str) -> Result<SipMessage> {
+pub fn build_keepalive_notify(
+    sn: &str,
+    device_id: &str,
+    domain: &str,
+    local_ip: &str,
+    local_port: u16,
+    status: &str,
+    cseq: u32,
+) -> Result<SipMessage> {
     let notify = Notify {
         cmd_type: "Keepalive".to_string(),
         sn: sn.to_string(),
@@ -313,6 +381,26 @@ pub fn build_keepalive_notify(sn: &str, device_id: &str, status: &str) -> Result
         .map_err(|e| anyhow!("Failed to serialize Keepalive Notify: {}", e))?;
 
     let mut headers = Vec::new();
+    // SIP routing headers (REQUIRED by all SIP proxies/servers)
+    headers.push((
+        "Via".to_string(),
+        format!(
+            "SIP/2.0/UDP {}:{};rport;branch=z9hG4bK{}",
+            local_ip, local_port, cseq
+        ),
+    ));
+    headers.push((
+        "From".to_string(),
+        format!("<sip:{}@{}>;tag={}", device_id, domain, cseq),
+    ));
+    headers.push(("To".to_string(), format!("<sip:{}@{}>", domain, domain)));
+    headers.push((
+        "Call-ID".to_string(),
+        format!("{}-keepalive-{}", device_id, cseq),
+    ));
+    headers.push(("CSeq".to_string(), format!("{} MESSAGE", cseq)));
+    headers.push(("Max-Forwards".to_string(), "70".to_string()));
+    // Content headers
     headers.push((
         "Content-Type".to_string(),
         "Application/MANSCDP+xml".to_string(),
@@ -320,10 +408,10 @@ pub fn build_keepalive_notify(sn: &str, device_id: &str, status: &str) -> Result
     headers.push(("Content-Length".to_string(), body.len().to_string()));
 
     Ok(SipMessage {
-        start_line: "MESSAGE sip:platform SIP/2.0".to_string(),
+        start_line: format!("MESSAGE sip:{}@{} SIP/2.0", domain, domain),
         method: Some(SipMethod::Message),
         status_code: None,
-        uri: Some(format!("sip:{}", device_id)),
+        uri: Some(format!("sip:{}@{}", domain, domain)),
         version: "SIP/2.0".to_string(),
         headers,
         body,
@@ -468,13 +556,26 @@ mod tests {
 
     #[test]
     fn test_keepalive_notify_format() {
-        let result = build_keepalive_notify("456", "31011500991320000001", "OK");
+        let result = build_keepalive_notify(
+            "456",
+            "31011500991320000001",
+            "3402000000",
+            "192.168.1.100",
+            5060,
+            "OK",
+            1000,
+        );
         assert!(result.is_ok());
 
         let msg = result.unwrap();
         assert!(msg.body.contains("<Notify>"));
         assert!(msg.body.contains("<CmdType>Keepalive</CmdType>"));
         assert!(msg.body.contains("<Status>OK</Status>"));
+        // SIP routing headers required by the platform (NVR drops MESSAGE without Via)
+        assert!(msg.get_header("Via").is_some());
+        assert_eq!(msg.get_header("CSeq"), Some("1000 MESSAGE"));
+        assert_eq!(msg.get_header("Max-Forwards"), Some("70"));
+        assert_eq!(msg.start_line, "MESSAGE sip:3402000000@3402000000 SIP/2.0");
     }
 
     #[test]
