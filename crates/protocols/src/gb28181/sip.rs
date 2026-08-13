@@ -723,11 +723,13 @@ pub fn parse_digest_auth(header_value: &str) -> Result<DigestAuthParams> {
 
 /// Build a Digest Authorization header value for SIP 401 challenge responses.
 ///
-/// Computes SHA-256 digest per RFC 7616:
-///   HA1 = SHA-256(username:realm:password)
-///   HA2 = SHA-256(method:uri)
-///   response = SHA-256(HA1:nonce:HA2)
+/// Supports both MD5 (RFC 2617, the GB28181 default) and SHA-256 (RFC 7616),
+/// selected by the `algorithm` parameter (case-insensitive; empty defaults to
+/// MD5). When the challenge includes `qop="auth"`, the response is computed as
+/// `H(HA1:nonce:nc:cnonce:qop:HA2)` and `qop`, `nc`, and `cnonce` are included
+/// in the header; otherwise `H(HA1:nonce:HA2)` is used.
 #[tracing::instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub fn build_digest_auth(
     username: &str,
     realm: &str,
@@ -736,25 +738,68 @@ pub fn build_digest_auth(
     uri: &str,
     method: &str,
     algorithm: &str,
+    qop: Option<&str>,
 ) -> String {
-    let ha1 = {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{}:{}:{}", username, realm, password).as_bytes());
-        hex::encode(hasher.finalize())
+    // RFC 2617 §3.2.1: an absent algorithm means MD5.
+    let algorithm = if algorithm.is_empty() {
+        "MD5"
+    } else {
+        algorithm
     };
-    let ha2 = {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{}:{}", method.to_uppercase(), uri).as_bytes());
-        hex::encode(hasher.finalize())
-    };
-    let response = {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{}:{}:{}", ha1, nonce, ha2).as_bytes());
-        hex::encode(hasher.finalize())
+
+    let ha1 = digest_hex(
+        algorithm,
+        format!("{}:{}:{}", username, realm, password).as_bytes(),
+    );
+    let ha2 = digest_hex(
+        algorithm,
+        format!("{}:{}", method.to_uppercase(), uri).as_bytes(),
+    );
+
+    let (response, qop_params) = match qop {
+        Some(q) if q.eq_ignore_ascii_case("auth") => {
+            let cnonce = generate_cnonce();
+            let nc = "00000001";
+            let response = digest_hex(
+                algorithm,
+                format!("{}:{}:{}:{}:auth:{}", ha1, nonce, nc, cnonce, ha2).as_bytes(),
+            );
+            (
+                response,
+                format!(", qop=auth, nc={}, cnonce=\"{}\"", nc, cnonce),
+            )
+        }
+        _ => {
+            let response = digest_hex(algorithm, format!("{}:{}:{}", ha1, nonce, ha2).as_bytes());
+            (response, String::new())
+        }
     };
 
     format!(
-        "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\", algorithm={}",
-        username, realm, nonce, uri, response, algorithm
+        "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\", algorithm={}{}",
+        username, realm, nonce, uri, response, algorithm, qop_params
     )
+}
+
+/// Compute the lowercase-hex digest of `data` using the given algorithm.
+///
+/// `SHA-256` (case-insensitive) selects SHA-256; anything else — including an
+/// empty string — falls back to MD5 per RFC 2617 §3.2.1.
+fn digest_hex(algorithm: &str, data: &[u8]) -> String {
+    if algorithm.eq_ignore_ascii_case("SHA-256") {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hex::encode(hasher.finalize())
+    } else {
+        format!("{:x}", md5::compute(data))
+    }
+}
+
+/// Generate a client nonce: 16 lowercase hex chars derived from the current time.
+fn generate_cnonce() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:016x}", (nanos & 0xFFFF_FFFF_FFFF_FFFF) as u64)
 }
