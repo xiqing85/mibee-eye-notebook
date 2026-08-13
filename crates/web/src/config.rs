@@ -88,6 +88,14 @@ pub struct Gb28181Config {
     pub sip_domain: String,
     #[serde(default = "default_gb28181_register_interval")]
     pub register_interval_secs: u64,
+    #[serde(default = "default_gb28181_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+    #[serde(default = "default_gb28181_heartbeat_timeout")]
+    pub heartbeat_timeout_count: u32,
+    #[serde(default = "default_gb28181_channel_id")]
+    pub channel_id: String,
+    #[serde(default = "default_gb28181_local_sip_port")]
+    pub local_sip_port: u16,
 }
 
 fn default_gb28181_sip_address() -> String {
@@ -111,6 +119,18 @@ fn default_gb28181_sip_domain() -> String {
 fn default_gb28181_register_interval() -> u64 {
     60
 }
+fn default_gb28181_heartbeat_interval() -> u64 {
+    60
+}
+fn default_gb28181_heartbeat_timeout() -> u32 {
+    3
+}
+fn default_gb28181_channel_id() -> String {
+    "34020000001320000001".into()
+}
+fn default_gb28181_local_sip_port() -> u16 {
+    5060
+}
 
 impl Default for Gb28181Config {
     fn default() -> Self {
@@ -123,6 +143,10 @@ impl Default for Gb28181Config {
             password: String::new(),
             sip_domain: "3402000000".into(),
             register_interval_secs: 60,
+            heartbeat_interval_secs: 60,
+            heartbeat_timeout_count: 3,
+            channel_id: default_gb28181_channel_id(),
+            local_sip_port: 5060,
         }
     }
 }

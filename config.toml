@@ -57,6 +57,10 @@ username = ""
 password = ""
 sip_domain = "3402000000"
 register_interval_secs = 60
+heartbeat_interval_secs = 60
+heartbeat_timeout_count = 3
+channel_id = "34020000001320000001"
+local_sip_port = 5060
 
 [rtmp_push]
 enabled = false

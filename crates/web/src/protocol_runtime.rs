@@ -119,6 +119,8 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
             .unwrap_or(3),
+        channel_id: get_str("channel_id", "34020000001320000001"),
+        local_sip_port: get_u16("local_sip_port", 5060),
     }
 }
 
@@ -134,6 +136,8 @@ pub struct Gb28181RuntimeConfig {
     pub register_interval: u64,
     pub heartbeat_interval_secs: u64,
     pub heartbeat_timeout_count: u32,
+    pub channel_id: String,
+    pub local_sip_port: u16,
 }
 
 // ── ProtocolRuntime ──────────────────────────────────────────────────────────
@@ -1203,6 +1207,11 @@ mod tests {
         let config = extract_gb28181_config(&json);
         assert_eq!(config.sip_port, 5060);
         assert_eq!(config.register_interval, 60);
+        assert_eq!(config.heartbeat_interval_secs, 60);
+        assert_eq!(config.heartbeat_timeout_count, 3);
+        assert_eq!(config.channel_id, "34020000001320000001");
+        assert_eq!(config.local_sip_port, 5060);
+        assert_eq!(config.register_interval, 60);
     }
 
     #[test]
@@ -1213,7 +1222,11 @@ mod tests {
             "platform_sip_port": 5060,
             "password": "secret",
             "sip_domain": "3402000000",
-            "register_interval_secs": 120
+            "register_interval_secs": 120,
+            "heartbeat_interval_secs": 30,
+            "heartbeat_timeout_count": 5,
+            "channel_id": "34020000001320000001",
+            "local_sip_port": 7060
         });
         let config = extract_gb28181_config(&json);
         assert_eq!(config.device_id, "34020000001320000001");
@@ -1221,6 +1234,10 @@ mod tests {
         assert_eq!(config.sip_port, 5060);
         assert_eq!(config.password, "secret");
         assert_eq!(config.register_interval, 120);
+        assert_eq!(config.heartbeat_interval_secs, 30);
+        assert_eq!(config.heartbeat_timeout_count, 5);
+        assert_eq!(config.channel_id, "34020000001320000001");
+        assert_eq!(config.local_sip_port, 7060);
     }
 
     #[test]
