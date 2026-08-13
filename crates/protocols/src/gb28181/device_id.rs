@@ -6,7 +6,7 @@
 //! Region codes follow GB/T 2260 (administrative division codes of China).
 //! Type codes identify the device type (111 = IPC, 118 = NVR, etc.).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Components of a parsed 20-digit GB/T 28181 device ID.
 #[derive(Debug, Clone, PartialEq, Eq)]

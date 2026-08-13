@@ -320,7 +320,7 @@ mod tests {
             keyframe: true,
             data: vec![
                 0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x80, 0x1E, 0xD9, // SPS
-                0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80,         // PPS
+                0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80, // PPS
                 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00, 0x01, 0x23, 0x45, // IDR
             ],
             timestamp: 100,
@@ -347,7 +347,10 @@ mod tests {
         let ssrc_be = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
         assert_eq!(ssrc_be, 0x12345678, "SSRC should match INVITE value");
         // Verify PS data starts with pack header 0x00 0x00 0x01 0xBA
-        assert!(buf[12..].starts_with(&[0x00, 0x00, 0x01, 0xBA]), "Should start with PS pack header");
+        assert!(
+            buf[12..].starts_with(&[0x00, 0x00, 0x01, 0xBA]),
+            "Should start with PS pack header"
+        );
 
         out.stop().await.unwrap();
     }
