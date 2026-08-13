@@ -6,13 +6,13 @@
 
 use std::net::SocketAddr;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use observability::metrics;
 
 use super::manscdp::{ChannelItem, DeviceItem, DeviceList, Notify, Query, Response};
 use super::sip::{
-    build_bye_request, build_digest_auth, build_register_request, DigestAuthParams, SdpSession,
-    SipMessage, SipMethod, SipStatusCode,
+    DigestAuthParams, SdpSession, SipMessage, SipMethod, SipStatusCode, build_bye_request,
+    build_digest_auth, build_register_request,
 };
 use crate::rtp::H264_PAYLOAD_TYPE;
 

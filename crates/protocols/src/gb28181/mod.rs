@@ -22,19 +22,19 @@ pub mod ps;
 pub mod rtp_pusher;
 pub mod sip;
 
-pub use client::{parse_401_challenge, parse_invite, InviteInfo, SipDeviceClient};
+pub use client::{InviteInfo, SipDeviceClient, parse_401_challenge, parse_invite};
 pub use device_id::device_types;
-pub use device_id::{format_device_id, parse_device_id, DeviceIdParts};
+pub use device_id::{DeviceIdParts, format_device_id, parse_device_id};
 pub use manscdp::{ChannelItem, DeviceItem, DeviceList, Notify, Query, Response};
 pub use ps::{
-    parse_pes_packet, parse_ps_pack_header, parse_ps_to_h264, parse_ps_to_nal_units, PesPacket,
-    PsPackHeader,
+    PesPacket, PsPackHeader, parse_pes_packet, parse_ps_pack_header, parse_ps_to_h264,
+    parse_ps_to_nal_units,
 };
 pub use rtp_pusher::{RtpPusher, RtpStreamInfo};
 pub use sip::{
+    DigestAuthParams, SdpMedia, SdpSession, SipMessage, SipMethod, SipStatusCode, Transport,
     build_bye_request, build_digest_auth, build_invite_response, build_register_request,
-    parse_digest_auth, DigestAuthParams, SdpMedia, SdpSession, SipMessage, SipMethod,
-    SipStatusCode, Transport,
+    parse_digest_auth,
 };
 
 #[cfg(test)]
