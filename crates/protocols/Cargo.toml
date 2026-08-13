@@ -11,6 +11,7 @@ tracing.workspace = true
 anyhow.workspace = true
 hex = "0.4"
 sha2 = "0.10"
+md5 = "0.7"
 rand.workspace = true
 observability = { path = "../observability" }
 base64.workspace = true
