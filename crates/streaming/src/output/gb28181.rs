@@ -63,19 +63,35 @@ impl Gb28181Output {
     pub fn call_id(&self) -> &str {
         &self.call_id
     }
+
+    /// Attach a pre-bound UDP socket (e.g., one whose local port was
+    /// advertised in the SIP 200 OK SDP answer). `start` will use it
+    /// instead of binding a new ephemeral socket.
+    pub fn with_socket(mut self, socket: tokio::net::UdpSocket) -> Self {
+        self.socket = Some(socket);
+        self
+    }
 }
 
 impl Output for Gb28181Output {
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
-            let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket: {e}"))?;
+            // Use a pre-bound socket when provided (its port was advertised
+            // in the 200 OK SDP answer); otherwise bind an ephemeral one.
+            if self.socket.is_none() {
+                let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket: {e}"))?;
+                self.socket = Some(socket);
+            }
+            let socket = self
+                .socket
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("UDP socket unavailable"))?;
             socket
                 .connect(self.destination)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to connect UDP socket: {e}"))?;
-            self.socket = Some(socket);
             self.started = true;
             tracing::info!(
                 call_id = %self.call_id,
