@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed — GB28181 PS-over-RTP interop
+
+PS muxer added; Gb28181Output rewritten from RFC-6184 to PS-over-RTP (PT=96); SSRC parsing fixed to use `y=` SDP field instead of `a=ssrc:`; Digest auth default changed from SHA-256 to MD5; Contact header fixed to use device IP; INVITE handler now sends 200 OK with device SDP answer.
+
+### Added — GB28181 Catalog/DeviceInfo/Keepalive MESSAGE handling
+
+MANSCDP+xml module; inbound MESSAGE dispatcher; keepalive heartbeat loop; device SDP answer with echoed SSRC on INVITE 200 OK.
+
 
 ### Changed — ffmpeg dependency fully removed (native codec stack)
 

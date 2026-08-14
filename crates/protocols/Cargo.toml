@@ -11,9 +11,12 @@ tracing.workspace = true
 anyhow.workspace = true
 hex = "0.4"
 sha2 = "0.10"
+md5 = "0.7"
 rand.workspace = true
 observability = { path = "../observability" }
 base64.workspace = true
+serde.workspace = true
+serde-xml-rs = "0.6"
 parking_lot = "0.12"
 
 [dev-dependencies]

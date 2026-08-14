@@ -21,7 +21,6 @@
 //!   4. Return the SDP answer; subsequent RTP/SRTP flows over a UDP task
 
 use axum::extract::{Extension, Path};
-use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use tracing::debug;
 

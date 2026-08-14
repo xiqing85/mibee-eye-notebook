@@ -17,6 +17,7 @@
 
 pub mod client;
 pub mod device_id;
+pub mod manscdp;
 pub mod ps;
 pub mod rtp_pusher;
 pub mod sip;
@@ -24,6 +25,7 @@ pub mod sip;
 pub use client::{InviteInfo, SipDeviceClient, parse_401_challenge, parse_invite};
 pub use device_id::device_types;
 pub use device_id::{DeviceIdParts, format_device_id, parse_device_id};
+pub use manscdp::{ChannelItem, DeviceItem, DeviceList, Notify, Query, Response};
 pub use ps::{
     PesPacket, PsPackHeader, parse_pes_packet, parse_ps_pack_header, parse_ps_to_h264,
     parse_ps_to_nal_units,
