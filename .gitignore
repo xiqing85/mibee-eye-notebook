@@ -52,3 +52,6 @@ crates/web/static/app.bundle.js
 # NOT shipped — esbuild bundles them into app.bundle.js at build time.
 node_modules/
 crates/web/static/node_modules/
+
+# Vendored esbuild binary (download separately for air-gapped builds)
+tools/esbuild-linux-x64
