@@ -76,10 +76,10 @@ fn build_mock_invite(
     call_id: &str,
     platform_ip: &str,
     media_port: u16,
-    ssrc_hex: Option<&str>,
+    ssrc: Option<u32>,
 ) -> String {
-    let ssrc_line = match ssrc_hex {
-        Some(ssrc) => format!("a=ssrc:{}\r\n", ssrc),
+    let ssrc_line = match ssrc {
+        Some(ssrc) => format!("y={}\r\n", ssrc),
         None => String::new(),
     };
     format!(
@@ -309,7 +309,7 @@ fn test_invite_sdp_parsing() {
     let media_port = 20000;
     let call_id = "invite-e2e-test-001";
 
-    let invite_raw = build_mock_invite(call_id, platform_ip, media_port, Some("87654321"));
+    let invite_raw = build_mock_invite(call_id, platform_ip, media_port, Some(2271560481));
     let invite_msg = SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
     assert_eq!(invite_msg.method, Some(SipMethod::Invite));
 
@@ -326,8 +326,8 @@ fn test_invite_sdp_parsing() {
         "Payload type should be 96 (PS/90000)"
     );
     assert_eq!(
-        info.ssrc, 0x87654321,
-        "SSRC should be parsed from SDP a=ssrc line"
+        info.ssrc, 2271560481,
+        "SSRC should be parsed from SDP y= field (decimal)"
     );
 
     // Also test without SSRC in SDP
@@ -359,6 +359,7 @@ fn test_invite_response_with_sdp() {
         session_name: "Play".to_string(),
         connection_address: Some("IN IP4 127.0.0.1".to_string()),
         bandwidth: None,
+        ssrc: None,
         media: vec![SdpMedia {
             media_type: "video".to_string(),
             port: 10000,
@@ -380,8 +381,9 @@ fn test_invite_response_with_sdp() {
         &local_sdp_str,
         local_tag,
         cseq,
+        "127.0.0.1",
+        5060,
     );
-
     // Verify response status line
     assert_eq!(response.start_line, "SIP/2.0 200 OK");
     assert_eq!(response.status_code, Some(SipStatusCode::Ok));
@@ -462,7 +464,7 @@ fn test_rtp_packets_from_invite_destination() {
     let media_port = 30000;
     let call_id = "rtp-dest-test-001";
 
-    let invite_raw = build_mock_invite(call_id, platform_ip, media_port, Some("AABBCCDD"));
+    let invite_raw = build_mock_invite(call_id, platform_ip, media_port, Some(2864434397));
     let invite_msg = SipMessage::parse(&invite_raw).expect("Failed to parse mock INVITE");
     let info = parse_invite(&invite_msg).expect("Failed to parse INVITE for RTP test");
 
@@ -517,7 +519,7 @@ fn test_rtp_packets_from_invite_destination() {
 
         // SSRC must match INVITE SDP
         assert_eq!(
-            parsed.ssrc, 0xAABBCCDD,
+            parsed.ssrc, 2864434397,
             "Packet {} should have SSRC from INVITE SDP",
             i
         );
@@ -800,7 +802,7 @@ t=0 0\r\n\
 m=video {} RTP/AVP 96\r\n\
 a=recvonly\r\n\
 a=rtpmap:96 PS/90000\r\n\
-a=ssrc:FEDCBA98\r\n",
+y=4275878552\r\n",
         device_id,
         platform_addr_str,
         device_id,
@@ -831,7 +833,10 @@ a=ssrc:FEDCBA98\r\n",
         info.media_port, invite_media_port,
         "Media port should match what server sent"
     );
-    assert_eq!(info.ssrc, 0xFEDCBA98, "SSRC from SDP should be parsed");
+    assert_eq!(
+        info.ssrc, 4275878552,
+        "SSRC from SDP y= field should be parsed"
+    );
     assert_eq!(info.payload_type, 96, "Payload type should be 96");
 
     // ── Phase 8: Build and send 200 OK with SDP ──
@@ -840,6 +845,7 @@ a=ssrc:FEDCBA98\r\n",
         session_name: "Play".to_string(),
         connection_address: Some("IN IP4 127.0.0.1".to_string()),
         bandwidth: None,
+        ssrc: None,
         media: vec![SdpMedia {
             media_type: "video".to_string(),
             port: 10000,
@@ -857,7 +863,15 @@ a=ssrc:FEDCBA98\r\n",
         .and_then(|c| c.split_whitespace().next())
         .and_then(|n| n.parse().ok())
         .unwrap_or(1);
-    let response = build_invite_response(&invite_msg, device_id, &local_sdp_str, 42, invite_cseq);
+    let response = build_invite_response(
+        &invite_msg,
+        device_id,
+        &local_sdp_str,
+        42,
+        invite_cseq,
+        "127.0.0.1",
+        5060,
+    );
     let response_data = response.serialize();
     client_socket
         .send_to(response_data.as_bytes(), sip_server_addr)
@@ -913,6 +927,7 @@ fn test_sdp_roundtrip_e2e() {
         session_name: "Play".to_string(),
         connection_address: Some("IN IP4 127.0.0.1".to_string()),
         bandwidth: None,
+        ssrc: None,
         media: vec![SdpMedia {
             media_type: "video".to_string(),
             port: 10000,
@@ -924,7 +939,6 @@ fn test_sdp_roundtrip_e2e() {
             ],
         }],
     };
-
     let serialized = sdp.serialize();
     let parsed = SdpSession::parse(&serialized).expect("Failed to parse SDP round-trip");
     assert_eq!(parsed.origin, sdp.origin);

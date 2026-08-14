@@ -15,10 +15,11 @@ use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
+use protocols::gb28181::SipMessage;
 use protocols::onvif::{OnvifDeviceConfig, WsDiscoveryServer};
 use serde::Serialize;
 use streaming::output::Gb28181Output;
-use tokio::sync::watch;
+use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -105,24 +106,41 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
     };
 
     Gb28181RuntimeConfig {
+        enabled: db_config
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
         device_id: get_str("device_id", "34020000002000000001"),
         sip_addr: get_str("platform_sip_address", "127.0.0.1"),
         sip_port: get_u16("platform_sip_port", 5060),
         password: get_str("password", ""),
         sip_domain: get_str("sip_domain", "3402000000"),
         register_interval: get_u64("register_interval_secs", 60),
+        heartbeat_interval_secs: get_u64("heartbeat_interval_secs", 60),
+        heartbeat_timeout_count: db_config
+            .get("heartbeat_timeout_count")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(3),
+        channel_id: get_str("channel_id", "34020000001320000001"),
+        local_sip_port: get_u16("local_sip_port", 5060),
     }
 }
 
 #[derive(Debug)]
 /// Parsed GB28181 configuration extracted from DB JSON.
 pub struct Gb28181RuntimeConfig {
+    pub enabled: bool,
     pub device_id: String,
     pub sip_addr: String,
     pub sip_port: u16,
     pub password: String,
     pub sip_domain: String,
     pub register_interval: u64,
+    pub heartbeat_interval_secs: u64,
+    pub heartbeat_timeout_count: u32,
+    pub channel_id: String,
+    pub local_sip_port: u16,
 }
 
 // ── ProtocolRuntime ──────────────────────────────────────────────────────────
@@ -245,6 +263,8 @@ impl ProtocolRuntime {
         self.shutdown_txs.insert("gb28181".into(), shutdown_tx);
 
         let device_id = config.device_id.clone();
+        let heartbeat_interval = config.heartbeat_interval_secs;
+        let heartbeat_timeout = config.heartbeat_timeout_count;
         let password = config.password.clone();
         let sip_domain = config.sip_domain.clone();
         let register_interval = config.register_interval;
@@ -254,6 +274,8 @@ impl ProtocolRuntime {
                 device_id,
                 sip_server_addr,
                 local_ip,
+                heartbeat_interval,
+                heartbeat_timeout,
                 password,
                 sip_domain,
                 register_interval,
@@ -393,6 +415,8 @@ async fn run_gb28181_loop(
     device_id: String,
     sip_server_addr: SocketAddr,
     local_ip: String,
+    heartbeat_interval_secs: u64,
+    heartbeat_timeout_count: u32,
     password: String,
     sip_domain: String,
     register_interval: u64,
@@ -406,9 +430,9 @@ async fn run_gb28181_loop(
         "GB28181 Device SIP registration starting"
     );
 
-    // Bind UDP socket for SIP communication
+    // Bind UDP socket for SIP communication (shared with the keepalive task)
     let sip_socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
-        Ok(socket) => socket,
+        Ok(socket) => Arc::new(socket),
         Err(e) => {
             tracing::error!(error = %e, "Failed to bind UDP socket for SIP");
             return;
@@ -438,6 +462,14 @@ async fn run_gb28181_loop(
     let mut retry_count = 0u32;
     let mut backoff_secs = 1u64;
     const MAX_RETRIES: u32 = 5;
+
+    // Keepalive heartbeat channel: main loop reports whether the platform's
+    // response to a Keepalive MESSAGE was 200 OK (true) or not (false).
+    let (keepalive_tx, keepalive_rx) = mpsc::channel::<bool>(16);
+    let mut keepalive_rx = Some(keepalive_rx);
+    // One-shot re-REGISTER trigger for the keepalive task.
+    let re_register_notify = Arc::new(Notify::new());
+    let mut keepalive_handle: Option<JoinHandle<()>> = None;
 
     // SIP message buffer
     let mut recv_buf = [0u8; 8192];
@@ -488,6 +520,12 @@ async fn run_gb28181_loop(
                 tracing::info!("GB28181 shutdown signal received during recv");
                 break;
             }
+            _ = re_register_notify.notified() => {
+                tracing::warn!("Keepalive timeout reached, re-registering");
+                registered = false;
+                retry_count = 0;
+                backoff_secs = 1;
+            }
             result = sip_socket.recv_from(&mut recv_buf) => {
                 match result {
                     Ok((len, from)) => {
@@ -512,6 +550,22 @@ async fn run_gb28181_loop(
                             Ok(msg) => {
                                 if let Some(status_code) = msg.status_code {
                                     // Response to our request
+
+                                    // Report keepalive MESSAGE responses to the
+                                    // keepalive task (non-blocking; a full channel
+                                    // just means the task will time out instead).
+                                    let cseq_method = msg
+                                        .get_header("CSeq")
+                                        .and_then(|s| s.split_whitespace().nth(1))
+                                        .unwrap_or("");
+                                    if cseq_method == "MESSAGE" {
+                                        let is_ok = matches!(
+                                            status_code,
+                                            protocols::gb28181::SipStatusCode::Ok
+                                        );
+                                        let _ = keepalive_tx.try_send(is_ok);
+                                    }
+
                                     match status_code {
                                         protocols::gb28181::SipStatusCode::Ok => {
                                             tracing::debug!(
@@ -524,6 +578,37 @@ async fn run_gb28181_loop(
                                                 retry_count = 0;
                                                 backoff_secs = register_interval;
                                                 tracing::info!("SIP registration successful");
+
+                                                // Spawn the keepalive heartbeat task once,
+                                                // after the first successful REGISTER.
+                                                if keepalive_handle.is_none() {
+                                                    if let Some(rx) = keepalive_rx.take() {
+                                                        let keepalive_socket = sip_socket.clone();
+                                                        let keepalive_shutdown = shutdown_rx.clone();
+                                                        let re_register = re_register_notify.clone();
+                                                        let ka_device_id = device_id.clone();
+                                                        let ka_local_ip = local_ip.clone();
+                                                        let ka_domain = sip_domain.clone();
+                                                        keepalive_handle = Some(tokio::spawn(
+                                                            run_keepalive_loop(
+                                                                keepalive_socket,
+                                                                sip_server_addr,
+                                                                ka_device_id,
+                                                                ka_local_ip,
+                                                                ka_domain,
+                                                                heartbeat_interval_secs,
+                                                                heartbeat_timeout_count,
+                                                                keepalive_shutdown,
+                                                                rx,
+                                                                re_register,
+                                                            ),
+                                                        ));
+                                                        tracing::info!(
+                                                            heartbeat_interval_secs,
+                                                            "GB28181 keepalive loop started"
+                                                        );
+                                                    }
+                                                }
                                             }
                                         }
                                         protocols::gb28181::SipStatusCode::Unauthorized => {
@@ -600,14 +685,35 @@ async fn run_gb28181_loop(
                                                         media_port = %invite_info.media_port,
                                                         "INVITE parsed successfully"
                                                     );
+                                                    // Bind the local UDP socket for RTP media BEFORE sending 200 OK so
+                                                    // the advertised `m=video` port matches where we push from. The
+                                                    // SIP dialog must complete before the RTP pusher starts.
+                                                    let media_socket =
+                                                        match tokio::net::UdpSocket::bind("0.0.0.0:0").await
+                                                        {
+                                                            Ok(s) => Some(s),
+                                                            Err(e) => {
+                                                                tracing::error!(
+                                                                    error = %e,
+                                                                    call_id = %call_id,
+                                                                    "Failed to bind media UDP socket"
+                                                                );
+                                                                None
+                                                            }
+                                                        };
+                                                    let device_rtp_port = media_socket
+                                                        .as_ref()
+                                                        .and_then(|s| s.local_addr().ok())
+                                                        .map(|a| a.port())
+                                                        .unwrap_or(0);
 
-                                                    // Build SDP response (sendonly — we're pushing video)
-                                                    let local_sdp = format!(
-                                                        "v=0\r\no={} 0 0 IN IP4 {}\r\ns=Play\r\nc=IN IP4 {}\r\nt=0 0\r\nm=video 0 RTP/AVP 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\na=ssrc:{}\r\n",
-                                                        device_id,
-                                                        local_ip,
-                                                        local_ip,
-                                                        invite_info.ssrc
+                                                    // Build device SDP answer (GB/T 28181-2022). The `y=` field
+                                                    // echoes the SSRC from the INVITE's SDP.
+                                                    let local_sdp = build_invite_sdp_answer(
+                                                        &device_id,
+                                                        &local_ip,
+                                                        device_rtp_port,
+                                                        invite_info.ssrc,
                                                     );
 
                                                     let local_tag = sip_client.cseq;
@@ -620,7 +726,7 @@ async fn run_gb28181_loop(
                                                     let response =
                                                         protocols::gb28181::build_invite_response(
                                                             &msg, &device_id, &local_sdp,
-                                                            local_tag, cseq,
+                                                            local_tag, cseq, &local_ip, 5060,
                                                         );
                                                     let serialized = response.serialize();
                                                     if let Err(e) = sip_socket
@@ -656,6 +762,12 @@ async fn run_gb28181_loop(
                                                                     invite_info.payload_type,
                                                                     &call_id,
                                                                 );
+                                                                // Attach the pre-bound media socket so RTP is pushed from
+                                                                // the port advertised in the 200 OK SDP answer.
+                                                                let output = match media_socket {
+                                                                    Some(socket) => output.with_socket(socket),
+                                                                    None => output,
+                                                                };
                                                                 let active = stream_manager
                                                                     .list_active_streams()
                                                                     .await;
@@ -765,6 +877,55 @@ async fn run_gb28181_loop(
                                                 );
                                             }
                                         }
+                                        protocols::gb28181::SipMethod::Message => {
+                                            tracing::info!("Received MESSAGE request");
+
+                                            match protocols::gb28181::client::dispatch_inbound_message(&msg) {
+                                                Ok((ok_response, queued)) => {
+                                                    // Send 200 OK acknowledgement
+                                                    let ok_serialized = ok_response.serialize();
+                                                    if let Err(e) = sip_socket
+                                                        .send_to(
+                                                            ok_serialized.as_bytes(),
+                                                            sip_server_addr,
+                                                        )
+                                                        .await
+                                                    {
+                                                        tracing::warn!(
+                                                            error = %e,
+                                                            "Failed to send 200 OK to MESSAGE"
+                                                        );
+                                                    } else {
+                                                        tracing::debug!("Sent 200 OK to MESSAGE");
+                                                    }
+
+                                                    // Send queued response if any (Catalog/DeviceInfo)
+                                                    if let Some(queued_msg) = queued {
+                                                        let queued_serialized = queued_msg.serialize();
+                                                        if let Err(e) = sip_socket
+                                                            .send_to(
+                                                                queued_serialized.as_bytes(),
+                                                                sip_server_addr,
+                                                            )
+                                                            .await
+                                                        {
+                                                            tracing::warn!(
+                                                                error = %e,
+                                                                "Failed to send queued MESSAGE response"
+                                                            );
+                                                        } else {
+                                                            tracing::debug!("Sent queued MESSAGE response");
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!(
+                                                        error = %e,
+                                                        "Failed to dispatch MESSAGE"
+                                                    );
+                                                }
+                                            }
+                                        }
                                         _ => {
                                             tracing::debug!(
                                                 method = %method,
@@ -807,6 +968,136 @@ async fn run_gb28181_loop(
     }
 
     tracing::info!("GB28181 SIP loop exited");
+}
+
+// ── GB28181 keepalive heartbeat ──────────────────────────────────────────────
+
+/// Build a SIP MESSAGE request carrying a Keepalive Notify body.
+///
+/// `build_keepalive_notify` (from the protocols crate) provides the MANSCDP
+/// XML body; we wrap it with the SIP headers required for a routable MESSAGE.
+fn build_keepalive_message(
+    device_id: &str,
+    local_ip: &str,
+    sip_domain: &str,
+    sn: u32,
+    cseq: u32,
+) -> anyhow::Result<SipMessage> {
+    let mut msg = protocols::gb28181::client::build_keepalive_notify(
+        &sn.to_string(),
+        device_id,
+        sip_domain,
+        local_ip,
+        5060,
+        "OK",
+        cseq,
+    )?;
+    // Extra header preserved from the previous wrapper implementation.
+    msg.headers
+        .push(("User-Agent".to_string(), "mibee-rec/0.1".to_string()));
+    Ok(msg)
+}
+
+/// Build the device SDP answer for a SIP INVITE (GB/T 28181-2022).
+///
+/// The `y=` field echoes the SSRC from the INVITE's SDP; `device_rtp_port`
+/// is the local UDP port the device will push RTP from.
+fn build_invite_sdp_answer(
+    device_id: &str,
+    local_ip: &str,
+    device_rtp_port: u16,
+    ssrc: u32,
+) -> String {
+    format!(
+        "v=0\r\no={} 0 0 IN IP4 {}\r\ns=Play\r\nc=IN IP4 {}\r\nm=video {} RTP/AVP 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\ny={}\r\n",
+        device_id, local_ip, local_ip, device_rtp_port, ssrc
+    )
+}
+
+/// Run the keepalive heartbeat loop.
+///
+/// Sends a Keepalive MESSAGE every `heartbeat_interval_secs`. The main SIP
+/// loop reports each platform response via `response_rx` (true = 200 OK).
+/// After `heartbeat_timeout_count` consecutive failures (send error, non-200
+/// response, or no response within the wait window), triggers a re-REGISTER
+/// via `re_register_notify`. Exits on shutdown.
+#[allow(clippy::too_many_arguments)]
+async fn run_keepalive_loop(
+    sip_socket: Arc<tokio::net::UdpSocket>,
+    sip_server_addr: SocketAddr,
+    device_id: String,
+    local_ip: String,
+    sip_domain: String,
+    heartbeat_interval_secs: u64,
+    heartbeat_timeout_count: u32,
+    mut shutdown_rx: watch::Receiver<bool>,
+    mut response_rx: mpsc::Receiver<bool>,
+    re_register_notify: Arc<Notify>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(heartbeat_interval_secs));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut consecutive_failures = 0u32;
+    let mut sn = 1u32;
+    let mut cseq = 1u32;
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown_rx.changed() => break,
+            _ = interval.tick() => {
+                let msg = match build_keepalive_message(
+                    &device_id, &local_ip, &sip_domain, sn, cseq,
+                ) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to build keepalive MESSAGE");
+                        consecutive_failures += 1;
+                        continue;
+                    }
+                };
+                sn = sn.wrapping_add(1);
+                cseq = cseq.wrapping_add(1);
+                let serialized = msg.serialize();
+                match sip_socket
+                    .send_to(serialized.as_bytes(), sip_server_addr)
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::debug!("Keepalive MESSAGE sent");
+                        // Wait for the platform's response (reported by the main
+                        // loop) with a bounded window so a silent platform is
+                        // detected as a failure.
+                        tokio::select! {
+                            resp = response_rx.recv() => {
+                                match resp {
+                                    Some(true) => consecutive_failures = 0,
+                                    Some(false) => consecutive_failures += 1,
+                                    None => break,
+                                }
+                            }
+                            _ = shutdown_rx.changed() => break,
+                            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                                consecutive_failures += 1;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to send keepalive MESSAGE");
+                        consecutive_failures += 1;
+                    }
+                }
+            }
+        }
+
+        if consecutive_failures >= heartbeat_timeout_count {
+            tracing::warn!(
+                consecutive_failures,
+                "Keepalive timeout reached, triggering re-REGISTER"
+            );
+            re_register_notify.notify_one();
+            consecutive_failures = 0;
+        }
+    }
 }
 
 // ── Network helpers (duplicated from main.rs for self-containment) ───────────
@@ -901,6 +1192,11 @@ mod tests {
         let config = extract_gb28181_config(&json);
         assert_eq!(config.sip_port, 5060);
         assert_eq!(config.register_interval, 60);
+        assert_eq!(config.heartbeat_interval_secs, 60);
+        assert_eq!(config.heartbeat_timeout_count, 3);
+        assert_eq!(config.channel_id, "34020000001320000001");
+        assert_eq!(config.local_sip_port, 5060);
+        assert_eq!(config.register_interval, 60);
     }
 
     #[test]
@@ -911,7 +1207,11 @@ mod tests {
             "platform_sip_port": 5060,
             "password": "secret",
             "sip_domain": "3402000000",
-            "register_interval_secs": 120
+            "register_interval_secs": 120,
+            "heartbeat_interval_secs": 30,
+            "heartbeat_timeout_count": 5,
+            "channel_id": "34020000001320000001",
+            "local_sip_port": 7060
         });
         let config = extract_gb28181_config(&json);
         assert_eq!(config.device_id, "34020000001320000001");
@@ -919,6 +1219,10 @@ mod tests {
         assert_eq!(config.sip_port, 5060);
         assert_eq!(config.password, "secret");
         assert_eq!(config.register_interval, 120);
+        assert_eq!(config.heartbeat_interval_secs, 30);
+        assert_eq!(config.heartbeat_timeout_count, 5);
+        assert_eq!(config.channel_id, "34020000001320000001");
+        assert_eq!(config.local_sip_port, 7060);
     }
 
     #[test]
@@ -976,5 +1280,136 @@ mod tests {
         assert!(!status.onvif.running);
         assert!(!status.gb28181.running);
         assert!(!status.rtmp.running);
+    }
+    // ── GB28181 keepalive + INVITE tests ────────────────────────────────
+
+    /// Build a synthetic SIP INVITE with the given SDP body.
+    fn build_mock_invite(sdp_body: &str) -> SipMessage {
+        SipMessage {
+            start_line: "INVITE sip:34020000001320000001@3402000000 SIP/2.0".to_string(),
+            method: Some(protocols::gb28181::SipMethod::Invite),
+            status_code: None,
+            uri: Some("sip:34020000001320000001@3402000000".to_string()),
+            version: "SIP/2.0".to_string(),
+            headers: vec![
+                (
+                    "Via".to_string(),
+                    "SIP/2.0/UDP 192.168.1.200:5060;rport;branch=z9hG4bK12345".to_string(),
+                ),
+                (
+                    "From".to_string(),
+                    "<sip:34020000001320000001@3402000000>;tag=123456".to_string(),
+                ),
+                (
+                    "To".to_string(),
+                    "<sip:34020000002000000001@3402000000>".to_string(),
+                ),
+                ("Call-ID".to_string(), "test-invite-call-id".to_string()),
+                ("CSeq".to_string(), "7 INVITE".to_string()),
+                (
+                    "Contact".to_string(),
+                    "<sip:34020000001320000001@192.168.1.200:5060>".to_string(),
+                ),
+                ("Content-Type".to_string(), "application/sdp".to_string()),
+            ],
+            body: sdp_body.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_invite_handler_sends_200_ok_with_sdp() {
+        let invite = build_mock_invite(
+            "v=0\r\no=34020000001320000001 0 0 IN IP4 192.168.1.200\r\ns=Play\r\nc=IN IP4 192.168.1.200\r\nt=0 0\r\nm=video 10000 RTP/AVP 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\ny=2271560481\r\n",
+        );
+        let invite_info = protocols::gb28181::parse_invite(&invite).unwrap();
+
+        // Build the device SDP answer exactly as the INVITE handler does.
+        let local_sdp = build_invite_sdp_answer(
+            "34020000001320000001",
+            "192.168.1.100",
+            45000,
+            invite_info.ssrc,
+        );
+        assert!(local_sdp.contains("m=video 45000 RTP/AVP 96"));
+        assert!(local_sdp.contains("a=rtpmap:96 PS/90000"));
+        assert!(local_sdp.contains("y=2271560481"));
+
+        let response = protocols::gb28181::build_invite_response(
+            &invite,
+            "34020000001320000001",
+            &local_sdp,
+            42,
+            7,
+            "192.168.1.100",
+            5060,
+        );
+        let serialized = response.serialize();
+        assert!(serialized.contains("SIP/2.0 200 OK"));
+        assert!(serialized.contains("m=video 45000 RTP/AVP 96"));
+        assert!(serialized.contains("a=rtpmap:96 PS/90000"));
+        assert!(serialized.contains("y=2271560481"));
+    }
+
+    #[test]
+    fn test_invite_handler_echoes_ssrc() {
+        // Leading-zero decimal SSRC from the platform's INVITE.
+        let invite = build_mock_invite(
+            "v=0\r\no=34020000001320000001 0 0 IN IP4 192.168.1.200\r\ns=Play\r\nc=IN IP4 192.168.1.200\r\nt=0 0\r\nm=video 10000 RTP/AVP 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\ny=0100000001\r\n",
+        );
+        let invite_info = protocols::gb28181::parse_invite(&invite).unwrap();
+        assert_eq!(invite_info.ssrc, 100_000_001);
+
+        let local_sdp = build_invite_sdp_answer(
+            "34020000001320000001",
+            "192.168.1.100",
+            45000,
+            invite_info.ssrc,
+        );
+        // The echoed value is the normalized decimal form (no leading zero).
+        assert!(local_sdp.contains("y=100000001"));
+        assert!(!local_sdp.contains("y=0100000001"));
+    }
+
+    #[tokio::test]
+    async fn test_keepalive_loop_sends_message() {
+        // Platform receiver socket (the keepalive MESSAGE is sent to it).
+        let platform = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let platform_addr = platform.local_addr().unwrap();
+        // Device socket the keepalive task sends from.
+        let device_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let (_, response_rx) = mpsc::channel::<bool>(16);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let re_register = Arc::new(Notify::new());
+
+        let handle = tokio::spawn(run_keepalive_loop(
+            Arc::new(device_socket),
+            platform_addr,
+            "34020000001320000001".to_string(),
+            "127.0.0.1".to_string(),
+            "3402000000".to_string(),
+            1, // heartbeat_interval_secs (first tick fires immediately)
+            3, // heartbeat_timeout_count
+            shutdown_rx,
+            response_rx,
+            re_register,
+        ));
+
+        // The first interval tick fires immediately, so the first Keepalive
+        // MESSAGE is sent right away. Wait for it with a real-time bound.
+        let mut buf = [0u8; 2048];
+        let (len, _) = tokio::time::timeout(Duration::from_secs(5), platform.recv_from(&mut buf))
+            .await
+            .expect("keepalive MESSAGE should arrive within 5s")
+            .unwrap();
+        let data = std::str::from_utf8(&buf[..len]).unwrap();
+        assert!(data.contains("<CmdType>Keepalive</CmdType>"));
+        assert!(data.contains("MESSAGE sip:3402000000@3402000000 SIP/2.0"));
+        assert!(data.contains("Via: SIP/2.0/UDP 127.0.0.1:5060;rport;branch=z9hG4bK1"));
+        assert!(data.contains("CSeq: 1 MESSAGE"));
+        assert!(data.contains("Max-Forwards: 70"));
+
+        let _ = shutdown_tx.send(true);
+        handle.await.unwrap();
     }
 }
