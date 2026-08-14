@@ -858,6 +858,7 @@ mod tests {
                 hub_handle: None,
                 latest_jpeg: None,
                 jpeg_tx: None,
+                sps_pps_cache: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("cam-1".into(), handle);
@@ -892,6 +893,7 @@ mod tests {
                 hub_handle: None,
                 latest_jpeg: None,
                 jpeg_tx: None,
+                sps_pps_cache: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -927,6 +929,7 @@ mod tests {
                 hub_handle: None,
                 latest_jpeg: None,
                 jpeg_tx: None,
+                sps_pps_cache: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -960,6 +963,7 @@ mod tests {
                 hub_handle: None,
                 latest_jpeg: None,
                 jpeg_tx: None,
+                sps_pps_cache: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("a".into(), handle);
@@ -976,6 +980,7 @@ mod tests {
                 hub_handle: None,
                 latest_jpeg: None,
                 jpeg_tx: None,
+                sps_pps_cache: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("b".into(), handle);
