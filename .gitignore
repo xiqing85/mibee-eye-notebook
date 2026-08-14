@@ -55,3 +55,6 @@ crates/web/static/node_modules/
 
 # Vendored esbuild binary (download separately for air-gapped builds)
 tools/esbuild-linux-x64
+
+# Temporary files (safe to rm -rf)
+tmp/
