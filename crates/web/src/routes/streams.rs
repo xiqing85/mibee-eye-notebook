@@ -402,8 +402,11 @@ mod tests {
         )
         .bind(&id)
         .bind("Test Cam")
-        .bind("rtsp")
-        .bind("{\"url\":\"rtsp://localhost/stream\"}")
+        // "usb" is the only camera type StreamManager can create; the device
+        // itself is opened lazily by the hub's run task, so this stays
+        // deterministic on hosts without a camera.
+        .bind("usb")
+        .bind("{\"device_index\":0}")
         .bind("stopped")
         .bind(&now)
         .bind(&now)
@@ -423,7 +426,8 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/api/cameras/{}/start", cam_id))
             .method("POST")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -447,7 +451,8 @@ mod tests {
         let req = Request::builder()
             .uri("/api/cameras/does-not-exist/start")
             .method("POST")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -463,7 +468,8 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/api/cameras/{}/start", cam_id))
             .method("POST")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -473,7 +479,8 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/api/cameras/{}/start", cam_id))
             .method("POST")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -489,7 +496,8 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/api/cameras/{}/start", cam_id))
             .method("POST")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let _ = app.clone().oneshot(req).await.unwrap();
@@ -498,7 +506,8 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/api/cameras/{}/stop", cam_id))
             .method("POST")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -513,7 +522,8 @@ mod tests {
         let req = Request::builder()
             .uri("/api/cameras/ghost/stop")
             .method("POST")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -528,7 +538,8 @@ mod tests {
         let req = Request::builder()
             .uri("/api/cameras/ghost/snapshot")
             .method("GET")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -543,7 +554,8 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/api/cameras/{}/snapshot", cam_id))
             .method("GET")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -565,6 +577,8 @@ mod tests {
             let req = Request::builder()
                 .uri(path.as_str())
                 .method("POST")
+                .header("cookie", "csrf-token=test-csrf")
+                .header("x-csrf-token", "test-csrf")
                 .body(Body::empty())
                 .unwrap();
             let res = app.clone().oneshot(req).await.unwrap();

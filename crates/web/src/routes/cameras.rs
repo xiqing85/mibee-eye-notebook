@@ -313,7 +313,8 @@ mod tests {
 
         let req = Request::builder()
             .uri("/api/cameras")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -336,7 +337,8 @@ mod tests {
             .uri("/api/cameras")
             .method("POST")
             .header("content-type", "application/json")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "name": "Front Door",
@@ -370,7 +372,8 @@ mod tests {
             .uri("/api/cameras")
             .method("POST")
             .header("content-type", "application/json")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "name": "Driveway",
@@ -393,7 +396,8 @@ mod tests {
         // Get by ID
         let req = Request::builder()
             .uri(format!("/api/cameras/{}", cam_id))
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -404,7 +408,8 @@ mod tests {
             .uri(format!("/api/cameras/{}", cam_id))
             .method("PUT")
             .header("content-type", "application/json")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "name": "Back Driveway",
@@ -427,7 +432,8 @@ mod tests {
         // List should now have one camera
         let req = Request::builder()
             .uri("/api/cameras")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -444,7 +450,8 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/api/cameras/{}", cam_id))
             .method("DELETE")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -453,7 +460,8 @@ mod tests {
         // List empty
         let req = Request::builder()
             .uri("/api/cameras")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -474,7 +482,8 @@ mod tests {
 
         let req = Request::builder()
             .uri("/api/cameras/nonexistent-id")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -489,7 +498,8 @@ mod tests {
         let req = Request::builder()
             .uri("/api/cameras/ghost")
             .method("DELETE")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -506,6 +516,8 @@ mod tests {
             .uri("/api/cameras")
             .method("POST")
             .header("content-type", "application/json")
+            .header("cookie", "csrf-token=test-csrf")
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "name": "Unauth",

@@ -746,9 +746,6 @@ fn get_local_ip_for_server(server_addr: &SocketAddr) -> anyhow::Result<String> {
     Ok(local_addr.ip().to_string())
 }
 
-/// Get ONVIF XAddrs (device service URLs) for all non-loopback IPv4 interfaces.
-///
-/// Each XAddr is in the format `http://{ip}:{port}/onvif/device_service`.
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -766,7 +763,7 @@ mod tests {
 
     fn video_nal(nalu_type: u8, keyframe: bool) -> streaming::source::MediaFrame {
         streaming::source::MediaFrame::Video {
-            data: vec![nalu_type << 0 | 0x60, 0xAA, 0xBB],
+            data: vec![nalu_type | 0x60, 0xAA, 0xBB],
             keyframe,
             timestamp: 0,
         }
@@ -942,8 +939,8 @@ mod tests {
     fn au_gatherer_classifies_nalu_flags() {
         let mut g = AuGatherer::new();
         // Per-NAL frames of one keyframe encode: SPS(0x67) PPS(0x68) IDR(0x65)
-        g.push(&video_nal(0x67 >> 0 & 0x1F, true));
-        g.push(&video_nal(0x68 >> 0 & 0x1F, true));
+        g.push(&video_nal(0x67 & 0x1F, true));
+        g.push(&video_nal(0x68 & 0x1F, true));
         let au = g.push(&video_nal(5, true)).expect("IDR closes the AU");
         assert!(au.is_key_frame);
         assert_eq!(au.nalus.len(), 3);
