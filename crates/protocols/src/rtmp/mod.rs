@@ -414,16 +414,15 @@ impl RtmpPushClient {
                         cursor = Cursor::new(&buf[..]);
 
                         // Send Acknowledgement when window threshold is reached
-                        if let Some(ack_seq) = parser.take_ack_if_needed() {
-                            if let Err(e) = Self::write_protocol_message(
+                        if let Some(ack_seq) = parser.take_ack_if_needed()
+                            && let Err(e) = Self::write_protocol_message(
                                 stream,
                                 MessageType::Acknowledgement,
                                 &ack_seq.to_be_bytes(),
                             )
                             .await
-                            {
-                                tracing::warn!(error = %e, "Failed to send RTMP Acknowledgement");
-                            }
+                        {
+                            tracing::warn!(error = %e, "Failed to send RTMP Acknowledgement");
                         }
 
                         // Check for SetChunkSize message
@@ -436,12 +435,11 @@ impl RtmpPushClient {
                         }
 
                         // Try to extract AMF command
-                        if let Ok(values) = Self::parse_amf_values(&msg) {
-                            if let Some(Amf0Value::String(s)) = values.first() {
-                                if s == "_result" || s == "onStatus" {
-                                    return Ok(values);
-                                }
-                            }
+                        if let Ok(values) = Self::parse_amf_values(&msg)
+                            && let Some(Amf0Value::String(s)) = values.first()
+                            && (s == "_result" || s == "onStatus")
+                        {
+                            return Ok(values);
                         }
                     }
                     Ok(None) => break, // need more data
@@ -482,17 +480,17 @@ impl RtmpPushClient {
         let values = Self::read_until_command(stream).await?;
         // Look for the Number value after Null (4th value: [String, Number, Null, Number])
         for (i, v) in values.iter().enumerate() {
-            if let Amf0Value::Null = v {
-                if let Some(Amf0Value::Number(id)) = values.get(i + 1) {
-                    return Ok(*id as u32);
-                }
+            if let Amf0Value::Null = v
+                && let Some(Amf0Value::Number(id)) = values.get(i + 1)
+            {
+                return Ok(*id as u32);
             }
         }
         // Fallback: if there are exactly 4 values and the last is a Number
-        if values.len() >= 4 {
-            if let Amf0Value::Number(id) = &values[3] {
-                return Ok(*id as u32);
-            }
+        if values.len() >= 4
+            && let Amf0Value::Number(id) = &values[3]
+        {
+            return Ok(*id as u32);
         }
         bail!("Could not extract stream ID from createStream response");
     }
