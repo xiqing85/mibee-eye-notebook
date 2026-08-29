@@ -118,8 +118,11 @@ function ProtocolsTab({ protocols, setProtocols }) {
       <ProtocolCard name="gb28181" label={t('protocol.gb28181')} cfg={protocols.gb28181}
         onToggle={toggle} onSave={saveFields} onUpdate={upd} fields={[
           { key: 'device_id', label: t('protocol.device_id'), ph: t('protocol.device_id_ph') },
+          { key: 'channel_id', label: t('protocol.channel_id'), ph: t('protocol.channel_id_ph') },
           { key: 'platform_sip_address', label: t('protocol.server_ip'), ph: t('protocol.server_ip_ph') },
           { key: 'platform_sip_port', label: t('protocol.server_port'), type: 'number', ph: t('protocol.server_port_ph') },
+          { key: 'username', label: t('protocol.username'), ph: t('protocol.username_ph') },
+          { key: 'password', label: t('protocol.password'), type: 'password', ph: t('protocol.password_ph') },
         ]} />
       <ProtocolCard name="rtmp" label={t('protocol.rtmp')} cfg={protocols.rtmp}
         onToggle={toggle} onSave={saveFields} onUpdate={upd} fields={[
@@ -146,8 +149,8 @@ function ProtocolCard({ name, label, cfg, onToggle, onSave, onUpdate, fields }) 
         <div class="protocol-body">
           {fields.map((f) => (
             <div class="form-group" key={f.key}>
-              <label>{f.label}</label>
-              <input type={f.type || 'text'} value={cfg[f.key] || ''} placeholder={f.ph}
+              <label for={`${name}-${f.key}`}>{f.label}</label>
+              <input id={`${name}-${f.key}`} type={f.type || 'text'} value={cfg[f.key] || ''} placeholder={f.ph}
                      onInput={(e) => onUpdate(name, f.key, e.target.value)} />
             </div>
           ))}
