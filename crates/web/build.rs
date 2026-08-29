@@ -81,16 +81,21 @@ fn main() {
                 }
             }
             Err(e) => {
-                panic!("failed to invoke esbuild at {esbuild_path}: {e}. \
-                        Ensure tools/esbuild-linux-x64 is present (Linux-only build).");
+                panic!(
+                    "failed to invoke esbuild at {esbuild_path}: {e}. \
+                        Ensure tools/esbuild-linux-x64 is present (Linux-only build)."
+                );
             }
         }
     } else if !bundle_out.exists() {
         // Non-Linux dev host with no prebuilt bundle — emit a placeholder so
         // the build still produces an index.html (the SPA won't work, but the
         // Rust crate compiles). Real builds happen on Linux.
-        std::fs::write(&bundle_out, "console.error('SPA bundle not built — run on Linux.');")
-            .expect("write placeholder bundle");
+        std::fs::write(
+            &bundle_out,
+            "console.error('SPA bundle not built — run on Linux.');",
+        )
+        .expect("write placeholder bundle");
     }
 
     // Step 2: inline CSS + JS into the HTML template.

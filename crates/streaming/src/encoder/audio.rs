@@ -198,7 +198,11 @@ pub use aac::AacEncoder;
 ///
 /// Without the `aac` feature this always returns G.711 μ-law. With `aac`,
 /// callers can request AAC explicitly.
-pub fn default_encoder(codec: AudioCodec, sample_rate: u32, channels: u16) -> Box<dyn AudioEncoder> {
+pub fn default_encoder(
+    codec: AudioCodec,
+    sample_rate: u32,
+    channels: u16,
+) -> Box<dyn AudioEncoder> {
     match codec {
         AudioCodec::Mulaw => Box::new(G711Encoder::mulaw(sample_rate, channels)),
         AudioCodec::Alaw => Box::new(G711Encoder::alaw(sample_rate, channels)),

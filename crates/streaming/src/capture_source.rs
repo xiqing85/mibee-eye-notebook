@@ -33,10 +33,10 @@ use parking_lot::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 
+use crate::capability::QualityPreset;
 use crate::encoder::audio::{AudioEncoder, G711Encoder};
 use crate::encoder::convert::{Yuv420p, mjpeg_to_yuv420p, yuyv_to_yuv420p};
 use crate::encoder::h264::{H264Encoder, H264EncoderConfig, NalUnit};
-use crate::capability::QualityPreset;
 use crate::source::{MediaFrame, Source};
 use capture::audio::{AudioCapture, AudioFrame};
 use capture::video::{VideoCapture, VideoFrame};
@@ -417,9 +417,9 @@ fn bitrate_for_dimensions(width: u32, height: u32) -> u32 {
     let pixels = (width as u64) * (height as u64);
     // ~0.1 bits per pixel per frame at 30fps → reasonable starting point.
     match pixels {
-        p if p >= 1280 * 720 => 2_500_000,   // 720p+
-        p if p >= 640 * 480 => 1_200_000,   // VGA
-        p if p >= 320 * 240 => 400_000,     // QVGA
+        p if p >= 1280 * 720 => 2_500_000, // 720p+
+        p if p >= 640 * 480 => 1_200_000,  // VGA
+        p if p >= 320 * 240 => 400_000,    // QVGA
         _ => 150_000,
     }
 }
@@ -460,11 +460,7 @@ fn jpeg_encode_yuv(yuv: &Yuv420p) -> Option<Vec<u8>> {
         .ok()?;
     // Extract the accumulated JPEG bytes.
     let out = buf.borrow().clone();
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 // ---------------------------------------------------------------------------
@@ -586,10 +582,8 @@ impl Source for AudioCaptureSource {
 
             // 3. Construct the encoder. Default to G.711 μ-law.
             //    (AAC requires the `aac` feature and explicit opt-in elsewhere.)
-            let encoder: Box<dyn AudioEncoder> = Box::new(G711Encoder::mulaw(
-                sample_rate,
-                channels,
-            ));
+            let encoder: Box<dyn AudioEncoder> =
+                Box::new(G711Encoder::mulaw(sample_rate, channels));
 
             self.sample_rate = sample_rate;
             self.channels = channels;
@@ -600,7 +594,9 @@ impl Source for AudioCaptureSource {
 
             info!(
                 sample_rate,
-                channels, codec = "G.711 μ-law", "AudioCaptureSource started"
+                channels,
+                codec = "G.711 μ-law",
+                "AudioCaptureSource started"
             );
             Ok(())
         })

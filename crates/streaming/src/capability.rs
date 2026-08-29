@@ -182,8 +182,8 @@ pub fn probe() -> SystemCapabilities {
 /// drive in real time.
 pub fn recommended_profiles(caps: &SystemCapabilities) -> Vec<EncoderProfile> {
     let hw = caps.recommended_encoder != EncoderBackend::Software;
-    let strong_cpu = caps.cpu_physical_cores >= 6
-        || caps.simd.iter().any(|s| *s == "avx2" || *s == "avx512f");
+    let strong_cpu =
+        caps.cpu_physical_cores >= 6 || caps.simd.iter().any(|s| *s == "avx2" || *s == "avx512f");
 
     let mut out = Vec::new();
     if hw {
@@ -192,8 +192,7 @@ pub fn recommended_profiles(caps: &SystemCapabilities) -> Vec<EncoderProfile> {
             quality: QualityPreset::HardwareMax,
             max_width: 1920,
             max_height: 1080,
-            rationale: "Hardware encoder available — 1080p at near-zero CPU"
-                .to_string(),
+            rationale: "Hardware encoder available — 1080p at near-zero CPU".to_string(),
         });
     }
     let sw_quality = if strong_cpu {
@@ -208,7 +207,11 @@ pub fn recommended_profiles(caps: &SystemCapabilities) -> Vec<EncoderProfile> {
         max_height: 720,
         rationale: format!(
             "Software fallback{}",
-            if strong_cpu { " — strong CPU" } else { " — weak CPU, prefer lower res" }
+            if strong_cpu {
+                " — strong CPU"
+            } else {
+                " — weak CPU, prefer lower res"
+            }
         ),
     });
     out
@@ -371,11 +374,7 @@ fn probe_memory_mib() -> u64 {
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
             // Format: "MemTotal:       16384000 kB"
-            let kb: u64 = rest
-                .trim()
-                .trim_end_matches(" kB")
-                .parse()
-                .unwrap_or(0);
+            let kb: u64 = rest.trim().trim_end_matches(" kB").parse().unwrap_or(0);
             return kb / 1024;
         }
     }
@@ -428,7 +427,9 @@ fn classify_dri_node(path: &Path) -> Option<GpuInfo> {
     let name = path.file_name()?.to_str()?.to_string();
     // Resolve the char device to its sysfs entry: walk
     // /sys/class/drm/<name>/device/vendor.
-    let sys_vendor = Path::new("/sys/class/drm").join(&name).join("device/vendor");
+    let sys_vendor = Path::new("/sys/class/drm")
+        .join(&name)
+        .join("device/vendor");
     let raw = fs::read_to_string(&sys_vendor).ok()?;
     let raw = raw.trim();
     // PCI vendor IDs are stored as `0x8086` (Intel), `0x1002` (AMD), etc.
@@ -480,7 +481,11 @@ fn read_nvidia_description() -> Option<String> {
 /// The thresholds are conservative surveillance-oriented heuristics: a 720p
 /// stream needs to encode in real time with headroom for several cameras, so
 /// we prefer speed on marginal hardware.
-fn pick_quality_preset(backend: EncoderBackend, cpu: &CpuInfo, simd: &[&'static str]) -> QualityPreset {
+fn pick_quality_preset(
+    backend: EncoderBackend,
+    cpu: &CpuInfo,
+    simd: &[&'static str],
+) -> QualityPreset {
     match backend {
         EncoderBackend::Nvenc | EncoderBackend::Vaapi => QualityPreset::HardwareMax,
         EncoderBackend::Software => {

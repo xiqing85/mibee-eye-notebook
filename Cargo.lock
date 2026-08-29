@@ -1282,7 +1282,7 @@ dependencies = [
 [[package]]
 name = "gb28181-rs"
 version = "0.1.0"
-source = "git+https://github.com/mickeyzzc/gb28181-rs.git?tag=v0.2.0#19ae801f8226a725e8f2eee56f4b109291f2ee35"
+source = "git+https://github.com/mickeyzzc/gb28181-rs.git?tag=v0.3.0#8c6dfcb7fb2ee671b1e50b0d2f1f24369d49e463"
 dependencies = [
  "anyhow",
  "hex",
@@ -4095,7 +4095,6 @@ dependencies = [
  "cpal",
  "fdk-aac",
  "futures",
- "gb28181-rs",
  "http",
  "jpeg-decoder",
  "jpeg-encoder",
@@ -4935,6 +4934,7 @@ dependencies = [
  "capture",
  "futures",
  "futures-core",
+ "gb28181-rs",
  "include_dir",
  "libc",
  "observability",

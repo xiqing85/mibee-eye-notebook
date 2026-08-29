@@ -275,9 +275,8 @@ impl StreamManager {
                     .ok_or_else(|| {
                         anyhow::anyhow!("USB camera config must include 'device_index'")
                     })?;
-                let mut vcs = streaming::capture_source::VideoCaptureSource::new(
-                    device_index as usize,
-                );
+                let mut vcs =
+                    streaming::capture_source::VideoCaptureSource::new(device_index as usize);
                 // Adapt the encoder to the host: probe once (cached) and pick
                 // the recommended quality preset. A user-set override from the
                 // camera config (`quality_preset`) takes precedence when present.
@@ -285,9 +284,7 @@ impl StreamManager {
                     .get("quality_preset")
                     .and_then(|v| v.as_str())
                     .and_then(parse_quality_preset)
-                    .unwrap_or_else(|| {
-                        streaming::capability::probe().recommended_quality
-                    });
+                    .unwrap_or_else(|| streaming::capability::probe().recommended_quality);
                 vcs = vcs.with_quality_preset(preset);
                 // Honour an explicit target fps from the camera config so the
                 // encoder's GOP matches the real capture rate.
@@ -472,8 +469,7 @@ impl StreamManager {
             // build an init segment immediately, without waiting up to a full
             // GOP for the next IDR to carry fresh parameter sets.
             let harvester_handle = hub_handle.clone();
-            let sps_pps_cache: Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>> =
-                Arc::new(Mutex::new(None));
+            let sps_pps_cache: Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>> = Arc::new(Mutex::new(None));
             let cache_clone = Arc::clone(&sps_pps_cache);
             tokio::spawn(async move {
                 let mut rx = harvester_handle.subscribe_frames();
@@ -518,7 +514,13 @@ impl StreamManager {
                 hub.stop();
             });
 
-            (handle, stream_url, rtmp_url, Some(hub_handle), Some(sps_pps_cache))
+            (
+                handle,
+                stream_url,
+                rtmp_url,
+                Some(hub_handle),
+                Some(sps_pps_cache),
+            )
         };
 
         // ── 5. Store the stream handle ──────────────────────────────────
@@ -654,10 +656,7 @@ impl StreamManager {
     ///
     /// Used by the MJPEG live-preview endpoint to stream frames to a web
     /// client. Returns `None` if the camera has no active stream.
-    pub async fn subscribe_jpeg(
-        &self,
-        camera_id: &str,
-    ) -> Option<broadcast::Receiver<Arc<[u8]>>> {
+    pub async fn subscribe_jpeg(&self, camera_id: &str) -> Option<broadcast::Receiver<Arc<[u8]>>> {
         let streams = self.streams.read().await;
         let handle = streams.get(camera_id)?;
         let tx = handle.jpeg_tx.as_ref()?;

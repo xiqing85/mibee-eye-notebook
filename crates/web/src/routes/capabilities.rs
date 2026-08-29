@@ -36,9 +36,7 @@ pub struct CapabilitiesResponse {
 /// Probing is cheap (a handful of sysfs/`/proc` reads) but not free, so the
 /// result is cached for the process lifetime via a [`std::sync::OnceLock`].
 #[tracing::instrument(skip_all)]
-pub async fn get_capabilities(
-    Extension(_user): Extension<AuthenticatedUser>,
-) -> impl IntoResponse {
+pub async fn get_capabilities(Extension(_user): Extension<AuthenticatedUser>) -> impl IntoResponse {
     static CACHE: std::sync::OnceLock<CapabilitiesResponse> = std::sync::OnceLock::new();
     let cached = CACHE.get_or_init(|| {
         let system = probe();

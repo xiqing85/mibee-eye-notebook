@@ -23,6 +23,7 @@ tower-http.workspace = true
 security = { path = "../security" }
 observability = { path = "../observability" }
 protocols = { path = "../protocols" }
+gb28181-rs.workspace = true
 uuid.workspace = true
 capture = { path = "../capture" }
 streaming = { path = "../streaming" }

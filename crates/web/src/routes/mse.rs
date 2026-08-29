@@ -95,14 +95,11 @@ pub async fn stream_mse(
         }
     });
 
-    let body_stream = tokio_stream::wrappers::ReceiverStream::new(chunk_rx)
-        .map(|res| match res {
-            Ok(bytes) => Ok::<axum::body::Bytes, std::io::Error>(
-                axum::body::Bytes::from(bytes),
-            ),
-            // Infallible — never reached.
-            Err(_) => unreachable!(),
-        });
+    let body_stream = tokio_stream::wrappers::ReceiverStream::new(chunk_rx).map(|res| match res {
+        Ok(bytes) => Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::from(bytes)),
+        // Infallible — never reached.
+        Err(_) => unreachable!(),
+    });
 
     let body = Body::from_stream(body_stream);
 

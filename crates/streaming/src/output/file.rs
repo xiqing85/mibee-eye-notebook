@@ -75,7 +75,12 @@ impl FileOutput {
     /// metadata but will still be playable. Pass a live dimensions handle via
     /// [`with_dimensions_handle`](Self::with_dimensions_handle) to ensure the
     /// muxer picks up the real negotiated geometry.
-    pub fn new(path: &str, camera_id: &str, segment_duration_secs: u64, max_capacity_mb: u64) -> Self {
+    pub fn new(
+        path: &str,
+        camera_id: &str,
+        segment_duration_secs: u64,
+        max_capacity_mb: u64,
+    ) -> Self {
         Self {
             path: path.to_string(),
             camera_id: camera_id.to_string(),
@@ -109,10 +114,7 @@ impl FileOutput {
     /// negotiated `(width, height, fps)` from this handle, so the muxer track
     /// metadata matches the actual encoded frames even when the output is
     /// constructed before the first frame arrives.
-    pub fn with_dimensions_handle(
-        mut self,
-        handle: Arc<Mutex<Option<StreamDimensions>>>,
-    ) -> Self {
+    pub fn with_dimensions_handle(mut self, handle: Arc<Mutex<Option<StreamDimensions>>>) -> Self {
         self.dimensions_handle = Some(handle);
         self
     }
@@ -260,9 +262,7 @@ impl Output for FileOutput {
                     let needs_rotation = self
                         .active
                         .as_ref()
-                        .map(|a| {
-                            a.created_at.elapsed().as_secs() >= self.segment_duration_secs
-                        })
+                        .map(|a| a.created_at.elapsed().as_secs() >= self.segment_duration_secs)
                         .unwrap_or(true);
 
                     let open_now = needs_rotation && (keyframe || self.active.is_none());
@@ -351,10 +351,7 @@ fn format_local_timestamp(epoch_secs: u64) -> String {
     let min = (secs_of_day % 3600) / 60;
     let sec = secs_of_day % 60;
 
-    format!(
-        "{:04}{:02}{:02}{:02}{:02}{:02}",
-        y, m, d, hour, min, sec
-    )
+    format!("{:04}{:02}{:02}{:02}{:02}{:02}", y, m, d, hour, min, sec)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

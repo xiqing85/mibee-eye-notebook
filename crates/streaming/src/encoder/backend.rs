@@ -22,9 +22,9 @@
 
 use anyhow::Result;
 
-use crate::capability::QualityPreset;
 use super::convert::Yuv420p;
 use super::h264::NalUnit;
+use crate::capability::QualityPreset;
 
 /// Configuration for constructing any [`EncoderBackend`].
 #[derive(Debug, Clone, Copy)]
@@ -76,11 +76,13 @@ pub fn select_best(config: BackendConfig) -> Box<dyn EncoderBackend> {
     #[cfg(feature = "vaapi")]
     {
         let caps = super::super::capability::probe();
-        if caps
-            .gpus
-            .iter()
-            .any(|g| matches!(g.vendor, super::super::capability::GpuVendor::Intel | super::super::capability::GpuVendor::Amd))
-        {
+        if caps.gpus.iter().any(|g| {
+            matches!(
+                g.vendor,
+                super::super::capability::GpuVendor::Intel
+                    | super::super::capability::GpuVendor::Amd
+            )
+        }) {
             if let Ok(b) = VaapiBackend::new(config) {
                 tracing::info!("selected VAAPI hardware encoder");
                 return Box::new(b);
@@ -149,7 +151,13 @@ impl VaapiBackend {
         let node = caps
             .gpus
             .iter()
-            .find(|g| matches!(g.vendor, super::super::capability::GpuVendor::Intel | super::super::capability::GpuVendor::Amd))
+            .find(|g| {
+                matches!(
+                    g.vendor,
+                    super::super::capability::GpuVendor::Intel
+                        | super::super::capability::GpuVendor::Amd
+                )
+            })
             .map(|g| g.render_node.clone())
             .ok_or_else(|| anyhow::anyhow!("no VAAPI-capable GPU"))?;
         tracing::info!(
