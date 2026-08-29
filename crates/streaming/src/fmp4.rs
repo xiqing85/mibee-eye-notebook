@@ -205,12 +205,7 @@ impl Fmp4Remuxer {
         self.inner.as_mut().and_then(|i| i.muxer.flush_segment())
     }
 
-    fn init_with_sps_pps(
-        &mut self,
-        sps: Vec<u8>,
-        pps: Vec<u8>,
-        first_pts_ms: u64,
-    ) -> Result<()> {
+    fn init_with_sps_pps(&mut self, sps: Vec<u8>, pps: Vec<u8>, first_pts_ms: u64) -> Result<()> {
         // Parse width/height out of the SPS so the muxer's track metadata is
         // correct. Fall back to 1280x720 if parsing fails — MSE decoders
         // re-derive geometry from the SPS itself, so an incorrect value in the

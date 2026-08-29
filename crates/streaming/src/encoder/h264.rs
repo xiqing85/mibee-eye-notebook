@@ -24,12 +24,15 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use anyhow::{Context, Result};
-use openh264::encoder::{BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile, QpRange, RateControlMode, VuiConfig};
-use openh264::formats::YUVSource;
 use openh264::Timestamp;
+use openh264::encoder::{
+    BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile,
+    QpRange, RateControlMode, VuiConfig,
+};
+use openh264::formats::YUVSource;
 
-use crate::capability::QualityPreset;
 use super::convert::Yuv420p;
+use crate::capability::QualityPreset;
 
 /// Configuration for constructing an [`H264Encoder`].
 #[derive(Debug, Clone, Copy)]
@@ -64,7 +67,9 @@ impl Default for H264EncoderConfig {
 ///
 /// Kept as a standalone function so it can be unit-tested without
 /// constructing an encoder.
-fn preset_to_tuning(preset: QualityPreset) -> (&'static str, Profile, Complexity, RateControlMode, QpRange) {
+fn preset_to_tuning(
+    preset: QualityPreset,
+) -> (&'static str, Profile, Complexity, RateControlMode, QpRange) {
     match preset {
         // Weak CPUs: Baseline + lowest complexity + wide QP range. Maximise
         // throughput at the cost of compression efficiency and image quality.
@@ -140,11 +145,7 @@ impl H264Encoder {
         // GOP = one keyframe per second, derived from the *actual* capture
         // frame rate. The previous code hardcoded 30 fps which produced a
         // 3-second keyframe interval for 10 fps cameras.
-        let fps_for_gop = if config.fps >= 1.0 {
-            config.fps
-        } else {
-            30.0
-        };
+        let fps_for_gop = if config.fps >= 1.0 { config.fps } else { 30.0 };
         let gop = IntraFramePeriod::from_num_frames(fps_for_gop.round().max(1.0) as u32);
 
         let (preset_label, profile, complexity, rc_mode, qp_range) =
@@ -182,7 +183,11 @@ impl H264Encoder {
             "OpenH264 encoder initialized"
         );
 
-        Ok(Self { encoder, config, annex_b_buf: Vec::with_capacity(64 * 1024) })
+        Ok(Self {
+            encoder,
+            config,
+            annex_b_buf: Vec::with_capacity(64 * 1024),
+        })
     }
 
     /// Encode a single YUV420p frame at the given presentation timestamp
@@ -396,22 +401,19 @@ mod tests {
         // openh264's Profile/Complexity enums don't derive PartialEq, so we
         // assert on the preset label (our own string) plus the QP range that
         // is unique to each preset.
-        let (label, _profile, _complexity, _, _qp) =
-            preset_to_tuning(QualityPreset::UltraFast);
+        let (label, _profile, _complexity, _, _qp) = preset_to_tuning(QualityPreset::UltraFast);
         assert_eq!(label, "ultra-fast");
     }
 
     #[test]
     fn high_preset_uses_high_profile_and_complexity() {
-        let (label, _profile, _complexity, _, _qp) =
-            preset_to_tuning(QualityPreset::High);
+        let (label, _profile, _complexity, _, _qp) = preset_to_tuning(QualityPreset::High);
         assert_eq!(label, "high");
     }
 
     #[test]
     fn medium_preset_is_the_balanced_default() {
-        let (label, _profile, _complexity, _, _qp) =
-            preset_to_tuning(QualityPreset::Medium);
+        let (label, _profile, _complexity, _, _qp) = preset_to_tuning(QualityPreset::Medium);
         assert_eq!(label, "medium");
     }
 

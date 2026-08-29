@@ -4,7 +4,6 @@ pub mod audio_codec;
 /// ONVIF, GB28181, RTSP, RTMP clients
 pub mod rtmp;
 
-pub mod gb28181;
 pub mod h264;
 pub mod onvif;
 pub mod rtcp;
