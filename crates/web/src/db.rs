@@ -668,10 +668,14 @@ pub async fn create_test_dbs() -> (SqlitePool, Arc<Mutex<rusqlite::Connection>>)
         .await
         .expect("Failed to create test pool");
 
-    // Create in-memory connection for auth operations
-    let auth_db = Arc::new(Mutex::new(
-        rusqlite::Connection::open_in_memory().expect("Failed to create test auth db"),
-    ));
+    // Create in-memory connection for auth operations. The users/sessions
+    // schema (migration 003) lives on this connection — apply it here so
+    // every consumer gets a usable auth DB (single source of truth).
+    let auth_conn = rusqlite::Connection::open_in_memory().expect("Failed to create test auth db");
+    auth_conn
+        .execute_batch(include_str!("../../../migrations/003_users_sessions.sql"))
+        .expect("Failed to apply auth schema (003) to test auth db");
+    let auth_db = Arc::new(Mutex::new(auth_conn));
 
     (pool, auth_db)
 }
@@ -692,21 +696,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Run migrations manually (001 for schema, 004 for offline_since column)
-        sqlx::query(include_str!("../../../migrations/001_initial.sql"))
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(include_str!(
-            "../../../migrations/004__add_offline_since.sql"
-        ))
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO schema_version (version) VALUES (4)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        // Use the real migration path: creates schema_version and applies
+        // 001..004 in order, exactly like the running application.
+        run_migrations(&pool).await.unwrap();
         pool
     }
 

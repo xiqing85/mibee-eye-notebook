@@ -138,7 +138,8 @@ mod tests {
 
         let req = Request::builder()
             .uri("/api/settings")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -168,7 +169,8 @@ mod tests {
             .uri("/api/settings")
             .method("PUT")
             .header("content-type", "application/json")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "settings": {
@@ -185,7 +187,8 @@ mod tests {
         // Read them back
         let req = Request::builder()
             .uri("/api/settings")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -204,7 +207,8 @@ mod tests {
             .uri("/api/settings")
             .method("PUT")
             .header("content-type", "application/json")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "settings": { "theme": "light" }
@@ -217,7 +221,8 @@ mod tests {
 
         let req = Request::builder()
             .uri("/api/settings")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();

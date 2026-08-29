@@ -44,6 +44,10 @@ fn key_bytes<'a>(key: &'a PrivateKeyDer<'a>) -> &'a [u8] {
 /// If the files do not exist, a fresh self-signed certificate is generated and saved to
 /// both paths as PEM files. On subsequent calls the saved files are reused.
 pub fn build_tls_config(cert_path: &str, key_path: &str) -> Result<ServerConfig> {
+    // ServerConfig::builder() needs a process-default CryptoProvider; install
+    // the ring provider (idempotent — later calls are no-ops).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let (cert_pem, key_pem) = if Path::new(cert_path).exists() && Path::new(key_path).exists() {
         tracing::info!("Loading existing TLS certificate from {cert_path}");
         (
