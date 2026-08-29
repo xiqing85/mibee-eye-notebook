@@ -226,7 +226,10 @@ async fn main() -> anyhow::Result<()> {
         if enabled {
             let onvif_config =
                 web::protocol_runtime::build_onvif_config_from_json(&cfg, &advertised_host);
-            if let Err(e) = protocol_runtime.start_onvif(onvif_config).await {
+            if let Err(e) = protocol_runtime
+                .start_onvif(onvif_config, stream_manager.clone())
+                .await
+            {
                 tracing::warn!(error = %e, "failed to start ONVIF at startup");
             }
         }

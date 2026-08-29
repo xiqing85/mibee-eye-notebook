@@ -254,6 +254,7 @@ pub async fn get_protocols_onvif(
 pub async fn update_protocols_onvif(
     Extension(db): Extension<Db>,
     Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
+    Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(advertised_host): Extension<Arc<String>>,
     Extension(_user): Extension<AuthenticatedUser>,
     Json(payload): Json<serde_json::Value>,
@@ -267,7 +268,7 @@ pub async fn update_protocols_onvif(
             let mut rt = protocol_runtime.lock().await;
             if enabled {
                 let onvif_config = build_onvif_config_from_json(&config, &advertised_host);
-                if let Err(e) = rt.start_onvif(onvif_config).await {
+                if let Err(e) = rt.start_onvif(onvif_config, stream_manager.clone()).await {
                     tracing::warn!(error = %e, "failed to start ONVIF after config update");
                 }
             } else {
