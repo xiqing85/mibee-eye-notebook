@@ -54,14 +54,14 @@ fn check_lockout(username: &str) -> Option<u64> {
     let mut failures = LOGIN_FAILURES.lock();
     cleanup_old_entries(&mut failures);
 
-    if let Some(&(count, last_attempt)) = failures.map.get(username) {
-        if count >= 5 {
-            let elapsed = last_attempt.elapsed().as_secs();
-            // Lockout duration doubles with each failure beyond 5: 60s, 120s, 240s, 480s, ...
-            let lockout_duration = 60u64 * 2u64.pow(count - 5);
-            if elapsed < lockout_duration {
-                return Some(lockout_duration - elapsed);
-            }
+    if let Some(&(count, last_attempt)) = failures.map.get(username)
+        && count >= 5
+    {
+        let elapsed = last_attempt.elapsed().as_secs();
+        // Lockout duration doubles with each failure beyond 5: 60s, 120s, 240s, 480s, ...
+        let lockout_duration = 60u64 * 2u64.pow(count - 5);
+        if elapsed < lockout_duration {
+            return Some(lockout_duration - elapsed);
         }
     }
     None
@@ -783,6 +783,8 @@ mod tests {
             .uri("/api/auth/reset")
             .method("POST")
             .header("content-type", "application/json")
+            .header("cookie", "csrf-token=test-csrf")
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "old_password": "x",
@@ -804,7 +806,8 @@ mod tests {
             .uri("/api/auth/reset")
             .method("POST")
             .header("content-type", "application/json")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "old_password": "current_pass",
@@ -826,7 +829,8 @@ mod tests {
             .uri("/api/auth/reset")
             .method("POST")
             .header("content-type", "application/json")
-            .header("cookie", format!("session={token}"))
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
                     "old_password": "wrong_password",
