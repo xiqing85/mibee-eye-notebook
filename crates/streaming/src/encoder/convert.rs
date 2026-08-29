@@ -134,7 +134,7 @@ pub fn mjpeg_to_rgb8(mjpeg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
 /// Input layout: `Y0 U0 Y1 V0 Y2 U1 Y3 V1 …` (two pixels per macropixel).
 /// Width and height are the *full* frame dimensions (must both be even).
 pub fn yuyv_to_yuv420p(yuyv: &[u8], width: u32, height: u32) -> Result<Yuv420p> {
-    if width % 2 != 0 || height % 2 != 0 {
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
         bail!("YUYV requires even dimensions: {width}x{height}");
     }
     let expected = (width as usize) * (height as usize) * 2;

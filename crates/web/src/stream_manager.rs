@@ -102,6 +102,23 @@ pub struct StreamInfo {
 /// UI's snapshot endpoint. `None` until the first frame has been encoded.
 pub type LatestJpeg = Arc<Mutex<Option<Arc<[u8]>>>>;
 
+/// Cached (SPS, PPS) NAL pair harvested from the frame broadcast, so new MSE
+/// clients can bootstrap an init segment without waiting for the next IDR.
+pub type SpsPpsCache = Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>>;
+
+/// Live capture-dimensions handle (width/height once the source starts).
+type DimensionsHandle =
+    Arc<parking_lot::Mutex<Option<streaming::capture_source::StreamDimensions>>>;
+
+/// Typed capture-source construction result: the boxed source plus the
+/// JPEG-tap handles only `VideoCaptureSource` exposes.
+type SourceBundle = (
+    Box<dyn Source>,
+    Option<LatestJpeg>,
+    Option<DimensionsHandle>,
+    Option<broadcast::Sender<Arc<[u8]>>>,
+);
+
 struct StreamHandle {
     /// Join handle for the spawned pipeline task.
     join_handle: Option<tokio::task::JoinHandle<()>>,
@@ -121,7 +138,7 @@ struct StreamHandle {
     /// Cached (SPS, PPS) NAL units extracted from the broadcast, so new MSE
     /// clients can bootstrap an init segment without waiting for the next IDR.
     /// `None` until the first IDR has been observed.
-    sps_pps_cache: Option<Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>>>,
+    sps_pps_cache: Option<SpsPpsCache>,
     /// Current status.
     status: StreamStatus,
 }
@@ -262,12 +279,7 @@ impl StreamManager {
         // *before* the source is boxed as `dyn Source`, since those methods
         // are specific to `VideoCaptureSource`. So we keep the typed value
         // around for handle extraction, then box it.
-        let (source, latest_jpeg, dimensions, jpeg_tx): (
-            Box<dyn Source>,
-            Option<LatestJpeg>,
-            Option<Arc<parking_lot::Mutex<Option<streaming::capture_source::StreamDimensions>>>>,
-            Option<broadcast::Sender<Arc<[u8]>>>,
-        ) = match camera_type {
+        let (source, latest_jpeg, dimensions, jpeg_tx): SourceBundle = match camera_type {
             "usb" => {
                 let device_index = config
                     .get("device_index")
@@ -288,10 +300,10 @@ impl StreamManager {
                 vcs = vcs.with_quality_preset(preset);
                 // Honour an explicit target fps from the camera config so the
                 // encoder's GOP matches the real capture rate.
-                if let Some(fps) = config.get("target_fps").and_then(|v| v.as_f64()) {
-                    if fps > 0.0 {
-                        vcs = vcs.with_target_fps(fps as f32);
-                    }
+                if let Some(fps) = config.get("target_fps").and_then(|v| v.as_f64())
+                    && fps > 0.0
+                {
+                    vcs = vcs.with_target_fps(fps as f32);
                 }
                 let latest = vcs.latest_jpeg_handle();
                 let dims = vcs.dimensions_handle();
@@ -469,7 +481,7 @@ impl StreamManager {
             // build an init segment immediately, without waiting up to a full
             // GOP for the next IDR to carry fresh parameter sets.
             let harvester_handle = hub_handle.clone();
-            let sps_pps_cache: Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>> = Arc::new(Mutex::new(None));
+            let sps_pps_cache: SpsPpsCache = Arc::new(Mutex::new(None));
             let cache_clone = Arc::clone(&sps_pps_cache);
             tokio::spawn(async move {
                 let mut rx = harvester_handle.subscribe_frames();

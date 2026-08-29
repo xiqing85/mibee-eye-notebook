@@ -340,11 +340,7 @@ pub fn enumerate_device_formats_detailed(device_index: usize) -> Result<Vec<Form
         .collect();
 
     // Highest resolution first; within a resolution, highest fps first.
-    formats.sort_by(|a, b| {
-        b.pixels()
-            .cmp(&a.pixels())
-            .then_with(|| b.fps.cmp(&a.fps))
-    });
+    formats.sort_by(|a, b| b.pixels().cmp(&a.pixels()).then_with(|| b.fps.cmp(&a.fps)));
 
     // Camera is dropped, releasing the device.
     Ok(formats)
