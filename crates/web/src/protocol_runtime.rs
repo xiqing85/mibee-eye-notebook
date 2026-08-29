@@ -534,6 +534,8 @@ impl gb28181_rs::frame::FrameSource for StreamManagerFrameSource {
         let manager = self.manager.clone();
         let tx = tx;
         tokio::spawn(async move {
+            let mut no_camera_ticks: u32 = 0;
+            let mut forwarded: u64 = 0;
             loop {
                 let camera = manager
                     .list_active_streams()
@@ -541,8 +543,20 @@ impl gb28181_rs::frame::FrameSource for StreamManagerFrameSource {
                     .first()
                     .map(|info| info.camera_id.clone());
                 let frames = match camera {
-                    Some(camera_id) => manager.subscribe_frames(&camera_id).await,
-                    None => None,
+                    Some(camera_id) => {
+                        tracing::debug!(%camera_id, "gb28181 bridge: subscribed to camera frames");
+                        manager.subscribe_frames(&camera_id).await
+                    }
+                    None => {
+                        no_camera_ticks += 1;
+                        if no_camera_ticks % 10 == 1 {
+                            tracing::warn!(
+                                ticks = no_camera_ticks,
+                                "gb28181 bridge: no active camera to bridge"
+                            );
+                        }
+                        None
+                    }
                 };
                 let mut frames = match frames {
                     Some(f) => f,
@@ -551,12 +565,25 @@ impl gb28181_rs::frame::FrameSource for StreamManagerFrameSource {
                         continue;
                     }
                 };
+                let mut gatherer = AuGatherer::new();
                 loop {
                     match frames.recv().await {
                         Ok(frame) => {
-                            let Some(au) = media_frame_to_access_unit(&frame) else {
+                            let streaming::source::MediaFrame::Video { .. } = frame.as_ref() else {
+                                continue; // audio is not part of the H.264 push path
+                            };
+                            let Some(au) = gatherer.push(&frame) else {
                                 continue;
                             };
+                            forwarded += 1;
+                            if forwarded % 300 == 1 {
+                                tracing::info!(
+                                    forwarded,
+                                    nalus = au.nalus.len(),
+                                    key = au.is_key_frame,
+                                    "gb28181 bridge: forwarding access units"
+                                );
+                            }
                             // Bounded, drop-on-full: mirrors the hub's
                             // slow-consumer semantics without blocking the
                             // async bridge on a full channel.
@@ -588,41 +615,77 @@ impl gb28181_rs::frame::FrameSource for StreamManagerFrameSource {
     }
 }
 
-/// Convert one video [`MediaFrame`] (Annex-B or AVCC bytes) into a library
-/// access unit. Audio frames are not part of the H.264 push path — `None`.
-fn media_frame_to_access_unit(
-    frame: &streaming::source::MediaFrame,
-) -> Option<gb28181_rs::frame::AccessUnit> {
-    let (data, keyframe) = match frame {
-        streaming::source::MediaFrame::Video { data, keyframe, .. } => (data, *keyframe),
-        streaming::source::MediaFrame::Audio { .. } => return None,
-    };
-    // The parser returns one (possibly empty) payload for degenerate input —
-    // filter first, then treat "no real NALs" as no access unit.
-    let nalus: Vec<gb28181_rs::frame::Nalu> = streaming::output::parse_h264_nal_units(data)
-        .into_iter()
-        .filter(|n| !n.is_empty())
-        .map(|n| {
-            let nalu_type = n[0] & 0x1F;
-            gb28181_rs::frame::Nalu {
-                nalu_type,
-                is_idr: nalu_type == 5,
-                is_sps: nalu_type == 7,
-                is_pps: nalu_type == 8,
-                is_aud: nalu_type == 9,
-                data: n,
-            }
-        })
-        .collect();
-    if nalus.is_empty() {
-        return None;
+/// Group the capture pipeline's per-NAL [`MediaFrame`]s into H.264 access
+/// units for the GB28181 push path.
+///
+/// The USB capture pipeline emits **one MediaFrame per NAL unit** (start code
+/// stripped, `keyframe` true for IDR slices *and* their SPS/PPS). The
+/// library's `FrameSource` contract wants whole access units, so the
+/// gatherer holds non-VCL NALs (SPS/PPS/SEI/AUD) pending and emits one
+/// access unit per VCL NAL (slice, types 1–5) with those prefixes attached.
+struct AuGatherer {
+    pending: Vec<Vec<u8>>,
+}
+
+impl AuGatherer {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
     }
-    let is_key_frame = keyframe || nalus.iter().any(|n| n.is_idr);
-    Some(gb28181_rs::frame::AccessUnit {
-        is_key_frame,
-        timestamp: std::time::Instant::now(),
-        nalus,
-    })
+
+    /// Feed one video MediaFrame; returns a complete access unit when the
+    /// fed NAL closes one (i.e. it was a VCL slice).
+    fn push(
+        &mut self,
+        frame: &streaming::source::MediaFrame,
+    ) -> Option<gb28181_rs::frame::AccessUnit> {
+        let (data, keyframe_hint) = match frame {
+            streaming::source::MediaFrame::Video { data, keyframe, .. } => (data, *keyframe),
+            streaming::source::MediaFrame::Audio { .. } => return None,
+        };
+        if data.is_empty() {
+            return None;
+        }
+        let nalu_type = data[0] & 0x1F;
+        if !(1..=5).contains(&nalu_type) {
+            // Non-VCL prefix (SPS/PPS/SEI/AUD…): keep the latest set, capped
+            // so a runaway encoder cannot grow this without bound.
+            self.pending.push(data.clone());
+            if self.pending.len() > 8 {
+                self.pending.remove(0);
+            }
+            return None;
+        }
+        let mut nalus: Vec<gb28181_rs::frame::Nalu> = self
+            .pending
+            .drain(..)
+            .chain(std::iter::once(data.clone()))
+            .map(|n| {
+                let t = n[0] & 0x1F;
+                gb28181_rs::frame::Nalu {
+                    nalu_type: t,
+                    is_idr: t == 5,
+                    is_sps: t == 7,
+                    is_pps: t == 8,
+                    is_aud: t == 9,
+                    data: n,
+                }
+            })
+            .collect();
+        let is_key_frame = keyframe_hint || nalus.iter().any(|n| n.is_idr);
+        // Defensive: drop degenerate empties (cannot happen for a non-empty
+        // input, but keeps the contract explicit).
+        nalus.retain(|n| !n.data.is_empty());
+        if nalus.is_empty() {
+            return None;
+        }
+        Some(gb28181_rs::frame::AccessUnit {
+            is_key_frame,
+            timestamp: std::time::Instant::now(),
+            nalus,
+        })
+    }
 }
 
 async fn graceful_shutdown(
@@ -699,6 +762,50 @@ mod tests {
         assert!(!status.onvif.running);
         assert!(!status.gb28181.running);
         assert!(!status.rtmp.running);
+    }
+
+    fn video_nal(nalu_type: u8, keyframe: bool) -> streaming::source::MediaFrame {
+        streaming::source::MediaFrame::Video {
+            data: vec![nalu_type << 0 | 0x60, 0xAA, 0xBB],
+            keyframe,
+            timestamp: 0,
+        }
+    }
+
+    /// The capture pipeline emits one MediaFrame per NAL (SPS/PPS/IDR all
+    /// keyframe=true); the gatherer must emit one AU per slice with the
+    /// non-VCL prefix attached.
+    #[test]
+    fn au_gatherer_groups_per_nal_frames_into_access_units() {
+        let mut g = AuGatherer::new();
+        assert!(g.push(&video_nal(7, true)).is_none()); // SPS
+        assert!(g.push(&video_nal(8, true)).is_none()); // PPS
+        let idr = g.push(&video_nal(5, true)).expect("IDR closes the AU");
+        assert!(idr.is_key_frame);
+        assert_eq!(
+            idr.nalus.iter().map(|n| n.nalu_type).collect::<Vec<_>>(),
+            vec![7, 8, 5]
+        );
+        let p = g.push(&video_nal(1, false)).expect("slice closes the AU");
+        assert!(!p.is_key_frame);
+        assert_eq!(p.nalus.len(), 1);
+        // Audio frames are ignored.
+        assert!(
+            g.push(&streaming::source::MediaFrame::Audio {
+                data: vec![0x00],
+                timestamp: 0,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn au_gatherer_caps_pending_prefixes() {
+        let mut g = AuGatherer::new();
+        for _ in 0..20 {
+            g.push(&video_nal(6, false)); // SEI-like non-VCL
+        }
+        assert!(g.pending.len() <= 8);
     }
 
     #[test]
@@ -832,53 +939,43 @@ mod tests {
     }
 
     #[test]
-    fn media_frame_to_access_unit_classifies_nalus() {
-        let frame = streaming::source::MediaFrame::Video {
-            keyframe: true,
-            // Annex-B: SPS | PPS | IDR
-            data: vec![
-                0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x00,
-                0x00, 0x00, 0x01, 0x65, 0x88, 0x84,
-            ],
-            timestamp: 42,
-        };
-        let au = media_frame_to_access_unit(&frame).expect("video frame converts");
+    fn au_gatherer_classifies_nalu_flags() {
+        let mut g = AuGatherer::new();
+        // Per-NAL frames of one keyframe encode: SPS(0x67) PPS(0x68) IDR(0x65)
+        g.push(&video_nal(0x67 >> 0 & 0x1F, true));
+        g.push(&video_nal(0x68 >> 0 & 0x1F, true));
+        let au = g.push(&video_nal(5, true)).expect("IDR closes the AU");
         assert!(au.is_key_frame);
         assert_eq!(au.nalus.len(), 3);
         assert!(au.nalus[0].is_sps && au.nalus[0].nalu_type == 7);
         assert!(au.nalus[1].is_pps && au.nalus[1].nalu_type == 8);
         assert!(au.nalus[2].is_idr && au.nalus[2].nalu_type == 5);
-        // Start codes stripped: first payload byte is the NAL header.
-        assert_eq!(au.nalus[0].data[0], 0x67);
     }
 
     #[test]
-    fn media_frame_to_access_unit_marks_p_frame_not_key() {
-        let frame = streaming::source::MediaFrame::Video {
-            keyframe: false,
-            data: vec![0x00, 0x00, 0x00, 0x01, 0x41, 0x9A, 0x22],
-            timestamp: 84,
-        };
-        let au = media_frame_to_access_unit(&frame).expect("video frame converts");
+    fn au_gatherer_marks_p_frame_not_key() {
+        let mut g = AuGatherer::new();
+        let au = g.push(&video_nal(1, false)).expect("slice closes the AU");
         assert!(!au.is_key_frame);
         assert_eq!(au.nalus.len(), 1);
         assert_eq!(au.nalus[0].nalu_type, 1);
     }
 
     #[test]
-    fn media_frame_to_access_unit_skips_audio_and_empty() {
+    fn au_gatherer_skips_audio_and_empty() {
+        let mut g = AuGatherer::new();
         let audio = streaming::source::MediaFrame::Audio {
             data: vec![0xFF; 160],
             timestamp: 1,
         };
-        assert!(media_frame_to_access_unit(&audio).is_none());
+        assert!(g.push(&audio).is_none());
 
         let empty = streaming::source::MediaFrame::Video {
             keyframe: false,
             data: Vec::new(),
             timestamp: 2,
         };
-        assert!(media_frame_to_access_unit(&empty).is_none());
+        assert!(g.push(&empty).is_none());
     }
 
     #[tokio::test]
