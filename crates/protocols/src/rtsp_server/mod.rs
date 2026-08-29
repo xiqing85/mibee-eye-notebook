@@ -647,8 +647,7 @@ mod tests {
                 break;
             }
             resp_buf.push(buf[0]);
-            if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == [b'\r', b'\n', b'\r', b'\n']
-            {
+            if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
                 header_end = Some(resp_buf.len());
             }
         }
@@ -658,10 +657,10 @@ mod tests {
         let content_length = header_str
             .lines()
             .find_map(|line| {
-                if let Some((name, value)) = line.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("Content-Length") {
-                        return value.trim().parse::<usize>().ok();
-                    }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("Content-Length")
+                {
+                    return value.trim().parse::<usize>().ok();
                 }
                 None
             })
@@ -727,10 +726,10 @@ mod tests {
         let session_id = resp_str
             .lines()
             .find_map(|line| {
-                if let Some((name, value)) = line.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("Session") {
-                        return Some(value.trim().to_string());
-                    }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("Session")
+                {
+                    return Some(value.trim().to_string());
                 }
                 None
             })
@@ -1022,10 +1021,10 @@ mod tests {
         let session_id = resp_str
             .lines()
             .find_map(|line| {
-                if let Some((name, value)) = line.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("Session") {
-                        return Some(value.trim().to_string());
-                    }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("Session")
+                {
+                    return Some(value.trim().to_string());
                 }
                 None
             })
@@ -1070,10 +1069,10 @@ mod tests {
         let session_id = resp_str
             .lines()
             .find_map(|line| {
-                if let Some((name, value)) = line.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("Session") {
-                        return Some(value.trim().to_string());
-                    }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("Session")
+                {
+                    return Some(value.trim().to_string());
                 }
                 None
             })
@@ -1259,10 +1258,10 @@ mod tests {
         let session_id = resp_str
             .lines()
             .find_map(|line| {
-                if let Some((name, value)) = line.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("Session") {
-                        return Some(value.trim().to_string());
-                    }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("Session")
+                {
+                    return Some(value.trim().to_string());
                 }
                 None
             })
@@ -1451,10 +1450,10 @@ mod tests {
         let session_id = resp_str
             .lines()
             .find_map(|line| {
-                if let Some((name, value)) = line.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("Session") {
-                        return Some(value.trim().to_string());
-                    }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.trim().eq_ignore_ascii_case("Session")
+                {
+                    return Some(value.trim().to_string());
                 }
                 None
             })

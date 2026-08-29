@@ -575,15 +575,15 @@ pub fn find_keyframes(data: &[u8]) -> Vec<usize> {
 
     for nal_unit in nal_units {
         // Parse the NAL header
-        if let Ok((header, _)) = parse_nal_header(nal_unit) {
-            if is_keyframe(header.nal_unit_type, header.nal_ref_idc) {
-                // Find the start code position for this NAL unit
-                let start_codes = find_start_codes(data);
-                for (start, _) in start_codes.iter() {
-                    if *start >= offset {
-                        keyframes.push(*start);
-                        break;
-                    }
+        if let Ok((header, _)) = parse_nal_header(nal_unit)
+            && is_keyframe(header.nal_unit_type, header.nal_ref_idc)
+        {
+            // Find the start code position for this NAL unit
+            let start_codes = find_start_codes(data);
+            for (start, _) in start_codes.iter() {
+                if *start >= offset {
+                    keyframes.push(*start);
+                    break;
                 }
             }
         }

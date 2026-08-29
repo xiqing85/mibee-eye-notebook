@@ -1,26 +1,31 @@
-/// G.711 μ-law (u-law) encoding constants
-const BIAS: i32 = 132;
+/// G.711 constants (ITU-T G.711 §2 — μ-law bias/clip; A-law 13-bit folding)
+const BIAS: i32 = 0x84;
 const CLIP: i32 = 32635;
 
-/// Compress 16-bit PCM sample to 8-bit μ-law (ITU-T G.711)
+/// Compress 16-bit PCM sample to 8-bit μ-law (ITU-T G.711).
+///
+/// Standard 16-bit formulation: clip, add BIAS (0x84), pick the segment from
+/// the thresholds `0x0100 << k`, and invert all bits of the composed code.
+/// Linear 0 therefore encodes to 0xFF and full scale to 0x80 / 0x00, matching
+/// the G.711 tables byte-for-byte.
 pub fn pcm_to_mulaw(sample: i16) -> u8 {
     let sign = if sample < 0 { 0x80u8 } else { 0u8 };
     let mut mag = (sample.unsigned_abs() as i32).min(CLIP);
     mag += BIAS;
 
-    let segment = if mag >= 0x1000 {
+    let segment = if mag >= 0x4000 {
         7
-    } else if mag >= 0x800 {
+    } else if mag >= 0x2000 {
         6
-    } else if mag >= 0x400 {
+    } else if mag >= 0x1000 {
         5
-    } else if mag >= 0x200 {
+    } else if mag >= 0x0800 {
         4
-    } else if mag >= 0x100 {
+    } else if mag >= 0x0400 {
         3
-    } else if mag >= 0x80 {
+    } else if mag >= 0x0200 {
         2
-    } else if mag >= 0x40 {
+    } else if mag >= 0x0100 {
         1
     } else {
         0
@@ -31,62 +36,82 @@ pub fn pcm_to_mulaw(sample: i16) -> u8 {
     !encoded
 }
 
-/// Decompress 8-bit μ-law to 16-bit PCM sample (ITU-T G.711)
+/// Decompress 8-bit μ-law to 16-bit PCM sample (ITU-T G.711).
+///
+/// `((mantissa << 3) + BIAS) << segment - BIAS` reproduces the G.711 decoder
+/// table: 0xFF → 0, 0xFE → 8, …, 0x80 → 32124.
 pub fn mulaw_to_pcm(encoded: u8) -> i16 {
     let u = !(encoded as i32) & 0xFF;
-    let sign = (u >> 7) & 1;
+    let sign = u & 0x80;
     let segment = (u >> 4) & 0x07;
     let mantissa = u & 0x0F;
 
-    let mag = (mantissa << (segment + 3)) + (1 << (segment + 2));
-
-    let sample = if sign != 0 { BIAS - mag } else { mag - BIAS };
-    (sample as i16).clamp(-32768_i16, 32767_i16)
+    let mag = (((mantissa << 3) + BIAS) << segment) - BIAS;
+    if sign != 0 { (-mag) as i16 } else { mag as i16 }
 }
 
-/// Compress 16-bit PCM sample to 8-bit A-law (ITU-T G.711)
+/// Compress 16-bit PCM sample to 8-bit A-law (ITU-T G.711).
+///
+/// Classic 13-bit formulation (as in the ITU / Sun reference): fold to 13
+/// bits, negate-as-complement for negatives, segment on `0x20 << k`, extract
+/// the step (`>> 1` in chords 0–1, `>> segment` above), and XOR with the
+/// sign mask (0xD5 positive / 0x55 negative) so the code word carries even
+/// parity. Linear 0 encodes to 0xD5 and full scale to 0xAA / 0x2A.
 pub fn pcm_to_alaw(sample: i16) -> u8 {
-    let sign = (sample >> 8) & 0x80;
-    let mut mag = sample.unsigned_abs() as i32;
-    mag = mag.min(CLIP);
+    let pcm = (sample as i32) >> 3; // fold to 13 bits
+    let mask: u8 = if pcm >= 0 { 0xD5 } else { 0x55 };
+    let mag = if pcm >= 0 { pcm } else { -pcm - 1 };
 
-    let encoded = if mag <= 0x0F {
-        mag as u8
+    let segment = if mag >= 0x0800 {
+        7
+    } else if mag >= 0x0400 {
+        6
+    } else if mag >= 0x0200 {
+        5
+    } else if mag >= 0x0100 {
+        4
+    } else if mag >= 0x0080 {
+        3
+    } else if mag >= 0x0040 {
+        2
+    } else if mag >= 0x0020 {
+        1
     } else {
-        let segment = if mag >= 0x800 {
-            7
-        } else if mag >= 0x400 {
-            6
-        } else if mag >= 0x200 {
-            5
-        } else if mag >= 0x100 {
-            4
-        } else if mag >= 0x80 {
-            3
-        } else if mag >= 0x40 {
-            2
-        } else if mag >= 0x20 {
-            1
-        } else {
-            0
-        };
-
-        let mantissa = ((mag >> (segment + 3)) & 0x0F) as u8;
-        ((segment as u8) << 4) | mantissa
+        0
     };
 
-    (sign as u8) | encoded
+    let aval = if segment >= 8 {
+        0x7F
+    } else {
+        let step = if segment < 2 {
+            (mag >> 1) & 0x0F
+        } else {
+            (mag >> segment) & 0x0F
+        };
+        ((segment as u8) << 4) | step as u8
+    };
+    aval ^ mask
 }
 
-/// Decompress 8-bit A-law to 16-bit PCM sample (ITU-T G.711)
+/// Decompress 8-bit A-law to 16-bit PCM sample (ITU-T G.711).
+///
+/// XOR off the parity mask, then `t = (step << 4) + 8` for chord 0 or
+/// `t = (step << 4) + 0x108) << (chord - 1)` above — the G.711 decoder table
+/// (0xD5 → 8, 0x8A → 8064, 0xAA → 32256, 0x2A → −32256).
 pub fn alaw_to_pcm(encoded: u8) -> i16 {
-    let sign = (encoded & 0x80) as i16;
-    let segment = ((encoded >> 4) & 0x07) as i32;
-    let mantissa = (encoded & 0x0F) as i32;
+    let a = (encoded ^ 0x55) as i32;
+    let sign = a & 0x80;
+    let segment = (a >> 4) & 0x07;
+    let step = a & 0x0F;
 
-    let mag = (mantissa << (segment + 3)) + (1 << (segment + 2));
+    let mut t = step << 4;
+    if segment == 0 {
+        t += 8;
+    } else {
+        t = (t + 0x108) << (segment - 1);
+    }
 
-    if sign != 0 { -(mag as i16) } else { mag as i16 }
+    if sign != 0 { t as i16 } else { (-t) as i16 }
 }
 
 /// RTP header structure
@@ -264,6 +289,77 @@ impl Default for RtpAudioPacketizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── ITU-T G.711 standard anchors ──────────────────────────────────────
+    // The codec must match the G.711 tables byte-for-byte: silence in μ-law
+    // is 0xFF (not an ad-hoc code), and every code must re-encode to itself.
+
+    #[test]
+    fn mulaw_encodes_standard_anchor_values() {
+        assert_eq!(pcm_to_mulaw(0), 0xFF, "μ-law silence must be 0xFF");
+        assert_eq!(pcm_to_mulaw(32124), 0x80, "μ-law full scale must be 0x80");
+        assert_eq!(
+            pcm_to_mulaw(-32124),
+            0x00,
+            "μ-law negative full scale must be 0x00"
+        );
+    }
+
+    #[test]
+    fn mulaw_decodes_standard_anchor_values() {
+        assert_eq!(mulaw_to_pcm(0xFF), 0);
+        assert_eq!(mulaw_to_pcm(0xFE), 8);
+        assert_eq!(mulaw_to_pcm(0x80), 32124);
+        assert_eq!(mulaw_to_pcm(0x00), -32124);
+    }
+
+    #[test]
+    fn mulaw_roundtrips_the_entire_code_space() {
+        for b in 0..=255u8 {
+            // 0x7F is μ-law "negative zero": it decodes to 0 like 0xFF, but
+            // the encoder only ever emits 0xFF for linear 0 (G.711 keeps the
+            // negative-zero slot as a decoder-side alias, not an encoding).
+            if b == 0x7F {
+                assert_eq!(mulaw_to_pcm(0x7F), 0, "−0 must decode to 0");
+                continue;
+            }
+            assert_eq!(
+                pcm_to_mulaw(mulaw_to_pcm(b)),
+                b,
+                "re-encoding decoded 0x{b:02X} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn alaw_encodes_standard_anchor_values() {
+        assert_eq!(pcm_to_alaw(0), 0xD5, "A-law silence must be 0xD5");
+        assert_eq!(pcm_to_alaw(32256), 0xAA, "A-law full scale must be 0xAA");
+        assert_eq!(
+            pcm_to_alaw(-32256),
+            0x2A,
+            "A-law negative full scale must be 0x2A"
+        );
+    }
+
+    #[test]
+    fn alaw_decodes_standard_anchor_values() {
+        assert_eq!(alaw_to_pcm(0xD5), 8);
+        assert_eq!(alaw_to_pcm(0x8A), 8064);
+        assert_eq!(alaw_to_pcm(0xAA), 32256);
+        assert_eq!(alaw_to_pcm(0x2A), -32256);
+    }
+
+    #[test]
+    fn alaw_roundtrips_the_entire_code_space() {
+        for b in 0..=255u8 {
+            assert_eq!(
+                pcm_to_alaw(alaw_to_pcm(b)),
+                b,
+                "re-encoding decoded 0x{b:02X} diverged"
+            );
+        }
+    }
 
     #[test]
     fn test_pcm_to_mulaw_range() {
