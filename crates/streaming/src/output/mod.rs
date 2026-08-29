@@ -9,14 +9,12 @@
 //! - [`RtmpOutput`] — pushes frames via RTMP to an ingest point (e.g. MiBee NVR)
 
 pub mod file;
-pub mod gb28181;
 #[cfg(test)]
 pub mod mock;
 pub mod rtmp;
 pub mod rtsp;
 
 pub use file::FileOutput;
-pub use gb28181::Gb28181Output;
 #[cfg(test)]
 pub use mock::MockOutput;
 pub use rtmp::RtmpOutput;
@@ -62,7 +60,7 @@ pub trait Output: Send + 'static {
 
 /// Parse H.264 data into individual NAL units, handling both Annex B and
 /// AVCC formats.
-pub(super) fn parse_h264_nal_units(data: &[u8]) -> Vec<Vec<u8>> {
+pub fn parse_h264_nal_units(data: &[u8]) -> Vec<Vec<u8>> {
     if data.len() < 4 {
         return vec![data.to_vec()];
     }

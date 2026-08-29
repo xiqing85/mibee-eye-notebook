@@ -177,7 +177,7 @@ pub fn yuyv_to_yuv420p(yuyv: &[u8], width: u32, height: u32) -> Result<Yuv420p> 
         for cx in 0..half_w {
             // Two source rows, each contributing one U and one V for this column pair.
             let r0 = (cy * 2) * w * 2 + cx * 4;
-            let r1 = ((cy * 2 + 1)) * w * 2 + cx * 4;
+            let r1 = (cy * 2 + 1) * w * 2 + cx * 4;
             let u0 = yuyv[r0 + 1] as u32;
             let u1 = yuyv[r1 + 1] as u32;
             let v0 = yuyv[r0 + 3] as u32;

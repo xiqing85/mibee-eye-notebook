@@ -396,11 +396,7 @@ pub async fn update_protocols_recording(
     Json(payload): Json<serde_json::Value>,
 ) -> axum::response::Response {
     match handle_put_and_get(&db, "recording", payload).await {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok"})),
-        )
-            .into_response(),
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response(),
         Err(resp) => resp,
     }
 }
@@ -430,11 +426,7 @@ pub async fn update_protocols_webrtc(
     Json(payload): Json<serde_json::Value>,
 ) -> axum::response::Response {
     match handle_put_and_get(&db, "webrtc", payload).await {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok"})),
-        )
-            .into_response(),
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response(),
         Err(resp) => resp,
     }
 }
