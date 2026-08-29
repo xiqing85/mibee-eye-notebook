@@ -1281,8 +1281,8 @@ dependencies = [
 
 [[package]]
 name = "gb28181-rs"
-version = "0.4.0"
-source = "git+https://github.com/mickeyzzc/gb28181-rs.git?tag=v0.4.0#4267786d09975aeb0ee971487914fcd0ca39adfc"
+version = "0.5.0"
+source = "git+https://github.com/mickeyzzc/gb28181-rs.git?tag=v0.5.0#01c57ffeb29fa3edd75933933c940637ab708baa"
 dependencies = [
  "anyhow",
  "hex",
