@@ -173,7 +173,12 @@ mod platform {
                 return Err(err);
             }
             if n == 0 {
-                break;
+                // A zero-length datagram is a delivered message on netlink
+                // (and socketpair) sockets, not end-of-data. Consume it and
+                // keep draining — breaking here leaves tokio's readiness
+                // flag set without a WouldBlock to clear it, so a stream of
+                // empty datagrams busy-loops the monitor task at 100% CPU.
+                continue;
             }
 
             let data = &buf[..n as usize];
@@ -323,6 +328,55 @@ mod platform {
                 Err(e) => {
                     println!("skipping test — monitor creation failed: {e}");
                 }
+            }
+        }
+
+        /// Regression: a zero-length datagram must be consumed and discarded,
+        /// not treated as end-of-drain.
+        ///
+        /// On netlink uevent sockets a zero-length datagram is a delivered
+        /// message (recv returns 0); the old code `break`ed on it, leaving
+        /// tokio's readiness flag set without ever reaching WouldBlock — with
+        /// a steady stream of empty datagrams the monitor loop spun at 100%
+        /// CPU and starved the whole runtime (web-server wedge ~25s after
+        /// start).
+        ///
+        /// A Unix socketpair has the same recv semantics, so `drain_events`
+        /// can be driven deterministically: an empty datagram followed by a
+        /// real uevent must drain BOTH (previously it drained neither).
+        #[test]
+        fn test_drain_events_consumes_zero_length_datagram() {
+            use std::os::unix::net::UnixDatagram;
+
+            let (a, b) = UnixDatagram::pair().expect("socketpair");
+            // Zero-length datagram, then a real video4linux "add" uevent.
+            a.send(&[]).expect("send empty datagram");
+            let uevent = [
+                "add\0",
+                "ACTION=add\0",
+                "SUBSYSTEM=video4linux\0",
+                "DEVNAME=video7\0",
+            ]
+            .concat();
+            a.send(uevent.as_bytes()).expect("send uevent");
+
+            let owned = {
+                use std::os::fd::FromRawFd;
+                let raw = b.as_raw_fd();
+                std::mem::forget(b); // ownership moves into OwnedFd
+                // SAFETY: raw is the live descriptor of b, taken above.
+                unsafe { OwnedFd::from_raw_fd(raw) }
+            };
+
+            let events = drain_events(&owned).expect("drain should succeed");
+            assert_eq!(
+                events.len(),
+                1,
+                "the real uevent behind the empty datagram must be drained"
+            );
+            match &events[0] {
+                HotplugEvent::Added { device_index, .. } => assert_eq!(*device_index, 7),
+                other => panic!("expected Added, got {other:?}"),
             }
         }
     }

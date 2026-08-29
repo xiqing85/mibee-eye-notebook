@@ -286,6 +286,12 @@ async fn main() -> anyhow::Result<()> {
     let hotplug_db = pool.clone();
     let hotplug_stream_manager = stream_manager.clone();
     let hotplug_handle = tokio::spawn(async move {
+        // Diagnostic escape hatch: MIBEE_DISABLE_HOTPLUG=1 skips the netlink
+        // monitor entirely (used to bisect runtime starvation).
+        if std::env::var_os("MIBEE_DISABLE_HOTPLUG").is_some_and(|v| v != "0") {
+            tracing::warn!("hot-plug monitor disabled via MIBEE_DISABLE_HOTPLUG");
+            return;
+        }
         let monitor = match capture::hotplug::HotplugMonitor::new() {
             Ok(m) => m,
             Err(e) => {
