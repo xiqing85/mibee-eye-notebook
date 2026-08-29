@@ -50,17 +50,15 @@ fn client_ip(req: &Request) -> String {
         .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
+        && let Some(ip) = val.split(',').next().map(|s| s.trim())
+        && !ip.is_empty()
     {
-        if let Some(ip) = val.split(',').next().map(|s| s.trim()) {
-            if !ip.is_empty() {
-                return ip.to_owned();
-            }
-        }
+        return ip.to_owned();
     }
-    if let Some(val) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        if !val.is_empty() {
-            return val.to_owned();
-        }
+    if let Some(val) = req.headers().get("x-real-ip").and_then(|v| v.to_str().ok())
+        && !val.is_empty()
+    {
+        return val.to_owned();
     }
     if let Some(addr) = req
         .extensions()

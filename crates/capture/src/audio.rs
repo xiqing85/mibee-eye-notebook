@@ -197,10 +197,10 @@ fn build_f32_stream(
                     samples,
                 };
                 observability::metrics::set_audio_level("default", db_level);
-                if let Err(e) = tx_clone.try_send(frame) {
-                    if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
-                        warn!("Audio channel full, dropping f32 frame");
-                    }
+                if let Err(e) = tx_clone.try_send(frame)
+                    && matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_))
+                {
+                    warn!("Audio channel full, dropping f32 frame");
                 }
             },
             move |err| {
@@ -233,10 +233,10 @@ fn build_i16_stream(
                     samples: data.to_vec(),
                 };
                 observability::metrics::set_audio_level("default", db_level);
-                if let Err(e) = tx_clone.try_send(frame) {
-                    if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
-                        warn!("Audio channel full, dropping i16 frame");
-                    }
+                if let Err(e) = tx_clone.try_send(frame)
+                    && matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_))
+                {
+                    warn!("Audio channel full, dropping i16 frame");
                 }
             },
             move |err| {
@@ -277,10 +277,10 @@ fn build_u16_stream(
                     samples,
                 };
                 observability::metrics::set_audio_level("default", db_level);
-                if let Err(e) = tx_clone.try_send(frame) {
-                    if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
-                        warn!("Audio channel full, dropping u16 frame");
-                    }
+                if let Err(e) = tx_clone.try_send(frame)
+                    && matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_))
+                {
+                    warn!("Audio channel full, dropping u16 frame");
                 }
             },
             move |err| {

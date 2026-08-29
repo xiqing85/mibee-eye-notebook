@@ -251,12 +251,11 @@ fn read_proc_cpuinfo() -> Option<CpuInfo> {
         .filter(|l| l.trim_start().starts_with("processor"))
         .count();
     for line in text.lines() {
-        if let Some(v) = line.strip_prefix("model name") {
-            if let Some(v) = v.split(':').nth(1) {
-                if model.is_none() {
-                    model = Some(v.trim().to_string());
-                }
-            }
+        if let Some(v) = line.strip_prefix("model name")
+            && let Some(v) = v.split(':').nth(1)
+            && model.is_none()
+        {
+            model = Some(v.trim().to_string());
         }
     }
     let cores = cores.max(1);
@@ -409,14 +408,12 @@ fn probe_gpus() -> Vec<GpuInfo> {
         }
     }
     // NVIDIA detection — feature-gated so a default build never references it.
-    if cfg!(feature = "nvenc") {
-        if Path::new("/dev/nvidia0").exists() {
-            out.push(GpuInfo {
-                vendor: GpuVendor::Nvidia,
-                render_node: "/dev/nvidia0".to_string(),
-                description: read_nvidia_description(),
-            });
-        }
+    if cfg!(feature = "nvenc") && Path::new("/dev/nvidia0").exists() {
+        out.push(GpuInfo {
+            vendor: GpuVendor::Nvidia,
+            render_node: "/dev/nvidia0".to_string(),
+            description: read_nvidia_description(),
+        });
     }
     out
 }

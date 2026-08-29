@@ -491,10 +491,10 @@ fn inject_trace_context(headers: &mut reqwest::header::HeaderMap) {
 
     impl Injector for HeaderInjector<'_> {
         fn set(&mut self, key: &str, value: String) {
-            if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
-                if let Ok(val) = reqwest::header::HeaderValue::from_str(&value) {
-                    self.0.insert(name, val);
-                }
+            if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                && let Ok(val) = reqwest::header::HeaderValue::from_str(&value)
+            {
+                self.0.insert(name, val);
             }
         }
     }

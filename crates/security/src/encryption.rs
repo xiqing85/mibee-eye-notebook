@@ -107,7 +107,7 @@ pub fn hex_encode(data: &[u8]) -> String {
 /// Returns an error if the input is not valid lowercase hex (odd length
 /// or invalid characters).
 pub fn hex_decode(hex: &str) -> Result<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         anyhow::bail!("hex string has odd length: {}", hex.len());
     }
     (0..hex.len())

@@ -130,25 +130,21 @@ impl Output for RtspOutput {
                             // Notify the stream manager when both are available.
                             if nal_type == 7 {
                                 self.cached_sps = Some(data.clone());
-                                if self.cached_pps.is_some() {
-                                    if let Some(tx) = self.sps_pps_tx.take() {
-                                        if let (Some(sps), Some(pps)) =
-                                            (self.cached_sps.clone(), self.cached_pps.clone())
-                                        {
-                                            let _ = tx.send((sps, pps));
-                                        }
-                                    }
+                                if self.cached_pps.is_some()
+                                    && let Some(tx) = self.sps_pps_tx.take()
+                                    && let (Some(sps), Some(pps)) =
+                                        (self.cached_sps.clone(), self.cached_pps.clone())
+                                {
+                                    let _ = tx.send((sps, pps));
                                 }
                             } else if nal_type == 8 {
                                 self.cached_pps = Some(data.clone());
-                                if self.cached_sps.is_some() {
-                                    if let Some(tx) = self.sps_pps_tx.take() {
-                                        if let (Some(sps), Some(pps)) =
-                                            (self.cached_sps.clone(), self.cached_pps.clone())
-                                        {
-                                            let _ = tx.send((sps, pps));
-                                        }
-                                    }
+                                if self.cached_sps.is_some()
+                                    && let Some(tx) = self.sps_pps_tx.take()
+                                    && let (Some(sps), Some(pps)) =
+                                        (self.cached_sps.clone(), self.cached_pps.clone())
+                                {
+                                    let _ = tx.send((sps, pps));
                                 }
                             }
                             let ts = self.rtp_timestamp;

@@ -263,7 +263,7 @@ impl Default for RecordingConfig {
 /// by default — the MSE/fMP4 path (1-3s latency, no signalling required) is
 /// the default transport; WebRTC is for cases that need the lowest possible
 /// latency (e.g. live monitoring, future talk-back audio).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct WebRtcConfig {
     /// Master enable toggle.
     #[serde(default)]
@@ -286,15 +286,4 @@ pub struct WebRtcConfig {
 
 fn default_webrtc_udp_port_max() -> u16 {
     0
-}
-
-impl Default for WebRtcConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            udp_port_min: 0,
-            udp_port_max: 0,
-            stun_servers: String::new(),
-        }
-    }
 }

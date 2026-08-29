@@ -165,12 +165,12 @@ impl FileOutput {
         // Pick up the real negotiated dimensions if a live handle is attached.
         // This lets the muxer emit correct track metadata even though the
         // output was constructed before the first frame arrived.
-        if let Some(handle) = &self.dimensions_handle {
-            if let Some(d) = *handle.lock() {
-                self.width = d.width;
-                self.height = d.height;
-                self.fps = d.fps;
-            }
+        if let Some(handle) = &self.dimensions_handle
+            && let Some(d) = *handle.lock()
+        {
+            self.width = d.width;
+            self.height = d.height;
+            self.fps = d.fps;
         }
 
         // Generate the timestamped filename.
@@ -298,10 +298,10 @@ impl Output for FileOutput {
 
                     // Periodic pruning check (every 1000 frames ≈ ~33s at 30fps).
                     self.frame_count += 1;
-                    if self.frame_count % 1000 == 0 {
-                        if let Err(e) = self.prune_oldest_if_needed() {
-                            tracing::warn!(error = %e, "FileOutput pruning check failed");
-                        }
+                    if self.frame_count.is_multiple_of(1000)
+                        && let Err(e) = self.prune_oldest_if_needed()
+                    {
+                        tracing::warn!(error = %e, "FileOutput pruning check failed");
                     }
                     Ok(())
                 })

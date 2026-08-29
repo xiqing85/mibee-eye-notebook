@@ -188,10 +188,10 @@ impl Fmp4Remuxer {
             .context("fMP4 write_video failed")?;
 
         // Flush a segment whenever the muxer has buffered enough samples.
-        if inner.muxer.ready_to_flush() {
-            if let Some(segment) = inner.muxer.flush_segment() {
-                out.push(Fmp4Chunk::Segment(segment));
-            }
+        if inner.muxer.ready_to_flush()
+            && let Some(segment) = inner.muxer.flush_segment()
+        {
+            out.push(Fmp4Chunk::Segment(segment));
         }
 
         Ok(out)

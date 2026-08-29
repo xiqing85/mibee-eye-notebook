@@ -361,11 +361,10 @@ impl StreamHub {
                         // If the channel is full, `send` blocks (backpressure).
                         // `SendError` means all receivers have been dropped —
                         // which is fine; we just continue.
-                        if broadcast_tx.receiver_count() > 0 {
-                            if let Err(broadcast::error::SendError(_)) = broadcast_tx.send(frame) {
+                        if broadcast_tx.receiver_count() > 0
+                            && let Err(broadcast::error::SendError(_)) = broadcast_tx.send(frame) {
                                 // All receivers dropped — nothing to track.
                             }
-                        }
                     }
                 }
             }
