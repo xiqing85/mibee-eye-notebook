@@ -341,7 +341,7 @@ impl Source for VideoCaptureSource {
                 self.frame_count += 1;
                 let jpeg_bytes: Option<Arc<[u8]>> = if video_frame.format.contains("MJPEG") {
                     Some(Arc::from(video_frame.data.as_slice()))
-                } else if self.frame_count % YUYV_PREVIEW_EVERY_N_FRAMES == 0 {
+                } else if self.frame_count.is_multiple_of(YUYV_PREVIEW_EVERY_N_FRAMES) {
                     jpeg_encode_yuv(&yuv).map(Arc::from)
                 } else {
                     None

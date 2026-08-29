@@ -447,10 +447,10 @@ pub fn measure_rss() -> usize {
         if line.starts_with("VmRSS:") {
             // Format: "VmRSS:   12345 kB"
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(kb) = parts[1].parse::<usize>() {
-                    return kb * 1024;
-                }
+            if parts.len() >= 2
+                && let Ok(kb) = parts[1].parse::<usize>()
+            {
+                return kb * 1024;
             }
         }
     }

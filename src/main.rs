@@ -268,10 +268,8 @@ async fn main() -> anyhow::Result<()> {
             .get("enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if enabled {
-            if let Err(e) = protocol_runtime.start_rtmp().await {
-                tracing::warn!(error = %e, "failed to enable RTMP at startup");
-            }
+        if enabled && let Err(e) = protocol_runtime.start_rtmp().await {
+            tracing::warn!(error = %e, "failed to enable RTMP at startup");
         }
     }
 
@@ -535,14 +533,14 @@ fn get_first_non_loopback_ipv4() -> Option<String> {
         let mut ptr = ifap;
         while !ptr.is_null() {
             let ifa = &*ptr;
-            if let Some(addr) = ifa.ifa_addr.as_ref() {
-                if addr.sa_family as libc::c_uint == libc::AF_INET as libc::c_uint {
-                    let sin = addr as *const libc::sockaddr as *const libc::sockaddr_in;
-                    let ip_addr = Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
-                    if !ip_addr.is_loopback() && !ip_addr.is_unspecified() {
-                        ip = Some(ip_addr.to_string());
-                        break;
-                    }
+            if let Some(addr) = ifa.ifa_addr.as_ref()
+                && addr.sa_family as libc::c_uint == libc::AF_INET as libc::c_uint
+            {
+                let sin = addr as *const libc::sockaddr as *const libc::sockaddr_in;
+                let ip_addr = Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
+                if !ip_addr.is_loopback() && !ip_addr.is_unspecified() {
+                    ip = Some(ip_addr.to_string());
+                    break;
                 }
             }
             ptr = ifa.ifa_next;
