@@ -1281,8 +1281,8 @@ dependencies = [
 
 [[package]]
 name = "gb28181-rs"
-version = "0.1.0"
-source = "git+https://github.com/mickeyzzc/gb28181-rs.git?tag=v0.3.0#8c6dfcb7fb2ee671b1e50b0d2f1f24369d49e463"
+version = "0.4.0"
+source = "git+https://github.com/mickeyzzc/gb28181-rs.git?tag=v0.4.0#4267786d09975aeb0ee971487914fcd0ca39adfc"
 dependencies = [
  "anyhow",
  "hex",
@@ -2566,8 +2566,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onvif-rs"
-version = "0.1.0"
-source = "git+https://github.com/mickeyzzc/onvif-rs.git?tag=v0.2.0#180e7b3957fb0cb011821fd1df21d163ff405939"
+version = "0.2.1"
+source = "git+https://github.com/mickeyzzc/onvif-rs.git?tag=v0.2.1#ba233ff445ba80d9935da0ced54e47d2ff3fc797"
 dependencies = [
  "async-trait",
  "base64",
