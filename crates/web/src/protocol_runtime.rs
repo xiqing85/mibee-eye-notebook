@@ -12,10 +12,9 @@
 //!   new streams auto-attach an RTMP push output.
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use protocols::onvif::{OnvifDeviceConfig, WsDiscoveryServer};
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -57,7 +56,7 @@ pub struct ProtocolState {
 pub fn build_onvif_config_from_json(
     db_config: &serde_json::Value,
     advertised_host: &str,
-) -> OnvifDeviceConfig {
+) -> OnvifRuntimeConfig {
     let get_str = |key: &str, default: &str| {
         db_config
             .get(key)
@@ -65,18 +64,34 @@ pub fn build_onvif_config_from_json(
             .unwrap_or(default)
             .to_string()
     };
+    let get_u32 = |key: &str, default: u32| {
+        db_config
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(default)
+    };
 
     let model = get_str("model", "Rec-01");
 
-    OnvifDeviceConfig {
-        manufacturer: get_str("manufacturer", "MiBee"),
-        firmware_version: get_str("firmware_version", "1.0.0"),
-        serial_number: get_str("serial", "NC00000001"),
-        hardware_id: model.clone(),
-        rtsp_url: format!("rtsp://{}:{}/webcam", advertised_host, RTSP_PORT),
-        scopes: vec!["onvif://www.onvif.org/type/NetworkVideoTransmitter".into()],
-        xaddrs: get_onvif_xaddrs(ONVIF_HTTP_PORT),
-        model,
+    OnvifRuntimeConfig {
+        device: onvif_rs::DeviceConfig {
+            manufacturer: get_str("manufacturer", "MiBee"),
+            firmware: get_str("firmware_version", "1.0.0"),
+            serial_number: get_str("serial", "NC00000001"),
+            hardware_id: model.clone(),
+            name: model.clone(),
+            model,
+        },
+        onvif_port: ONVIF_HTTP_PORT,
+        username: get_str("username", ""),
+        password: get_str("password", ""),
+        host: advertised_host.to_string(),
+        rtsp_port: RTSP_PORT,
+        camera_width: get_u32("profile_width", 1280),
+        camera_height: get_u32("profile_height", 720),
+        camera_fps: get_u32("profile_fps", 25),
+        camera_bitrate: get_u32("profile_bitrate", 2_500_000),
     }
 }
 
@@ -125,6 +140,25 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
     }
 }
 
+/// ONVIF runtime configuration resolved from the persisted DB JSON. The
+/// SOAP/discovery role itself lives in the `onvif-rs` library; media profile
+/// dimensions default to 720p and are overridable via DB keys
+/// (`profile_width` / `profile_height` / `profile_fps` / `profile_bitrate`).
+#[derive(Debug, Clone)]
+pub struct OnvifRuntimeConfig {
+    pub device: onvif_rs::DeviceConfig,
+    pub onvif_port: u16,
+    pub username: String,
+    pub password: String,
+    /// Advertised host for XAddrs / stream URIs.
+    pub host: String,
+    pub rtsp_port: u16,
+    pub camera_width: u32,
+    pub camera_height: u32,
+    pub camera_fps: u32,
+    pub camera_bitrate: u32,
+}
+
 #[derive(Debug)]
 /// Parsed GB28181 configuration extracted from DB JSON.
 pub struct Gb28181RuntimeConfig {
@@ -150,6 +184,8 @@ pub struct Gb28181RuntimeConfig {
 /// task is force-aborted. A failure in one protocol does NOT affect others.
 pub struct ProtocolRuntime {
     onvif_handle: Option<JoinHandle<()>>,
+    /// WS-Discovery task (stopped together with the SOAP server).
+    discovery_handle: Option<JoinHandle<()>>,
     gb28181_handle: Option<JoinHandle<()>>,
     /// Reserved for future use (RTMP currently per-stream, no global task).
     #[allow(dead_code)]
@@ -171,6 +207,7 @@ impl ProtocolRuntime {
     pub fn new() -> Self {
         Self {
             onvif_handle: None,
+            discovery_handle: None,
             gb28181_handle: None,
             rtmp_handle: None,
             shutdown_txs: HashMap::new(),
@@ -180,39 +217,135 @@ impl ProtocolRuntime {
 
     // ── ONVIF ────────────────────────────────────────────────────────────
 
-    /// Start ONVIF WS-Discovery server. Stops the existing instance first.
-    #[tracing::instrument(skip(self, config))]
-    pub async fn start_onvif(&mut self, config: OnvifDeviceConfig) -> anyhow::Result<()> {
-        // Graceful stop any existing ONVIF task before starting a new one.
+    /// Start the ONVIF device role (onvif-rs): SOAP server + WS-Discovery.
+    /// Stops the existing instance first.
+    ///
+    /// The Media profile advertises the FIRST active stream's RTSP path
+    /// (`live/{camera_id}`), resolved at start time; toggle the protocol
+    /// again after stream topology changes to refresh it. With no active
+    /// stream the Device service + discovery still run (identity-only).
+    #[tracing::instrument(skip(self, config, stream_manager))]
+    pub async fn start_onvif(
+        &mut self,
+        config: OnvifRuntimeConfig,
+        stream_manager: Arc<StreamManager>,
+    ) -> anyhow::Result<()> {
         self.stop_onvif().await;
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         self.shutdown_txs.insert("onvif".into(), shutdown_tx);
 
+        // Resolve the advertised stream path from the first active stream.
+        let stream_path = stream_manager
+            .list_active_streams()
+            .await
+            .first()
+            .map(|info| format!("/live/{}", info.camera_id));
+        match &stream_path {
+            Some(p) => tracing::info!(path = %p, "ONVIF media profile targets first active stream"),
+            None => tracing::warn!(
+                "ONVIF starting with no active stream — media actions unavailable until re-toggled"
+            ),
+        }
+
+        let host = config.host.clone();
+        let soap_port = config.onvif_port;
+        let device_ip = if host.is_empty() {
+            onvif_rs::discovery::detect_local_ip()
+        } else {
+            host
+        };
+
+        // SOAP server: Device service (identity) + Media service (when a
+        // stream is advertised).
+        let mut soap = onvif_rs::OnvifServer::new(&onvif_rs::OnvifConfig {
+            port: config.onvif_port,
+            username: config.username.clone(),
+            password: config.password.clone(),
+        });
+
+        let device_svc = Arc::new(onvif_rs::device::DeviceServiceHandlers::new(
+            config.device.clone(),
+            config.onvif_port,
+            device_ip.clone(),
+        ));
+        for action in [
+            "GetSystemDateAndTime",
+            "GetDeviceInformation",
+            "GetCapabilities",
+            "GetServices",
+            "GetScopes",
+        ] {
+            soap.register_handler(
+                action,
+                Box::new(onvif_rs::device::DeviceHandler(Arc::clone(&device_svc))),
+            );
+        }
+        // Pre-auth actions per ONVIF Core spec (discovery + clock sync
+        // happen before clients can compute WS-Security digests).
+        for action in ["GetSystemDateAndTime", "GetCapabilities", "GetServices"] {
+            soap.register_anonymous_action(action);
+        }
+
+        if let Some(stream_path) = stream_path.clone() {
+            let media_cfg = Arc::new(onvif_rs::media::OnvifMediaConfig {
+                camera_width: config.camera_width,
+                camera_height: config.camera_height,
+                camera_fps: config.camera_fps,
+                camera_bitrate: config.camera_bitrate,
+                rtsp_port: config.rtsp_port,
+                device_ip: device_ip.clone(),
+                stream_path,
+            });
+            soap.register_handler(
+                "GetProfiles",
+                Box::new(onvif_rs::media::GetProfilesHandler::new(Arc::clone(
+                    &media_cfg,
+                ))),
+            );
+            soap.register_handler(
+                "GetStreamUri",
+                Box::new(onvif_rs::media::GetStreamUriHandler::new(Arc::clone(
+                    &media_cfg,
+                ))),
+            );
+            soap.register_handler(
+                "GetVideoSources",
+                Box::new(onvif_rs::media::GetVideoSourcesHandler::new(Arc::clone(
+                    &media_cfg,
+                ))),
+            );
+        }
+
+        let discovery = onvif_rs::discovery::DiscoveryServer::new(device_ip.clone(), soap_port);
+
+        let mut shutdown_rx = shutdown_rx;
         let handle = tokio::spawn(async move {
-            tracing::info!("ONVIF WS-Discovery starting on UDP 3702");
-            match WsDiscoveryServer::bind(config, "0.0.0.0:3702").await {
-                Ok(server) => {
-                    tracing::info!("ONVIF WS-Discovery server started on UDP 3702");
-                    let mut rx = shutdown_rx;
-                    tokio::select! {
-                        res = server.run() => {
-                            if let Err(e) = res {
-                                tracing::error!(error = %e, "ONVIF WS-Discovery server error");
-                            }
-                        }
-                        _ = rx.changed() => {
-                            tracing::info!("ONVIF WS-Discovery graceful shutdown signal received");
-                        }
+            tracing::info!(
+                port = soap_port,
+                "ONVIF SOAP + WS-Discovery starting (onvif-rs)"
+            );
+            tokio::select! {
+                res = soap.start() => {
+                    if let Err(e) = res {
+                        tracing::error!(error = %e, "ONVIF SOAP server error");
                     }
                 }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to start ONVIF WS-Discovery server");
+                _ = shutdown_rx.changed() => {
+                    tracing::info!("ONVIF graceful shutdown signal received");
                 }
             }
         });
+        let discovery_handle = tokio::spawn(async move {
+            if let Err(e) = discovery.start().await {
+                tracing::error!(error = %e, "ONVIF WS-Discovery server error");
+            }
+        });
 
+        // SOAP task is the tracked lifecycle handle; discovery is aborted
+        // alongside it by the same stop path.
         self.onvif_handle = Some(handle);
+        self.discovery_handle = Some(discovery_handle);
         tracing::info!("ONVIF protocol started");
         Ok(())
     }
@@ -222,6 +355,9 @@ impl ProtocolRuntime {
     pub async fn stop_onvif(&mut self) {
         let tx = self.shutdown_txs.remove("onvif");
         let handle = self.onvif_handle.take();
+        if let Some(dh) = self.discovery_handle.take() {
+            dh.abort();
+        }
         if tx.is_none() && handle.is_none() {
             return;
         }
@@ -550,44 +686,6 @@ fn get_local_ip_for_server(server_addr: &SocketAddr) -> anyhow::Result<String> {
 /// Get ONVIF XAddrs (device service URLs) for all non-loopback IPv4 interfaces.
 ///
 /// Each XAddr is in the format `http://{ip}:{port}/onvif/device_service`.
-/// Loopback and unspecified addresses are excluded.
-#[cfg(unix)]
-fn get_onvif_xaddrs(port: u16) -> Vec<String> {
-    let mut xaddrs = Vec::new();
-    unsafe {
-        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
-        if libc::getifaddrs(&mut ifap) != 0 {
-            return xaddrs;
-        }
-        let mut ptr = ifap;
-        while !ptr.is_null() {
-            let ifa = &*ptr;
-            if let Some(addr) = ifa.ifa_addr.as_ref() {
-                if addr.sa_family as libc::c_uint == libc::AF_INET as libc::c_uint {
-                    let sin = addr as *const libc::sockaddr as *const libc::sockaddr_in;
-                    let ip = Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
-                    if !ip.is_loopback() && !ip.is_unspecified() {
-                        xaddrs.push(format!("http://{}:{}/onvif/device_service", ip, port));
-                    }
-                }
-            }
-            ptr = ifa.ifa_next;
-        }
-        libc::freeifaddrs(ifap);
-    }
-    xaddrs
-}
-
-/// Fallback for non-Unix platforms (Windows/macOS may need platform-specific
-/// enumeration in the future).
-#[cfg(not(unix))]
-fn get_onvif_xaddrs(_port: u16) -> Vec<String> {
-    tracing::warn!(
-        "ONVIF XAddr enumeration not implemented on this platform; returning empty list"
-    );
-    Vec::new()
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -667,13 +765,31 @@ mod tests {
             "firmware_version": "2.0.0"
         });
         let config = build_onvif_config_from_json(&json, "192.168.1.50");
-        assert_eq!(config.manufacturer, "TestCorp");
-        assert_eq!(config.model, "CAM-100");
-        assert_eq!(config.serial_number, "SN12345");
-        assert_eq!(config.firmware_version, "2.0.0");
-        assert_eq!(config.hardware_id, "CAM-100");
-        assert!(config.rtsp_url.contains("192.168.1.50"));
-        assert!(config.rtsp_url.contains("8554"));
+        assert_eq!(config.device.manufacturer, "TestCorp");
+        assert_eq!(config.device.model, "CAM-100");
+        assert_eq!(config.device.serial_number, "SN12345");
+        assert_eq!(config.device.firmware, "2.0.0");
+        assert_eq!(config.device.hardware_id, "CAM-100");
+        assert_eq!(config.host, "192.168.1.50");
+        assert_eq!(config.rtsp_port, 8554);
+        // Media profile defaults (720p) until DB keys override them.
+        assert_eq!(config.camera_width, 1280);
+        assert_eq!(config.camera_height, 720);
+    }
+
+    #[test]
+    fn test_build_onvif_config_from_json_profile_overrides() {
+        let json = serde_json::json!({
+            "profile_width": 1920,
+            "profile_height": 1080,
+            "profile_fps": 30,
+            "profile_bitrate": 4000000
+        });
+        let config = build_onvif_config_from_json(&json, "10.0.0.1");
+        assert_eq!(config.camera_width, 1920);
+        assert_eq!(config.camera_height, 1080);
+        assert_eq!(config.camera_fps, 30);
+        assert_eq!(config.camera_bitrate, 4_000_000);
     }
 
     #[test]
