@@ -135,9 +135,11 @@ impl Output for Gb28181Output {
                     let ts_rtp_64 = (ts_ms as u64).wrapping_mul(90);
                     let ts_rtp = ts_rtp_64 as u32;
 
-                    // Mux H.264 NAL units to MPEG-2 PS
-                    // The muxer handles PSM inclusion on keyframes automatically
-                    let ps_data = protocols::gb28181::ps::mux_h264_to_ps(
+                    // Mux H.264 NAL units to MPEG-2 PS via gb28181-rs (shared
+                    // wire format with the Pi camera products; balanced
+                    // PES_packet_length + >64KB AU splitting per v0.2.0).
+                    // PSM inclusion on keyframes is handled by the muxer.
+                    let ps_data = gb28181_rs::ps::mux_h264_to_ps(
                         &nal_units.iter().map(|n| n.as_slice()).collect::<Vec<_>>(),
                         is_keyframe,
                         ts_rtp_64,
