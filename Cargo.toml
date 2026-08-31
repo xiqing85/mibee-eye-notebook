@@ -17,8 +17,8 @@ license = "NON-COMMERCIAL"
 rust-version = "1.88"
 
 [workspace.dependencies]
-onvif-rs = { git = "https://github.com/mickeyzzc/onvif-rs.git", tag = "v0.2.1" }
-gb28181-rs = { git = "https://github.com/mickeyzzc/gb28181-rs.git", tag = "v0.5.0" }
+onvif-device-rs = "0.3.0"
+gb28181-rs = "0.6.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1281,12 +1281,15 @@ dependencies = [
 
 [[package]]
 name = "gb28181-rs"
-version = "0.5.0"
-source = "git+https://github.com/mickeyzzc/gb28181-rs.git?tag=v0.5.0#01c57ffeb29fa3edd75933933c940637ab708baa"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10474d9c378e1a4297d92dd5577073290620c81db6187aeccc1d1fa8414e0752"
 dependencies = [
  "anyhow",
+ "encoding_rs",
  "hex",
  "libc",
+ "log",
  "md-5",
  "rand 0.8.6",
  "serde",
@@ -2565,13 +2568,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "onvif-rs"
-version = "0.2.1"
-source = "git+https://github.com/mickeyzzc/onvif-rs.git?tag=v0.2.1#ba233ff445ba80d9935da0ced54e47d2ff3fc797"
+name = "onvif-device-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee92e4c21bab9de30103bedfcb5e6f6576e8119ec4c36caee5e366ca588917ac"
 dependencies = [
  "async-trait",
  "base64",
  "hex",
+ "log",
  "quick-xml",
  "rand 0.8.6",
  "serde",
@@ -3071,7 +3076,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
 dependencies = [
  "memchr",
- "serde",
 ]
 
 [[package]]
@@ -4974,7 +4978,7 @@ dependencies = [
  "include_dir",
  "libc",
  "observability",
- "onvif-rs",
+ "onvif-device-rs",
  "opentelemetry",
  "parking_lot",
  "protocols",
