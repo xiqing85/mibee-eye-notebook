@@ -138,6 +138,8 @@ pub async fn not_implemented_handler() -> impl IntoResponse {
 /// Request body for POST /api/auth/login
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
+    /// SPEC §2: may be empty/omitted — defaults to "admin" (single-admin form).
+    #[serde(default)]
     pub username: String,
     pub password: String,
 }
@@ -153,9 +155,14 @@ pub struct LoginRequest {
 pub async fn login_handler(
     Extension(_db): Extension<SqlitePool>,
     Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
-    Json(body): Json<LoginRequest>,
+    Json(mut body): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let conn = auth_db.lock().await;
+
+    // SPEC §2: empty/omitted username defaults to "admin" (single-admin login form).
+    if body.username.trim().is_empty() {
+        body.username = "admin".to_owned();
+    }
 
     // Check login lockout (exponential backoff after 5 failures)
     if let Some(retry_in) = check_lockout(&body.username) {
@@ -167,7 +174,9 @@ pub async fn login_handler(
         .into_response();
     }
 
-    // Look up stored password hash
+    // Look up stored password hash, then release the DB lock before the
+    // (expensive, blocking) bcrypt verify — holding it would stall every
+    // other DB-backed request for the whole verification.
     let stored_hash = match security::auth::get_user_password(&conn, &body.username) {
         Ok(Some(h)) => h,
         Ok(None) => {
@@ -180,24 +189,36 @@ pub async fn login_handler(
             return ApiError::internal("internal error").into_response();
         }
     };
+    drop(conn);
 
-    // Verify password
-    match security::password::verify_password(&body.password, &stored_hash) {
-        Ok(true) => {
+    // Verify password on the blocking pool: bcrypt (cost 12) is pure CPU and
+    // must not run on an async worker.
+    let pw = body.password.clone();
+    let verified =
+        tokio::task::spawn_blocking(move || security::password::verify_password(&pw, &stored_hash))
+            .await;
+
+    match verified {
+        Ok(Ok(true)) => {
             reset_failures(&body.username);
         }
-        Ok(false) => {
+        Ok(Ok(false)) => {
             record_failure(&body.username);
             observability::increment_auth_failures("bad_password");
             return ApiError::unauthorized("invalid credentials").into_response();
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::error!(error = %e, "login_handler: password verification failed");
+            return ApiError::internal("internal error").into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "login_handler: verify task panicked");
             return ApiError::internal("internal error").into_response();
         }
     }
 
     // Create session
+    let conn = auth_db.lock().await;
     let token = match security::auth::create_session(&conn, &body.username) {
         Ok(t) => t,
         Err(e) => {

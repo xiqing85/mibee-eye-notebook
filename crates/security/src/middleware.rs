@@ -146,6 +146,9 @@ pub async fn require_setup(req: Request, next: Next) -> Response {
         || path == "/api/auth/setup"
         || path == "/"
         || path.starts_with("/assets/")
+        // Shared web UI static assets (SPEC v1 layout: /style.css + /js/*)
+        || path == "/style.css"
+        || path.starts_with("/js/")
     {
         return next.run(req).await;
     }
