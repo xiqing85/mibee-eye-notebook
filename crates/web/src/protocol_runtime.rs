@@ -349,19 +349,27 @@ impl ProtocolRuntime {
                 "ONVIF SOAP + WS-Discovery starting (onvif-rs)"
             );
             tokio::select! {
-                res = soap.start() => {
-                    if let Err(e) = res {
-                        tracing::error!(error = %e, "ONVIF SOAP server error");
+                // start() resolves as soon as the accept loop is spawned and
+                // its handle's Drop stops the server — awaiting the handle
+                // here is what keeps the task (and the server) alive.
+                res = soap.start() => match res {
+                    Ok(server) => {
+                        let _ = server.await;
+                        tracing::info!("ONVIF SOAP server exited");
                     }
-                }
+                    Err(e) => tracing::error!(error = %e, "ONVIF SOAP server error"),
+                },
                 _ = shutdown_rx.changed() => {
                     tracing::info!("ONVIF graceful shutdown signal received");
                 }
             }
         });
         let discovery_handle = tokio::spawn(async move {
-            if let Err(e) = discovery.start().await {
-                tracing::error!(error = %e, "ONVIF WS-Discovery server error");
+            match discovery.start().await {
+                Ok(server) => {
+                    let _ = server.await;
+                }
+                Err(e) => tracing::error!(error = %e, "ONVIF WS-Discovery server error"),
             }
         });
 
