@@ -9,6 +9,11 @@ import { showView } from './main.js';
 
 const tileTimers = new Map();
 
+// SPEC §4 camera status vocabulary: devices without camera_control report
+// online/offline; controllable devices report running/stopped/idle.
+const ACTIVE_STATUSES = ['online', 'running'];
+const isActive = (cam) => ACTIVE_STATUSES.includes(cam && cam.status);
+
 export async function refreshCameras() {
   const r = await api.get('/api/cameras');
   if (r.ok) store.cameras = r.data || [];
@@ -33,7 +38,7 @@ export async function renderCameras() {
 }
 
 function renderTile(cam) {
-  const running = cam.status !== 'offline';
+  const running = isActive(cam);
   const statusLabel = t(cam.status === 'offline' ? 'statusOffline'
     : hasCap('camera_control') && cam.status === 'idle' ? 'statusIdle'
     : hasCap('camera_control') ? 'statusRunning' : 'statusOnline');
@@ -100,7 +105,7 @@ function attachThumb(img, id) {
 }
 
 async function toggleStream(cam) {
-  const running = cam.status !== 'offline' && cam.status !== 'idle';
+  const running = isActive(cam);
   const r = await api.post(`/api/cameras/${cam.id}/${running ? 'stop' : 'start'}`);
   if (r.ok) {
     toast(t(running ? 'streamStopped' : 'streamStarted'), 'success');

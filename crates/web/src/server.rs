@@ -87,7 +87,11 @@ async fn static_file_handler(
 /// Serve the stylesheet (the route carries no path parameter).
 async fn static_style_handler() -> impl IntoResponse {
     match assets::get_file_content("style.css") {
-        Some(css) => (axum::http::StatusCode::OK, [("content-type", "text/css")], css),
+        Some(css) => (
+            axum::http::StatusCode::OK,
+            [("content-type", "text/css")],
+            css,
+        ),
         None => (
             axum::http::StatusCode::NOT_FOUND,
             [("content-type", "text/plain")],
