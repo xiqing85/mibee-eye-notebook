@@ -30,8 +30,8 @@ pub struct CapabilitiesResponse {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// GET /api/capabilities — return probed host capabilities + recommended
-/// encoder profiles.
+/// GET /api/capabilities — the SPEC v1 capability superset (§3.1) plus the
+/// host hardware probe as extension fields (`system`, `recommended_profiles`).
 ///
 /// Probing is cheap (a handful of sysfs/`/proc` reads) but not free, so the
 /// result is cached for the process lifetime via a [`std::sync::OnceLock`].
@@ -46,7 +46,35 @@ pub async fn get_capabilities(Extension(_user): Extension<AuthenticatedUser>) ->
             recommended_profiles: recommended,
         }
     });
-    (StatusCode::OK, Json(cached)).into_response()
+    let superset = serde_json::json!({
+        "spec_version": "1",
+        "device": {
+            "name": "mibee-rec",
+            "model": "notebook",
+            "vendor": "MiBee Studio",
+        },
+        "auth": {"model": "session", "setup": true},
+        "multi_camera": true,
+        "camera_management": true,
+        "camera_control": true,
+        "imaging": false,
+        "ai": false,
+        "ptz": false,
+        "hls": false,
+        // Recording is config-only on this device (protocols.recording);
+        // there is no per-camera record endpoint yet.
+        "recording": false,
+        "devices": true,
+        "mjpeg": true,
+        "mse": true,
+        "webrtc": false,
+        "events": ["camera_added", "camera_offlined"],
+        "config_apply": {"default": "immediate", "sections": {}},
+        // Device-specific extension: the host hardware probe.
+        "system": cached.system,
+        "recommended_profiles": cached.recommended_profiles,
+    });
+    (StatusCode::OK, Json(superset)).into_response()
 }
 
 // ---------------------------------------------------------------------------

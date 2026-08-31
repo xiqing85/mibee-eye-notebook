@@ -438,9 +438,14 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["status"], "running");
-        assert!(body["rtsp_url"].as_str().unwrap().contains("rtsp://"));
-        assert_eq!(body["camera_id"], cam_id);
+        assert_eq!(body["data"]["status"], "running");
+        assert!(
+            body["data"]["rtsp_url"]
+                .as_str()
+                .unwrap()
+                .contains("rtsp://")
+        );
+        assert_eq!(body["data"]["camera_id"], cam_id);
     }
 
     #[tokio::test]

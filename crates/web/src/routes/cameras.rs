@@ -325,7 +325,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body.as_array().unwrap().len(), 0);
+        assert_eq!(body["data"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -356,10 +356,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["name"], "Front Door");
-        assert_eq!(body["camera_type"], "rtsp");
-        assert_eq!(body["status"], "stopped");
-        assert!(!body["id"].as_str().unwrap().is_empty());
+        assert_eq!(body["data"]["name"], "Front Door");
+        assert_eq!(body["data"]["camera_type"], "rtsp");
+        assert_eq!(body["data"]["status"], "stopped");
+        assert!(!body["data"]["id"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -391,7 +391,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let cam_id = created["id"].as_str().unwrap().to_string();
+        let cam_id = created["data"]["id"].as_str().unwrap().to_string();
 
         // Get by ID
         let req = Request::builder()
@@ -426,8 +426,8 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(updated["name"], "Back Driveway");
-        assert_eq!(updated["status"], "running");
+        assert_eq!(updated["data"]["name"], "Back Driveway");
+        assert_eq!(updated["data"]["status"], "running");
 
         // List should now have one camera
         let req = Request::builder()
@@ -444,7 +444,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list["data"].as_array().unwrap().len(), 1);
 
         // Delete
         let req = Request::builder()
@@ -472,7 +472,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(list.as_array().unwrap().len(), 0);
+        assert_eq!(list["data"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
