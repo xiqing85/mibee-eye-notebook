@@ -75,7 +75,7 @@ pub fn build_onvif_config_from_json(
     let model = get_str("model", "Rec-01");
 
     OnvifRuntimeConfig {
-        device: onvif_rs::DeviceConfig {
+        device: onvif_device_rs::DeviceConfig {
             manufacturer: get_str("manufacturer", "MiBee"),
             firmware: get_str("firmware_version", "1.0.0"),
             serial_number: get_str("serial", "NC00000001"),
@@ -137,6 +137,10 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
             .unwrap_or(3),
         channel_id: get_str("channel_id", "34020000001320000001"),
         local_sip_port: get_u16("local_sip_port", 5060),
+        device_name: get_str("device_name", "mibee-rec"),
+        manufacturer: get_str("manufacturer", "MiBee"),
+        model: get_str("model", "Rec-01"),
+        firmware: get_str("firmware", env!("CARGO_PKG_VERSION")),
     }
 }
 
@@ -146,7 +150,7 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
 /// (`profile_width` / `profile_height` / `profile_fps` / `profile_bitrate`).
 #[derive(Debug, Clone)]
 pub struct OnvifRuntimeConfig {
-    pub device: onvif_rs::DeviceConfig,
+    pub device: onvif_device_rs::DeviceConfig,
     pub onvif_port: u16,
     pub username: String,
     pub password: String,
@@ -173,6 +177,12 @@ pub struct Gb28181RuntimeConfig {
     pub heartbeat_timeout_count: u32,
     pub channel_id: String,
     pub local_sip_port: u16,
+    /// Catalog/DeviceInfo identity. gb28181-rs 0.6.0 defaults to neutral
+    /// placeholders unless the host stamps its product identity here.
+    pub device_name: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub firmware: String,
 }
 
 // ── ProtocolRuntime ──────────────────────────────────────────────────────────
@@ -251,20 +261,25 @@ impl ProtocolRuntime {
         let host = config.host.clone();
         let soap_port = config.onvif_port;
         let device_ip = if host.is_empty() {
-            onvif_rs::discovery::detect_local_ip()
+            onvif_device_rs::discovery::detect_local_ip()
         } else {
             host
         };
 
         // SOAP server: Device service (identity) + Media service (when a
         // stream is advertised).
-        let mut soap = onvif_rs::OnvifServer::new(&onvif_rs::OnvifConfig {
+        // An empty password is this product's "auth off" setting (the ONVIF
+        // toggle itself lives behind the authenticated settings page), so
+        // opt into the library's fail-closed no-auth escape hatch.
+        let mut soap = onvif_device_rs::OnvifServer::new(&onvif_device_rs::OnvifConfig {
             port: config.onvif_port,
             username: config.username.clone(),
             password: config.password.clone(),
+            allow_no_auth: config.password.is_empty(),
+            ..Default::default()
         });
 
-        let device_svc = Arc::new(onvif_rs::device::DeviceServiceHandlers::new(
+        let device_svc = Arc::new(onvif_device_rs::device::DeviceServiceHandlers::new(
             config.device.clone(),
             config.onvif_port,
             device_ip.clone(),
@@ -278,7 +293,9 @@ impl ProtocolRuntime {
         ] {
             soap.register_handler(
                 action,
-                Box::new(onvif_rs::device::DeviceHandler(Arc::clone(&device_svc))),
+                Box::new(onvif_device_rs::device::DeviceHandler(Arc::clone(
+                    &device_svc,
+                ))),
             );
         }
         // Pre-auth actions per ONVIF Core spec (discovery + clock sync
@@ -288,36 +305,42 @@ impl ProtocolRuntime {
         }
 
         if let Some(stream_path) = stream_path.clone() {
-            let media_cfg = Arc::new(onvif_rs::media::OnvifMediaConfig {
-                camera_width: config.camera_width,
-                camera_height: config.camera_height,
-                camera_fps: config.camera_fps,
-                camera_bitrate: config.camera_bitrate,
-                rtsp_port: config.rtsp_port,
-                device_ip: device_ip.clone(),
-                stream_path,
-            });
+            let mut media = onvif_device_rs::media::OnvifMediaConfig::new(
+                config.camera_width,
+                config.camera_height,
+                config.camera_fps,
+                config.camera_bitrate,
+                config.rtsp_port,
+                device_ip.clone(),
+            );
+            media.stream_path = stream_path;
+            let media_cfg = Arc::new(media);
             soap.register_handler(
                 "GetProfiles",
-                Box::new(onvif_rs::media::GetProfilesHandler::new(Arc::clone(
+                Box::new(onvif_device_rs::media::GetProfilesHandler::new(Arc::clone(
                     &media_cfg,
                 ))),
             );
             soap.register_handler(
                 "GetStreamUri",
-                Box::new(onvif_rs::media::GetStreamUriHandler::new(Arc::clone(
-                    &media_cfg,
-                ))),
+                Box::new(onvif_device_rs::media::GetStreamUriHandler::new(
+                    Arc::clone(&media_cfg),
+                )),
             );
             soap.register_handler(
                 "GetVideoSources",
-                Box::new(onvif_rs::media::GetVideoSourcesHandler::new(Arc::clone(
-                    &media_cfg,
-                ))),
+                Box::new(onvif_device_rs::media::GetVideoSourcesHandler::new(
+                    Arc::clone(&media_cfg),
+                )),
             );
         }
 
-        let discovery = onvif_rs::discovery::DiscoveryServer::new(device_ip.clone(), soap_port);
+        let discovery = onvif_device_rs::discovery::DiscoveryServer::with_identity(
+            &device_ip,
+            soap_port,
+            &config.device.name,
+            &config.device.hardware_id,
+        );
 
         let mut shutdown_rx = shutdown_rx;
         let handle = tokio::spawn(async move {
@@ -395,6 +418,11 @@ impl ProtocolRuntime {
             heartbeat_interval_secs: config.heartbeat_interval_secs,
             heartbeat_timeout_count: config.heartbeat_timeout_count,
             transport: gb28181_rs::config::Transport::Udp,
+            user_agent: Some(format!("mibee-rec/{}", env!("CARGO_PKG_VERSION"))),
+            device_name: Some(config.device_name.clone()),
+            manufacturer: Some(config.manufacturer.clone()),
+            model: Some(config.model.clone()),
+            firmware: Some(config.firmware.clone()),
         };
 
         // The watch channel stays for stop-gb28181 symmetry; the library
