@@ -72,7 +72,9 @@ EXPOSE 1935
 HEALTHCHECK --interval=30s --timeout=3s CMD curl -kf https://localhost:8443/health || exit 1
 
 # Create mibee-rec user with video/audio groups for device access
-RUN useradd -r -m -G video,audio mibee-rec
+RUN useradd -r -m -G video,audio mibee-rec \
+    && mkdir -p /var/lib/mibee-rec \
+    && chown mibee-rec:mibee-rec /var/lib/mibee-rec
 
 # Switch to mibee-rec user (non-root for security)
 USER mibee-rec
