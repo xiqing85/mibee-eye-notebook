@@ -66,6 +66,10 @@ mod platform {
     /// Buffer size for a single uevent message.
     const RECV_BUF_SIZE: usize = 16 * 1024;
 
+    /// Consume at most this many consecutive zero-length datagrams before
+    /// treating the socket as spuriously readable (see `drain_events`).
+    const EMPTY_DGRAM_LIMIT: u32 = 16;
+
     /// Monitor for USB camera hot-plug events.
     pub struct HotplugMonitor {
         fd: AsyncFd<OwnedFd>,
@@ -116,6 +120,9 @@ mod platform {
         /// Blocks until the receiver is dropped or an unrecoverable error occurs.
         pub async fn run(self, tx: mpsc::Sender<HotplugEvent>) {
             let fd = std::sync::Arc::new(self.fd);
+            // Backoff for spurious readiness: readable() says ready but recv
+            // yields nothing. Without it the task spins at 100% CPU.
+            let mut spurious = 0u32;
 
             loop {
                 // Wait for the socket to become readable (uevent available).
@@ -137,6 +144,17 @@ mod platform {
                     }
                     Err(_would_block) => vec![],
                 };
+                drop(guard);
+
+                if events.is_empty() {
+                    spurious = spurious.saturating_add(1);
+                    if spurious >= 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        spurious = 0;
+                    }
+                } else {
+                    spurious = 0;
+                }
 
                 for event in events {
                     debug!(?event, "dispatching hot-plug event");
@@ -154,6 +172,7 @@ mod platform {
     fn drain_events(fd: &OwnedFd) -> std::io::Result<Vec<HotplugEvent>> {
         let mut events = Vec::new();
         let mut buf = [0u8; RECV_BUF_SIZE];
+        let mut empty = 0u32;
 
         loop {
             // Non-blocking recv: returns WouldBlock when no more data.
@@ -174,12 +193,19 @@ mod platform {
             }
             if n == 0 {
                 // A zero-length datagram is a delivered message on netlink
-                // (and socketpair) sockets, not end-of-data. Consume it and
-                // keep draining — breaking here leaves tokio's readiness
-                // flag set without a WouldBlock to clear it, so a stream of
-                // empty datagrams busy-loops the monitor task at 100% CPU.
+                // (and socketpair) sockets, not end-of-data. Consume it but
+                // never unconditionally: if the kernel keeps producing empty
+                // datagrams the readiness flag never clears and the task
+                // busy-loops at 100% CPU, wedging the whole runtime. Break
+                // after a bounded number and let the spurious-readiness
+                // backoff in `run()` re-arm.
+                empty += 1;
+                if empty >= EMPTY_DGRAM_LIMIT {
+                    break;
+                }
                 continue;
             }
+            empty = 0;
 
             let data = &buf[..n as usize];
             if let Some(event) = parse_uevent(data) {

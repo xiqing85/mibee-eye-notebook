@@ -180,13 +180,19 @@ function startMse(cameraIdArg, onGiveUp) {
         }
         // Pin the playhead near live.
         if (video.buffered.length > 0) {
+          const first = video.buffered.start(0);
           const end = video.buffered.end(video.buffered.length - 1);
+          // The stream's media timestamps need not begin at 0 — if the
+          // playhead sits before any buffered data it can never start.
+          if (video.currentTime < first) video.currentTime = first + 0.05;
           const lag = end - video.currentTime;
           updateHealth(lag);
           if (lag > MAX_BUFFER_SECS) video.currentTime = end - 0.3;
           else if (lag > 0.5) video.playbackRate = Math.min(1.5, 1.0 + lag * 0.2);
           else video.playbackRate = 1.0;
         }
+        // Muted autoplay is allowed, but some browsers still need a nudge.
+        if (video.paused) video.play().catch(() => { /* stall timer will retry */ });
       } catch (e) {
         if (e.name === 'QuotaExceededError') {
           queue.unshift(chunk);

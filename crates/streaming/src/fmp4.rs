@@ -179,6 +179,15 @@ impl Fmp4Remuxer {
             inner.init_sent = true;
         }
 
+        // The hub delivers one NAL per MediaFrame, so the SPS/PPS/SEI that
+        // precede each IDR arrive as standalone frames. Writing them as
+        // samples produces keyframe-flagged, picture-less access units that
+        // Chrome's decode pipeline rejects (PIPELINE_ERROR_DECODE) — the
+        // parameter sets already live in the init segment. Skip them.
+        if matches!(nal_type(data[0]), 6..=8) {
+            return Ok(out);
+        }
+
         // Convert this NAL to AVCC and queue it as a sample.
         let avcc = nal_to_avcc(data);
         let pts_ticks = ms_to_ticks(timestamp.saturating_sub(inner.base_pts_ms));
