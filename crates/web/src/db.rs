@@ -94,16 +94,23 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     //   2. The build-time path `{CARGO_MANIFEST_DIR}/../../migrations` — used
     //      during `cargo run` from the source tree. In a deployed binary this
     //      path points to the build container and won't exist, so we fall back.
+    //   3. `/usr/local/share/mibee-rec/migrations` — the container install
+    //      location baked into the Dockerfile.
     let migrations_dir = {
         let cwd_migrations = Path::new("migrations");
         if cwd_migrations.is_dir() {
             cwd_migrations.to_path_buf()
         } else {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
+            let build_time = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .and_then(Path::parent)
                 .map(|p| p.join("migrations"))
-                .unwrap_or_else(|| Path::new("migrations").to_path_buf())
+                .unwrap_or_else(|| Path::new("migrations").to_path_buf());
+            if build_time.is_dir() {
+                build_time
+            } else {
+                Path::new("/usr/local/share/mibee-rec/migrations").to_path_buf()
+            }
         }
     };
 
