@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 pub mod cameras;
 pub mod capabilities;
+pub mod config_api;
 pub mod devices;
 pub mod events;
 pub mod mse;
@@ -353,6 +354,16 @@ pub async fn setup_handler(
         return ApiError::internal("internal error").into_response();
     }
 
+    // Sign the new admin in immediately (SPEC v1 §2: setup establishes a
+    // session). The connection is still held here.
+    let token = match security::auth::create_session(&conn, &body.username) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %e, "setup_handler: failed to create session");
+            return ApiError::internal("internal error").into_response();
+        }
+    };
+
     drop(conn);
 
     // Generate self-signed TLS cert if not present (best-effort)
@@ -362,7 +373,28 @@ pub async fn setup_handler(
 
     tracing::info!(username = %body.username, "Initial admin user created (first-run setup)");
 
-    (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+    let csrf_token = security::auth::generate_token();
+    let mut response = (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "ok", "csrf_token": csrf_token})),
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    for cookie in [
+        format!("session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400"),
+        format!("csrf-token={csrf_token}; SameSite=Strict; Path=/; Max-Age=86400"),
+    ] {
+        match cookie.parse::<axum::http::HeaderValue>() {
+            Ok(v) => {
+                headers.append(axum::http::header::SET_COOKIE, v);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to serialize setup cookie");
+                return ApiError::internal("internal error").into_response();
+            }
+        }
+    }
+    response
 }
 
 // ---------------------------------------------------------------------------

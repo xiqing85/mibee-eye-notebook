@@ -4,6 +4,7 @@ pub mod assets;
 pub mod config;
 pub mod db;
 /// Axum REST API + static SPA
+pub mod envelope;
 pub mod errors;
 pub mod protocol_runtime;
 pub mod routes;

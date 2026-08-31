@@ -146,6 +146,7 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = serde_json::json!({
+            "ok": false,
             "error": self.kind.error_code(),
             "message": self.message,
             "status": self.kind.status_code().as_u16(),

@@ -58,6 +58,44 @@ async fn static_handler() -> impl IntoResponse {
     )
 }
 
+/// Serve an embedded static asset (`/style.css`, `/js/{path}`) from the
+/// shared mibee-webui build.
+async fn static_file_handler(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let file = if let Some(content) = assets::get_file_content(&format!("js/{path}")) {
+        content
+    } else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            [("content-type", "text/plain")],
+            "not found",
+        );
+    };
+    let mime = if path.ends_with(".css") {
+        "text/css"
+    } else if path.ends_with(".js") {
+        "application/javascript; charset=utf-8"
+    } else if path.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else {
+        "application/octet-stream"
+    };
+    (axum::http::StatusCode::OK, [("content-type", mime)], file)
+}
+
+/// Serve the stylesheet (the route carries no path parameter).
+async fn static_style_handler() -> impl IntoResponse {
+    match assets::get_file_content("style.css") {
+        Some(css) => (axum::http::StatusCode::OK, [("content-type", "text/css")], css),
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            [("content-type", "text/plain")],
+            "not found",
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router builders
 // ---------------------------------------------------------------------------
@@ -129,50 +167,12 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // WebRTC WHIP/WHEP signalling (sub-second latency; gated by [webrtc].enabled)
         .route("/api/webrtc/whep/{id}", post(routes::webrtc::whep))
         .route("/api/webrtc/whip/{id}", post(routes::webrtc::whip))
-        // Settings
-        .route("/api/settings", get(routes::settings::get_settings))
-        .route("/api/settings", put(routes::settings::update_settings))
-        // Protocol configs
-        .route(
-            "/api/protocols/onvif",
-            get(routes::protocols::get_protocols_onvif),
-        )
-        .route(
-            "/api/protocols/onvif",
-            put(routes::protocols::update_protocols_onvif),
-        )
-        .route(
-            "/api/protocols/gb28181",
-            get(routes::protocols::get_protocols_gb28181),
-        )
-        .route(
-            "/api/protocols/gb28181",
-            put(routes::protocols::update_protocols_gb28181),
-        )
-        .route(
-            "/api/protocols/rtmp",
-            get(routes::protocols::get_protocols_rtmp),
-        )
-        .route(
-            "/api/protocols/rtmp",
-            put(routes::protocols::update_protocols_rtmp),
-        )
-        .route(
-            "/api/protocols/recording",
-            get(routes::protocols::get_protocols_recording),
-        )
-        .route(
-            "/api/protocols/recording",
-            put(routes::protocols::update_protocols_recording),
-        )
-        .route(
-            "/api/protocols/webrtc",
-            get(routes::protocols::get_protocols_webrtc),
-        )
-        .route(
-            "/api/protocols/webrtc",
-            put(routes::protocols::update_protocols_webrtc),
-        )
+        // Unified config + status (SPEC v1 §3, §5) — replaces /api/settings
+        // and the per-protocol GET/PUT endpoints (dialect A7).
+        .route("/api/config", get(routes::config_api::get_config))
+        .route("/api/config", put(routes::config_api::put_config))
+        .route("/api/status", get(routes::config_api::status_handler))
+        // Protocol runtime status stays as a device extension (dialect A7).
         .route(
             "/api/protocols/runtime-status",
             get(routes::protocols::get_protocols_runtime_status),
@@ -203,15 +203,19 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
 
     // -- Build the full app --
     Router::new()
-        // Public health/metrics endpoints
+        // Public health/metrics endpoints (SPEC §1: /api/health is the
+        // canonical path; /health stays as an unwrapped legacy alias).
         .route("/health", get(routes::health_handler))
+        .route("/api/health", get(routes::health_handler))
         .route("/metrics", get(routes::metrics_handler))
         // Auth routes (no auth required, but blocked before setup)
         .merge(auth_routes)
         // Protected routes (auth required, blocked before setup)
         .merge(protected_routes)
-        // Static SPA fallback
+        // Static SPA (shared mibee-webui build, embedded via include_dir!)
         .route("/", get(static_handler))
+        .route("/style.css", get(static_style_handler))
+        .route("/js/{*path}", get(static_file_handler))
         // Setup-required middleware — blocks non-allowed routes during first run
         .route_layer(middleware::from_fn(security::middleware::require_setup))
         // Extensions — must be OUTER layer so middleware can access db
@@ -236,6 +240,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(middleware::from_fn(metrics_middleware))
         // Body size limits
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB default
+        // SPEC v1 §0 response envelope — wraps successful JSON /api responses
+        .layer(middleware::from_fn(crate::envelope::envelope))
 }
 /// Convenience builder that creates a default `ActiveStreams`, `StreamManager`,
 /// and `RtspServer`.
@@ -685,7 +691,7 @@ mod tests {
             .unwrap();
         let body_str = String::from_utf8_lossy(&body);
         assert!(
-            body_str.contains("mibee-rec"),
+            body_str.contains("MiBee Cam"),
             "static HTML should contain project name"
         );
     }
@@ -736,10 +742,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_settings_routes_require_auth() {
+    async fn test_config_route_requires_auth() {
         let app = test_router_with_user().await;
         let req = Request::builder()
-            .uri("/api/settings")
+            .uri("/api/config")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();

@@ -141,6 +141,7 @@ pub async fn require_setup(req: Request, next: Next) -> Response {
 
     // Always allow health check, metrics, setup endpoint, root (SPA), and static assets
     if path == "/health"
+        || path == "/api/health"
         || path == "/metrics"
         || path == "/api/auth/setup"
         || path == "/"

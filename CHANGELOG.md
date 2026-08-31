@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed — Unified Web API SPEC v1 + shared web UI
+
+**Breaking** (web API): the REST surface now follows the MiBee camera
+unified SPEC v1 (`mibee-webui/SPEC.md`), same contract as the Raspberry Pi
+camera projects:
+
+- All JSON responses enveloped: `{"ok":true,"data":…}` /
+  `{"ok":false,"error":"<machine code>","message":…}` (middleware; binary
+  endpoints and the legacy `/health` alias stay unwrapped)
+- `GET/PUT /api/settings` and `GET/PUT /api/protocols/{name}` replaced by
+  `GET/PUT /api/config` (partial deep-merge; protocol sections still
+  hot-toggle ONVIF/GB28181 immediately). `/api/protocols/runtime-status`
+  remains as a device extension
+- New: `/api/health` (public enveloped), `/api/status`, SPEC capability
+  superset on `/api/capabilities` (host probe kept as `system` /
+  `recommended_profiles` extension fields)
+- `POST /api/auth/setup` now establishes a session (signs the new admin in)
+
+**Changed** (frontend): the Preact SPA is replaced by the shared
+**mibee-webui** vanilla ES Modules build (same UI as the Pi cameras,
+capability-driven). Removed: `crates/web/build.rs` (esbuild bundling),
+`package.json`, `static/src/`, dead `static/app.js`, Dockerfile
+node/npm/esbuild steps — a fresh clone now builds with cargo alone.
+
 ### Fixed — GB28181 PS-over-RTP interop
 
 PS muxer added; Gb28181Output rewritten from RFC-6184 to PS-over-RTP (PT=96); SSRC parsing fixed to use `y=` SDP field instead of `a=ssrc:`; Digest auth default changed from SHA-256 to MD5; Contact header fixed to use device IP; INVITE handler now sends 200 OK with device SDP answer.

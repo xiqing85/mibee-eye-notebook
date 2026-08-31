@@ -20,7 +20,7 @@ use crate::protocol_runtime::{
 use crate::stream_manager::StreamManager;
 use security::middleware::AuthenticatedUser;
 /// Type alias for the shared DB pool (for web CRUD operations).
-type Db = SqlitePool;
+pub type Db = SqlitePool;
 // ---------------------------------------------------------------------------
 // Schema definitions — generated from Rust config structs via `schemars`.
 // Numeric / boolean fields sent as strings are coerced (for backward
@@ -136,7 +136,7 @@ fn coerce_from_schema(
 /// Validate + coerce a partial update payload against the generated JSON Schema.
 /// Returns the coerced object containing only known fields.
 /// Unknown fields trigger an error.
-fn validate_and_coerce(
+pub(crate) fn validate_and_coerce(
     protocol: &str,
     payload: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {

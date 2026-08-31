@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_settings_empty() {
+    async fn test_get_config_settings_empty() {
         let (pool, auth_db) = test_db().await;
         let token = {
             let c = auth_db.lock().await;
@@ -137,7 +137,7 @@ mod tests {
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()
-            .uri("/api/settings")
+            .uri("/api/config")
             .header("cookie", format!("session={token}; csrf-token=test-csrf"))
             .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
@@ -150,8 +150,9 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(body.is_object());
-        assert_eq!(body.as_object().unwrap().len(), 0);
+        // SPEC envelope: {"ok":true,"data":{"settings":{},"protocols":{...}}}
+        assert_eq!(body["ok"], serde_json::json!(true));
+        assert!(body["data"]["settings"].is_object());
     }
 
     #[tokio::test]
@@ -166,7 +167,7 @@ mod tests {
 
         // Set two settings
         let req = Request::builder()
-            .uri("/api/settings")
+            .uri("/api/config")
             .method("PUT")
             .header("content-type", "application/json")
             .header("cookie", format!("session={token}; csrf-token=test-csrf"))
@@ -186,7 +187,7 @@ mod tests {
 
         // Read them back
         let req = Request::builder()
-            .uri("/api/settings")
+            .uri("/api/config")
             .header("cookie", format!("session={token}; csrf-token=test-csrf"))
             .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
@@ -199,12 +200,12 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["theme"], "dark");
-        assert_eq!(body["language"], "zh-CN");
+        assert_eq!(body["data"]["settings"]["theme"], "dark");
+        assert_eq!(body["data"]["settings"]["language"], "zh-CN");
 
         // Override one, keep the other
         let req = Request::builder()
-            .uri("/api/settings")
+            .uri("/api/config")
             .method("PUT")
             .header("content-type", "application/json")
             .header("cookie", format!("session={token}; csrf-token=test-csrf"))
@@ -220,7 +221,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
 
         let req = Request::builder()
-            .uri("/api/settings")
+            .uri("/api/config")
             .header("cookie", format!("session={token}; csrf-token=test-csrf"))
             .header("x-csrf-token", "test-csrf")
             .body(Body::empty())
@@ -233,18 +234,18 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["theme"], "light");
-        assert_eq!(body["language"], "zh-CN");
+        assert_eq!(body["data"]["settings"]["theme"], "light");
+        assert_eq!(body["data"]["settings"]["language"], "zh-CN");
     }
 
     #[tokio::test]
-    async fn test_settings_requires_auth() {
+    async fn test_config_requires_auth() {
         let (pool, auth_db) = test_db().await;
         let state = build_state(pool, auth_db);
         let app = crate::server::build_app_with_state(state);
 
         let req = Request::builder()
-            .uri("/api/settings")
+            .uri("/api/config")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
