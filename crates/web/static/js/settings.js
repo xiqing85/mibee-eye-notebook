@@ -3,8 +3,9 @@
 
 import { api, refreshCapabilities } from './api.js';
 import { store } from './store.js';
-import { $, toast } from './ui.js';
+import { $, toast, setBtnLoading } from './ui.js';
 import { t, cfgLabel } from './i18n.js';
+import { icon } from './icons.js';
 import { applyTransform } from './live.js';
 import { initImaging } from './imaging.js';
 
@@ -76,9 +77,9 @@ function buildForm(obj, parent, prefix) {
     } else {
       const en = ENUMS[p];
       if (en) {
-        row.innerHTML = '<label for="cf-' + p + '">' + key + '</label><select id="cf-' + p + '" data-cfg="' + p + '">' + en.map((o) => '<option ' + (o === val ? 'selected' : '') + '>' + o + '</option>').join('') + '</select>';
+        row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><select id="cf-' + p + '" data-cfg="' + p + '">' + en.map((o) => '<option ' + (o === val ? 'selected' : '') + '>' + o + '</option>').join('') + '</select>';
       } else if (PASSWORD_FIELDS.has(p)) {
-        row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><div class="password-wrap"><input type="password" id="cf-' + p + '" value="' + esc(String(val)) + '" data-cfg="' + p + '" autocomplete="new-password"><button type="button" class="password-toggle" data-target="cf-' + p + '" aria-label="' + t('showPassword') + '">\u{1F441}</button></div>';
+        row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><div class="password-wrap"><input type="password" id="cf-' + p + '" value="' + esc(String(val)) + '" data-cfg="' + p + '" autocomplete="new-password"><button type="button" class="password-toggle" data-target="cf-' + p + '" aria-label="' + t('showPassword') + '">' + icon('eye', 18) + '</button></div>';
       } else {
         const idAttrs = GB28181_ID_FIELDS.has(p) ? ' maxlength="20" placeholder="' + t('gb28181.id20Placeholder') + '"' : '';
         row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><input type="text" id="cf-' + p + '" value="' + esc(String(val)) + '"' + idAttrs + ' data-cfg="' + p + '">';
@@ -94,7 +95,7 @@ function buildForm(obj, parent, prefix) {
     hdr.type = 'button';
     hdr.className = 'config-section-title';
     hdr.setAttribute('aria-expanded', 'true');
-    hdr.textContent = cfgLabel(p, key);
+    hdr.innerHTML = esc(cfgLabel(p, key)) + '<span class="chev">' + icon('chevron-down', 15) + '</span>';
     hdr.addEventListener('click', () => {
       const collapsed = sec.classList.toggle('collapsed');
       hdr.setAttribute('aria-expanded', String(!collapsed));
@@ -162,11 +163,9 @@ function maybeNum(v) {
 }
 
 function markDirty() {
-  if (!store.configDirty) {
-    store.configDirty = true;
-    updateSaveState();
-  }
-  validateConfig();
+  store.configDirty = true;
+  // Always re-evaluate: fixing an invalid field must re-enable Save.
+  updateSaveState();
 }
 
 function updateSaveState() {
@@ -188,8 +187,7 @@ export async function handleSave() {
   }
   saveInProgress = true;
   const btn = $('save-config');
-  btn.disabled = true;
-  btn.textContent = t('saving');
+  setBtnLoading(btn, true);
   const merged = deepMerge(store.config || {}, collectConfig());
   const r = await api.put('/api/config', merged);
   if (r.ok) {
@@ -204,7 +202,7 @@ export async function handleSave() {
     toast(r.message || r.error || t('saveError'), 'error');
   }
   saveInProgress = false;
-  btn.textContent = t('save');
+  setBtnLoading(btn, false);
   updateSaveState();
 }
 

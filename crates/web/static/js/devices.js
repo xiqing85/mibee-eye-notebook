@@ -3,8 +3,9 @@
 
 import { api } from './api.js';
 import { hasCap } from './store.js';
-import { $, el, toast } from './ui.js';
+import { $, el, esc, toast } from './ui.js';
 import { t } from './i18n.js';
+import { icon } from './icons.js';
 import { refreshCameras, renderCameras } from './cameras.js';
 
 export async function renderDevices() {
@@ -23,6 +24,7 @@ export async function renderDevices() {
   if (videoR.ok && (videoR.data || []).length > 0) {
     for (const dev of videoR.data) {
       videoBox.appendChild(el('div', { className: 'device-row' }, [
+        el('span', { className: 'device-ico', html: icon('video', 16) }),
         el('div', { className: 'device-info' }, [
           el('span', { className: 'device-name', textContent: dev.index + '. ' + (dev.name || '?') }),
           (dev.formats || []).length > 0
@@ -30,24 +32,32 @@ export async function renderDevices() {
             : el('span'),
         ]),
         hasCap('camera_management') ? el('button', {
-          className: 'btn-small', textContent: t('useAsCamera'),
+          className: 'btn-small',
+          html: icon('plus', 13) + '<span>' + esc(t('useAsCamera')) + '</span>',
           onclick: () => addCamera(dev),
         }) : el('span'),
       ]));
     }
   } else {
-    videoBox.appendChild(el('div', { className: 'empty-state', textContent: t('noDevices') }));
+    videoBox.appendChild(el('div', {
+      className: 'empty-state',
+      html: icon('video', 30) + '<span>' + esc(t('noDevices')) + '</span>',
+    }));
   }
 
   audioBox.innerHTML = '';
   if (audioR.ok && (audioR.data || []).length > 0) {
     for (const dev of audioR.data) {
       audioBox.appendChild(el('div', { className: 'device-row' }, [
+        el('span', { className: 'device-ico', html: icon('mic', 16) }),
         el('span', { className: 'device-name', textContent: dev.name || '?' }),
       ]));
     }
   } else {
-    audioBox.appendChild(el('div', { className: 'empty-state', textContent: t('noDevices') }));
+    audioBox.appendChild(el('div', {
+      className: 'empty-state',
+      html: icon('mic', 30) + '<span>' + esc(t('noDevices')) + '</span>',
+    }));
   }
 
   // Host capability summary (notebook-style probe), best-effort.
@@ -88,6 +98,8 @@ async function addCamera(dev) {
 export function initDevices() {
   const view = $('view-devices');
   if (view) view.classList.toggle('hidden-cap', !hasCap('devices'));
-  const tab = document.querySelector('.nav-tab[data-view="devices"]');
-  if (tab) tab.classList.toggle('hidden', !hasCap('devices'));
+  // Both the top bar and the mobile tab bar carry this tab.
+  document.querySelectorAll('.nav-tab[data-view="devices"]').forEach((tab) => {
+    tab.classList.toggle('hidden', !hasCap('devices'));
+  });
 }

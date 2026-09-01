@@ -20,6 +20,8 @@ export async function refreshStatus() {
   const s = r.data || {};
   const info = $('device-info');
   if (info) {
+    const pill = (on) => '<span class="state-pill ' + (on ? 'on' : 'off') + '">' +
+      (on ? t('stateOn') : t('stateOff')) + '</span>';
     const rows = [
       [t('deviceName'), s.device_name],
       [t('model'), s.model],
@@ -28,10 +30,10 @@ export async function refreshStatus() {
       [t('uptime'), fmtUptime(s.uptime)],
     ];
     const extras = [];
-    if (s.recording !== undefined) extras.push(['recording', s.recording ? '\u2713' : '\u2014']);
-    if (s.gb28181 !== undefined) extras.push(['GB28181', s.gb28181 ? '\u2713' : '\u2014']);
+    if (s.recording !== undefined) extras.push([t('recordingService'), pill(s.recording)]);
+    if (s.gb28181 !== undefined) extras.push([t('gb28181Service'), pill(s.gb28181)]);
     info.innerHTML = rows.concat(extras).map(([label, val]) =>
-      '<div class="reading"><span class="reading-label">' + esc(label) + '</span><span class="reading-val">' + esc(val !== undefined && val !== null ? String(val) : '-') + '</span></div>'
+      '<div class="reading"><span class="reading-label">' + esc(label) + '</span><span class="reading-val">' + (val !== undefined && val !== null ? val : '-') + '</span></div>'
     ).join('');
   }
   renderCameraInfo();
@@ -47,7 +49,9 @@ async function renderCameraInfo() {
   }
   const rows = [
     [t('cameraName'), cam.name],
-    [t('statusOnline'), cam.status],
+    [t('statusLabel'), t(cam.status === 'offline' ? 'statusOffline'
+      : hasCap('camera_control') && cam.status === 'idle' ? 'statusIdle'
+      : hasCap('camera_control') ? 'statusRunning' : 'statusOnline')],
     [t('resolution'), cam.resolution],
     [t('fps'), cam.fps],
   ];

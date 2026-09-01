@@ -7,7 +7,7 @@
 
 import { api } from './api.js';
 import { store } from './store.js';
-import { $ } from './ui.js';
+import { $, setBtnLoading } from './ui.js';
 import { t } from './i18n.js';
 
 export const AuthState = { SIGNED_IN: 'in', LOGIN: 'login', SETUP: 'setup' };
@@ -26,6 +26,8 @@ export function setAuthMode(mode) {
   const setup = mode === AuthState.SETUP;
   $('auth-username-field').classList.toggle('hidden', !setup);
   $('login-password2-field').classList.toggle('hidden', !setup);
+  const hint = $('setup-hint');
+  if (hint) hint.classList.toggle('hidden', !setup);
   const btn = document.querySelector('#login-form button[type=submit]');
   if (btn) btn.textContent = setup ? t('setupBtn') : t('loginBtn');
   const pwLabel = document.querySelector('label[for=login-password]');
@@ -41,6 +43,7 @@ export function initAuth(onAuthenticated) {
     const password = $('login-password').value;
     const errEl = $('login-error');
     errEl.classList.add('hidden');
+    const btn = document.querySelector('#login-form button[type=submit]');
 
     const isSetup = !$('auth-username-field').classList.contains('hidden');
     if (isSetup) {
@@ -51,17 +54,27 @@ export function initAuth(onAuthenticated) {
       if (password !== confirm2) {
         errEl.textContent = t('passwordMismatch'); errEl.classList.remove('hidden'); return;
       }
-      const r = await api.post('/api/auth/setup', { username, password });
-      if (!r.ok) { showAuthError(r); return; }
-      store.user = r.data || { username };
-      onAuthenticated();
+      setBtnLoading(btn, true);
+      try {
+        const r = await api.post('/api/auth/setup', { username, password });
+        if (!r.ok) { showAuthError(r); return; }
+        store.user = r.data || { username };
+        onAuthenticated();
+      } finally {
+        setBtnLoading(btn, false);
+      }
       return;
     }
 
-    const r = await api.post('/api/auth/login', { username, password });
-    if (!r.ok) { showAuthError(r); return; }
-    store.user = r.data || { username };
-    onAuthenticated();
+    setBtnLoading(btn, true);
+    try {
+      const r = await api.post('/api/auth/login', { username, password });
+      if (!r.ok) { showAuthError(r); return; }
+      store.user = r.data || { username };
+      onAuthenticated();
+    } finally {
+      setBtnLoading(btn, false);
+    }
   });
 }
 

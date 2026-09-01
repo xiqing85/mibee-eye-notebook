@@ -21,6 +21,8 @@ const DICT = {
     loading: '加载中...', retry: '重试', save: '保存', saving: '保存中...',
     saved: '已保存', saveError: '保存失败', fetchError: '网络错误',
     error: '错误', success: '成功',
+    cancel: '取消', confirm: '确认',
+    setupHint: '首次使用，设置管理员账号完成初始化',
     showPassword: '显示密码', hidePassword: '隐藏密码',
     switchLang: '切换语言', themeLabel: '切换主题',
     // Live view
@@ -47,9 +49,10 @@ const DICT = {
     'imaging.AWBMode': '白平衡', 'imaging.ExposureMode': '曝光模式',
     'imaging.HFlip': '水平翻转(传感器)', 'imaging.VFlip': '垂直翻转(传感器)',
     // Cameras view
-    camerasTitle: '相机', addCamera: '添加相机', cameraName: '名称',
+    camerasTitle: '相机', camerasDesc: '已接入的相机与采集状态', addCamera: '添加相机', cameraName: '名称',
     cameraModel: '型号', cameraFirmware: '固件', resolution: '分辨率', fps: '帧率',
     statusOnline: '在线', statusOffline: '离线', statusRunning: '采集中', statusIdle: '空闲',
+    statusLabel: '状态',
     deleteCamera: '删除', deleteConfirm: '删除相机 {name}？',
     openLive: '查看实时', noCameras: '尚未添加相机',
     // Settings view
@@ -59,17 +62,21 @@ const DICT = {
     configChanged: '配置已被其他客户端修改',
     applyRestart: '部分设置保存后需重启设备生效',
     // Status view
-    statusTitle: '系统状态', connection: '连接', cameraInfo: '相机信息',
+    statusTitle: '系统状态', statusDesc: '设备运行状态一览', connection: '连接', cameraInfo: '相机信息',
     events: '事件通道', apiLabel: 'API',
     connected: '已连接', disconnected: '已断开', checking: '检查中...',
     uptime: '运行时长', deviceName: '设备名称', model: '型号',
     firmware: '固件版本', vendor: '厂商',
+    recordingService: '录像服务', gb28181Service: 'GB28181',
+    stateOn: '运行中', stateOff: '已停止',
     // Devices view
-    devicesTitle: '主机设备', videoDevices: '视频设备', audioDevices: '音频设备',
+    devicesTitle: '主机设备', devicesDesc: '主机上的视频 / 音频采集设备', videoDevices: '视频设备', audioDevices: '音频设备',
     formats: '支持格式', useAsCamera: '用作相机', noDevices: '未发现设备',
     hostCaps: '主机能力', cores: 'CPU 核心', memory: '内存',
     encoder: '推荐编码器',
     // Config field labels (shared sections)
+    web: 'Web 服务', camera: '图像采集', rtsp: 'RTSP', onvif: 'ONVIF',
+    logging: '日志',
     'web.enabled': '启用 Web', 'web.port': 'Web 端口',
     'web.username': '用户名', 'web.password': '密码',
     'camera.mode': '采集模式', 'camera.width': '宽度', 'camera.height': '高度',
@@ -112,6 +119,8 @@ const DICT = {
     loading: 'Loading...', retry: 'Retry', save: 'Save', saving: 'Saving...',
     saved: 'Saved', saveError: 'Failed to save', fetchError: 'Network error',
     error: 'Error', success: 'Success',
+    cancel: 'Cancel', confirm: 'Confirm',
+    setupHint: 'First run — create the admin account to finish setup',
     showPassword: 'Show password', hidePassword: 'Hide password',
     switchLang: 'Switch language', themeLabel: 'Toggle theme',
     // Live view
@@ -138,9 +147,10 @@ const DICT = {
     'imaging.AWBMode': 'White balance', 'imaging.ExposureMode': 'Exposure mode',
     'imaging.HFlip': 'H-flip (sensor)', 'imaging.VFlip': 'V-flip (sensor)',
     // Cameras view
-    camerasTitle: 'Cameras', addCamera: 'Add camera', cameraName: 'Name',
+    camerasTitle: 'Cameras', camerasDesc: 'Connected cameras and capture state', addCamera: 'Add camera', cameraName: 'Name',
     cameraModel: 'Model', cameraFirmware: 'Firmware', resolution: 'Resolution', fps: 'FPS',
     statusOnline: 'Online', statusOffline: 'Offline', statusRunning: 'Running', statusIdle: 'Idle',
+    statusLabel: 'Status',
     deleteCamera: 'Delete', deleteConfirm: 'Delete camera {name}?',
     openLive: 'Open live', noCameras: 'No cameras yet',
     // Settings view
@@ -150,17 +160,21 @@ const DICT = {
     configChanged: 'Settings changed by another client',
     applyRestart: 'Some settings need a device restart to take effect',
     // Status view
-    statusTitle: 'System Status', connection: 'Connection', cameraInfo: 'Camera Info',
+    statusTitle: 'System Status', statusDesc: 'Device health at a glance', connection: 'Connection', cameraInfo: 'Camera Info',
     events: 'Events', apiLabel: 'API',
     connected: 'Connected', disconnected: 'Disconnected', checking: 'Checking...',
     uptime: 'Uptime', deviceName: 'Device name', model: 'Model',
     firmware: 'Firmware', vendor: 'Vendor',
+    recordingService: 'Recording', gb28181Service: 'GB28181',
+    stateOn: 'On', stateOff: 'Off',
     // Devices view
-    devicesTitle: 'Host Devices', videoDevices: 'Video devices', audioDevices: 'Audio devices',
+    devicesTitle: 'Host Devices', devicesDesc: 'Video / audio capture devices on this host', videoDevices: 'Video devices', audioDevices: 'Audio devices',
     formats: 'Formats', useAsCamera: 'Use as camera', noDevices: 'No devices found',
     hostCaps: 'Host capabilities', cores: 'CPU cores', memory: 'Memory',
     encoder: 'Recommended encoder',
     // Config field labels (shared sections)
+    web: 'Web service', camera: 'Capture', rtsp: 'RTSP', onvif: 'ONVIF',
+    logging: 'Logging',
     'web.enabled': 'Enable web', 'web.port': 'Web port',
     'web.username': 'Username', 'web.password': 'Password',
     'camera.mode': 'Capture mode', 'camera.width': 'Width', 'camera.height': 'Height',
