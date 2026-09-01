@@ -447,6 +447,7 @@ async fn main() -> anyhow::Result<()> {
     web::server::run_with_shutdown(
         &config.web.host,
         config.web.port,
+        config.web.http_port,
         pool,
         auth_db,
         stream_manager.clone(),

@@ -1,7 +1,8 @@
 use axum::Json;
-use axum::extract::Extension;
+use axum::extract::{Extension, Request};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use parking_lot::Mutex as ParkingLotMutex;
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -135,6 +136,47 @@ pub async fn not_implemented_handler() -> impl IntoResponse {
     ApiError::not_implemented("not implemented").into_response()
 }
 
+/// Marks which listener a request arrived on (SPEC appendix A): session
+/// cookies are issued with `Secure` only on the TLS listener, because
+/// browsers refuse `Secure` cookies over plain http:// — the optional
+/// HTTP port would otherwise be unusable. Requests that never pass
+/// through a marker layer (unit tests) default to `Secure`.
+#[derive(Debug, Clone, Copy)]
+pub struct ListenerScheme(pub bool);
+
+/// Tag requests served by the TLS listener.
+pub async fn mark_secure_listener(mut req: Request, next: Next) -> Response {
+    req.extensions_mut().insert(ListenerScheme(true));
+    next.run(req).await
+}
+
+/// Tag requests served by the optional plain-HTTP listener.
+pub async fn mark_insecure_listener(mut req: Request, next: Next) -> Response {
+    req.extensions_mut().insert(ListenerScheme(false));
+    next.run(req).await
+}
+
+/// `Secure` attribute for a Set-Cookie issued to this request.
+fn secure_flag(secure: bool) -> &'static str {
+    if secure { " Secure;" } else { "" }
+}
+
+/// Session cookie value shared by login/setup (max-age 24h).
+fn session_cookie(token: &str, secure: bool) -> String {
+    format!(
+        "session={token}; HttpOnly;{} SameSite=Strict; Path=/; Max-Age=86400",
+        secure_flag(secure)
+    )
+}
+
+/// Cleared session cookie for logout.
+fn session_cookie_cleared(secure: bool) -> String {
+    format!(
+        "session=; HttpOnly;{} SameSite=Strict; Path=/; Max-Age=0",
+        secure_flag(secure)
+    )
+}
+
 /// Request body for POST /api/auth/login
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -155,8 +197,10 @@ pub struct LoginRequest {
 pub async fn login_handler(
     Extension(_db): Extension<SqlitePool>,
     Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
+    insecure: Option<Extension<ListenerScheme>>,
     Json(mut body): Json<LoginRequest>,
 ) -> impl IntoResponse {
+    let secure = insecure.map(|Extension(s)| s.0).unwrap_or(true);
     let conn = auth_db.lock().await;
 
     // SPEC §2: empty/omitted username defaults to "admin" (single-admin login form).
@@ -232,8 +276,7 @@ pub async fn login_handler(
     tracing::info!(username = %body.username, "User logged in");
 
     // Set HttpOnly + Secure + SameSite session cookie
-    let cookie =
-        format!("session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400");
+    let cookie = session_cookie(&token, secure);
 
     // Generate CSRF token for double-submit pattern.
     // The token is NOT HttpOnly so the frontend JS can read it and include
@@ -274,6 +317,7 @@ pub async fn login_handler(
 /// and clears the cookie by setting Max-Age=0.
 #[tracing::instrument(skip_all)]
 pub async fn logout_handler(
+    insecure: Option<Extension<ListenerScheme>>,
     Extension(_db): Extension<SqlitePool>,
     Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
     req: axum::extract::Request,
@@ -296,15 +340,11 @@ pub async fn logout_handler(
         }
     }
 
-    // Clear the cookie regardless of whether we found a session
-    let cookie = "session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0";
+    // Clear the cookie regardless of whether we found a session.
+    // SPEC §2: logout responds 204 with only the clearing Set-Cookie.
+    let cookie = session_cookie_cleared(insecure.map(|Extension(s)| s.0).unwrap_or(true));
 
-    (
-        StatusCode::OK,
-        [("set-cookie", cookie.to_owned())],
-        Json(serde_json::json!({"status": "ok"})),
-    )
-        .into_response()
+    (StatusCode::NO_CONTENT, [("set-cookie", cookie.to_owned())]).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +367,7 @@ pub struct SetupRequest {
 pub async fn setup_handler(
     Extension(_db): Extension<SqlitePool>,
     Extension(auth_db): Extension<Arc<Mutex<Connection>>>,
+    setup_insecure: Option<Extension<ListenerScheme>>,
     Json(body): Json<SetupRequest>,
 ) -> impl IntoResponse {
     // Validate
@@ -402,7 +443,10 @@ pub async fn setup_handler(
         .into_response();
     let headers = response.headers_mut();
     for cookie in [
-        format!("session={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400"),
+        session_cookie(
+            &token,
+            setup_insecure.map(|Extension(s)| s.0).unwrap_or(true),
+        ),
         format!("csrf-token={csrf_token}; SameSite=Strict; Path=/; Max-Age=86400"),
     ] {
         match cookie.parse::<axum::http::HeaderValue>() {
@@ -779,6 +823,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_login_insecure_listener_cookie_has_no_secure_flag() {
+        // SPEC appendix A: session cookies issued over the optional plain
+        // HTTP listener must omit `Secure` (browsers refuse Secure cookies
+        // over http://, which would make login unusable there).
+        let (pool, auth_db, _token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db)
+            .layer(axum::middleware::from_fn(mark_insecure_listener));
+
+        let req = Request::builder()
+            .uri("/api/auth/login")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "username": "admin",
+                    "password": "current_pass"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let set_cookie = res
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(
+            set_cookie.starts_with("session="),
+            "should set session cookie"
+        );
+        assert!(
+            !set_cookie.contains("Secure"),
+            "cookie issued on the insecure listener must not be Secure: {set_cookie}"
+        );
+        assert!(set_cookie.contains("HttpOnly"));
+    }
+
+    #[tokio::test]
+    async fn test_logout_insecure_listener_clears_without_secure_flag() {
+        let (pool, auth_db, _token) = test_app_with_user().await;
+        let app = crate::server::build_app(pool, auth_db)
+            .layer(axum::middleware::from_fn(mark_insecure_listener));
+
+        // log in first to obtain a session cookie
+        let req = Request::builder()
+            .uri("/api/auth/login")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "username": "admin",
+                    "password": "current_pass"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let cookie = res
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+
+        let req = Request::builder()
+            .uri("/api/auth/logout")
+            .method("POST")
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let set_cookie = res
+            .headers()
+            .get("set-cookie")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert!(!set_cookie.contains("Secure"));
+    }
+
+    #[tokio::test]
     async fn test_login_nonexistent_user() {
         let (pool, auth_db, _token) = test_app_with_user().await;
         let app = crate::server::build_app(pool, auth_db);
@@ -810,7 +940,8 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
+        // SPEC §2: logout responds 204 No Content with a clearing cookie.
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
 
         let set_cookie = res
             .headers()

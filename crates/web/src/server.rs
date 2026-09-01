@@ -534,6 +534,7 @@ pub async fn run(
 pub async fn run_with_shutdown(
     host: &str,
     port: u16,
+    http_port: u16,
     db: sqlx::SqlitePool,
     auth_db: Arc<Mutex<Connection>>,
     stream_manager: Arc<StreamManager>,
@@ -598,12 +599,44 @@ pub async fn run_with_shutdown(
         shutdown_handle_clone.graceful_shutdown(None);
     });
 
+    // Listener scheme tagging (SPEC appendix A): session cookies issued
+    // over the optional plain-HTTP listener omit the `Secure` flag.
+    let https_app = app.clone().layer(axum::middleware::from_fn(
+        crate::routes::mark_secure_listener,
+    ));
+    let mut http_shutdown: Option<tokio::task::JoinHandle<()>> = None;
+    if http_port > 0 {
+        let http_addr: std::net::SocketAddr = format!("{host}:{http_port}")
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid http listen address {host}:{http_port}: {e}"))?;
+        let http_app = app.layer(axum::middleware::from_fn(
+            crate::routes::mark_insecure_listener,
+        ));
+        let http_handle = handle.clone();
+        tracing::info!(
+            "mibee-rec additional plain-HTTP listener on http://{}",
+            http_addr
+        );
+        http_shutdown = Some(tokio::spawn(async move {
+            if let Err(e) = axum_server::bind(http_addr)
+                .handle(http_handle)
+                .serve(http_app.into_make_service())
+                .await
+            {
+                tracing::error!(error = %e, "plain-HTTP listener terminated");
+            }
+        }));
+    }
+
     let result = axum_server::bind_rustls(addr, tls_config)
         .handle(handle)
-        .serve(app.into_make_service())
+        .serve(https_app.into_make_service())
         .await;
 
     shutdown_handle.abort();
+    if let Some(hs) = http_shutdown {
+        hs.abort();
+    }
     result?;
 
     Ok(())
