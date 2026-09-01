@@ -107,11 +107,13 @@ function startMse(cameraIdArg, onGiveUp) {
   const video = $('stream-video');
   const state = { dead: false, retries: 0 };
   let ms = null, sb = null, queue = [], abort = null, stall = null, pruning = false;
+  let watchdog = null, lastCt = -1, stuckTicks = 0;
 
   function stop() {
     state.dead = true;
     if (abort) { try { abort.abort(); } catch (_) { /* already closed */ } abort = null; }
     if (stall) { clearTimeout(stall); stall = null; }
+    if (watchdog) { clearInterval(watchdog); watchdog = null; }
     if (sb) { try { sb.onupdateend = null; sb.onerror = null; } catch (_) { /* detached */ } }
     if (ms && ms.readyState === 'open') { try { ms.endOfStream(); } catch (_) { /* ignore */ } }
     ms = null; sb = null; queue = []; pruning = false;
@@ -121,6 +123,9 @@ function startMse(cameraIdArg, onGiveUp) {
     stop();
     if (state.dead) return;
     state.retries += 1;
+    // Endless reconnect loops leave a frozen frame on screen forever —
+    // after enough consecutive failures hand the slot to the fallback chain.
+    if (state.retries > 12) { onGiveUp(); return; }
     const backoff = Math.min(MAX_BACKOFF_MS, 500 * 2 ** Math.min(state.retries - 1, 4));
     setLoadingLabel(true);
     $('stream-loading').classList.remove('hidden');
@@ -132,8 +137,30 @@ function startMse(cameraIdArg, onGiveUp) {
     stall = setTimeout(() => reconnect(), STALL_TIMEOUT_MS);
   }
 
+  function startWatchdog() {
+    // The stall timer above only fires when network bytes STOP. A stalled
+    // decoder, a SourceBuffer stuck in `updating`, or a silently paused
+    // element all keep bytes flowing while the picture freezes — so watch
+    // the playhead itself: no currentTime progress for ~8s -> reconnect.
+    if (watchdog) clearInterval(watchdog);
+    lastCt = -1; stuckTicks = 0;
+    watchdog = setInterval(() => {
+      if (state.dead) return;
+      if (video.ended) { reconnect(); return; }
+      if (video.currentTime === lastCt) {
+        stuckTicks += 1;
+        if (video.paused && !document.hidden) video.play().catch(() => { /* retried next tick */ });
+        if (stuckTicks >= 4) { stuckTicks = 0; reconnect(); }
+      } else {
+        stuckTicks = 0;
+      }
+      lastCt = video.currentTime;
+    }, 2000);
+  }
+
   function start() {
     resetStall();
+    startWatchdog();
     try { ms = new MediaSource(); } catch (_) { onGiveUp(); return; }
     video.src = URL.createObjectURL(ms);
     video.load(); // force the element to pick up the new src on reconnect
