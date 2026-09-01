@@ -314,6 +314,8 @@ input:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent); }
 #view-preview {
   display: none;
   flex-direction: row;
+  flex-wrap: wrap;
+  align-content: start;
   gap: var(--space-md);
   padding: var(--space-md);
   height: calc(100vh - 52px);
@@ -330,6 +332,8 @@ input:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent); }
   border: 1px solid var(--border);
   display: flex;
   align-items: center;
+  /* keeps the stream sized when a wrapped toolbar row squeezes the line */
+  min-height: 400px;
   justify-content: center;
   min-height: 300px;
 }
@@ -971,13 +975,16 @@ button.config-section-title:focus-visible { outline-offset: -2px; }
    (live toolbar, MJPEG fallback, imaging panel, cameras grid, devices)
    =================================================================== */
 
-/* Live toolbar + camera selector (multi-camera devices) */
+/* Live toolbar + camera selector (multi-camera devices).
+   Spans the full top row — never a side column next to the stream. */
 .live-toolbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px 0;
+  flex: 0 0 100%;
+  padding: 0;
 }
+.live-toolbar:empty { display: none; }
 .camera-select {
   background: var(--bg-card, #141a24);
   color: var(--text-primary, #e2e8f0);
