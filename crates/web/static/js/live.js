@@ -109,8 +109,12 @@ function startMse(cameraIdArg, onGiveUp) {
   let ms = null, sb = null, queue = [], abort = null, stall = null, pruning = false;
   let watchdog = null, lastCt = -1, stuckTicks = 0;
 
-  function stop() {
-    state.dead = true;
+  // Tear down transports/timers WITHOUT marking the engine dead — the
+  // internal reconnect path reuses this and restarts afterwards. The public
+  // stop() adds the dead flag so an external stop is final. (Checking the
+  // flag AFTER stop() made every internal reconnect a suicide — any
+  // transient network blip froze the player forever.)
+  function teardown() {
     if (abort) { try { abort.abort(); } catch (_) { /* already closed */ } abort = null; }
     if (stall) { clearTimeout(stall); stall = null; }
     if (watchdog) { clearInterval(watchdog); watchdog = null; }
@@ -119,9 +123,14 @@ function startMse(cameraIdArg, onGiveUp) {
     ms = null; sb = null; queue = []; pruning = false;
   }
 
+  function stop() {
+    state.dead = true;
+    teardown();
+  }
+
   function reconnect() {
-    stop();
     if (state.dead) return;
+    teardown();
     state.retries += 1;
     // Endless reconnect loops leave a frozen frame on screen forever —
     // after enough consecutive failures hand the slot to the fallback chain.
