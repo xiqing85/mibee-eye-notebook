@@ -50,6 +50,9 @@ export function updatePtzVisibility() {
 
 export function initPtz() {
   if (!hasCap('ptz')) return;
+  // The enable toggle lives in Settings — only meaningful on PTZ devices.
+  const row = $('ptz-toggle-row');
+  if (row) row.classList.remove('hidden');
   document.querySelectorAll('.ptz-btn').forEach((btn) => {
     let interval = null;
     let firedByPointer = false;

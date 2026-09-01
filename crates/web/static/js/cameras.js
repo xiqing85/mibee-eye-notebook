@@ -3,8 +3,9 @@
 
 import { api } from './api.js';
 import { store, setCameraId, hasCap } from './store.js';
-import { $, el, esc, toast } from './ui.js';
+import { $, el, esc, toast, confirmDlg } from './ui.js';
 import { t } from './i18n.js';
+import { icon } from './icons.js';
 import { showView } from './main.js';
 
 const tileTimers = new Map();
@@ -28,7 +29,10 @@ export async function renderCameras() {
   grid.innerHTML = '';
 
   if (store.cameras.length === 0) {
-    grid.appendChild(el('div', { className: 'empty-state', textContent: t('noCameras') }));
+    grid.appendChild(el('div', {
+      className: 'empty-state',
+      html: icon('video', 34) + '<span>' + esc(t('noCameras')) + '</span>',
+    }));
     return;
   }
 
@@ -42,40 +46,42 @@ function renderTile(cam) {
   const statusLabel = t(cam.status === 'offline' ? 'statusOffline'
     : hasCap('camera_control') && cam.status === 'idle' ? 'statusIdle'
     : hasCap('camera_control') ? 'statusRunning' : 'statusOnline');
+  const badgeCls = cam.status === 'offline' ? 'badge-offline'
+    : cam.status === 'idle' ? 'badge-idle' : 'badge-online';
 
   const thumb = el('img', {
     className: 'tile-thumb', alt: cam.name || cam.id,
     src: running ? '' : '',
   });
+  // Broken thumb frames (e.g. no encoder yet) just hide — the striped
+  // tile background doubles as the "no signal" placeholder.
+  thumb.addEventListener('error', () => thumb.classList.add('hidden'));
   if (running) attachThumb(thumb, cam.id);
 
-  const actions = [el('button', {
-    className: 'btn-small', textContent: t('openLive'),
-    onclick: () => { setCameraId(cam.id); showView('preview'); },
-  })];
+  const iconBtn = (name, label, onclick, extra = '') => el('button', {
+    className: 'btn-small ' + extra,
+    html: icon(name, 14) + '<span>' + esc(label) + '</span>',
+    onclick,
+  });
+
+  const actions = [iconBtn('live', t('openLive'), () => { setCameraId(cam.id); showView('preview'); })];
   if (hasCap('camera_control')) {
-    actions.push(el('button', {
-      className: 'btn-small', textContent: running ? t('stopStream') : t('startStream'),
-      onclick: () => toggleStream(cam),
-    }));
+    actions.push(iconBtn(running ? 'stop' : 'play', running ? t('stopStream') : t('startStream'), () => toggleStream(cam)));
   }
   if (hasCap('recording')) {
-    actions.push(el('button', {
-      className: 'btn-small', textContent: t('recordingStart'),
-      onclick: () => toggleRecording(cam),
-    }));
+    actions.push(iconBtn('record', t('recordingStart'), () => toggleRecording(cam)));
   }
   if (hasCap('camera_management')) {
-    actions.push(el('button', {
-      className: 'btn-small btn-danger', textContent: t('deleteCamera'),
-      onclick: () => deleteCamera(cam),
-    }));
+    actions.push(iconBtn('trash', t('deleteCamera'), () => deleteCamera(cam), 'btn-danger'));
   }
 
   return el('div', { className: 'tile' + (running ? '' : ' offline'), dataset: { camera: cam.id } }, [
     el('div', { className: 'tile-media' }, [
       thumb,
-      el('span', { className: 'tile-badge ' + (running ? 'badge-online' : 'badge-offline'), textContent: statusLabel }),
+      el('span', {
+        className: 'tile-badge ' + badgeCls,
+        html: '<span class="badge-dot"></span>' + esc(statusLabel),
+      }),
     ]),
     el('div', { className: 'tile-body' }, [
       el('div', { className: 'tile-title', textContent: cam.name || cam.id }),
@@ -125,7 +131,13 @@ async function toggleRecording(cam) {
 }
 
 async function deleteCamera(cam) {
-  if (!window.confirm(t('deleteConfirm', { name: cam.name || cam.id }))) return;
+  const ok = await confirmDlg({
+    message: t('deleteConfirm', { name: cam.name || cam.id }),
+    okText: t('deleteCamera'),
+    cancelText: t('cancel'),
+    danger: true,
+  });
+  if (!ok) return;
   const r = await api.del(`/api/cameras/${cam.id}`);
   if (r.ok) {
     await refreshCameras();
@@ -138,6 +150,8 @@ async function deleteCamera(cam) {
 export function initCameras() {
   const view = $('view-cameras');
   if (view) view.classList.toggle('hidden-cap', !hasCap('multi_camera'));
-  const tab = document.querySelector('.nav-tab[data-view="cameras"]');
-  if (tab) tab.classList.toggle('hidden', !hasCap('multi_camera'));
+  // Both the top bar and the mobile tab bar carry this tab.
+  document.querySelectorAll('.nav-tab[data-view="cameras"]').forEach((tab) => {
+    tab.classList.toggle('hidden', !hasCap('multi_camera'));
+  });
 }

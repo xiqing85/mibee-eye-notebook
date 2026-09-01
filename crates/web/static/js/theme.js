@@ -17,7 +17,7 @@ export function applyTheme() {
     if (show) show.classList.remove('hidden');
   });
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', dark ? '#0a0e14' : '#f0f2f5');
+  if (meta) meta.setAttribute('content', dark ? '#070b12' : '#eef1f5');
 }
 
 export function initTheme() {
