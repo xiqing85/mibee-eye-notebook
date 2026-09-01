@@ -83,6 +83,71 @@ impl Yuv420p {
         let uv = (self.width as usize / 2) * (self.height as usize / 2);
         &mut self.data[y + uv..]
     }
+
+    /// Flip the frame in place — device-level permanent flip.
+    ///
+    /// Applied before encoding, so the flip is baked into every downstream
+    /// consumer (RTSP, MSE, recordings, snapshots). Malformed (too short)
+    /// buffers are left untouched.
+    pub fn flip(&mut self, hflip: bool, vflip: bool) {
+        if !hflip && !vflip {
+            return;
+        }
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let cw = w / 2;
+        let ch = h / 2;
+        let y_len = w * h;
+        let uv_len = cw * ch;
+        if self.data.len() < y_len + 2 * uv_len {
+            return;
+        }
+        let (yp, rest) = self.data.split_at_mut(y_len);
+        let (up, vp) = rest.split_at_mut(uv_len);
+        let mut scratch = vec![0u8; w.max(cw)];
+        flip_plane(yp, w, h, hflip, vflip, &mut scratch[..w]);
+        if cw > 0 && ch > 0 {
+            flip_plane(up, cw, ch, hflip, vflip, &mut scratch[..cw]);
+            flip_plane(vp, cw, ch, hflip, vflip, &mut scratch[..cw]);
+        }
+    }
+}
+
+/// Flip one tightly packed plane in place; `scratch` is one row wide.
+fn flip_plane(plane: &mut [u8], w: usize, h: usize, hflip: bool, vflip: bool, scratch: &mut [u8]) {
+    if vflip {
+        let mut top = 0usize;
+        let mut bottom = (h - 1) * w;
+        while top < bottom {
+            scratch.copy_from_slice(&plane[top..top + w]);
+            let (head, tail) = plane.split_at_mut(bottom);
+            let (top_row, bottom_row) = (&mut head[top..top + w], &mut tail[..w]);
+            copy_row(bottom_row, top_row, hflip);
+            copy_row(scratch, bottom_row, hflip);
+            top += w;
+            bottom -= w;
+        }
+        // Odd height: the middle row only needs internal mirroring.
+        if top == bottom && hflip {
+            plane[top..top + w].reverse();
+        }
+    } else if hflip {
+        for row in plane.chunks_mut(w) {
+            row.reverse();
+        }
+    }
+}
+
+/// Copy `src` into `dst`, optionally mirroring byte order.
+fn copy_row(src: &[u8], dst: &mut [u8], mirror: bool) {
+    debug_assert_eq!(src.len(), dst.len());
+    if mirror {
+        for (d, s) in dst.iter_mut().zip(src.iter().rev()) {
+            *d = *s;
+        }
+    } else {
+        dst.copy_from_slice(src);
+    }
 }
 
 /// Decode MJPEG bytes into a [`Yuv420p`] frame.
@@ -419,5 +484,96 @@ mod tests {
         for &y in frame.y_plane() {
             assert!(y > 200, "white pixel Y too low: {y}");
         }
+    }
+    #[test]
+    fn flip_vflip_reverses_rows_per_plane() {
+        let mut frame = Yuv420p {
+            width: 4,
+            height: 4,
+            data: (0..24).collect(),
+        };
+        frame.flip(false, true);
+        assert_eq!(
+            &frame.y_plane(),
+            &(12..16)
+                .chain(8..12)
+                .chain(4..8)
+                .chain(0..4)
+                .collect::<Vec<_>>()
+        );
+        // U plane is bytes 16..20 = [16,17,18,19] → row-swapped; V is 20..24.
+        assert_eq!(frame.u_plane(), &[18, 19, 16, 17]);
+        assert_eq!(frame.v_plane(), &[22, 23, 20, 21]);
+    }
+
+    #[test]
+    fn flip_hflip_mirrors_rows_per_plane() {
+        let mut frame = Yuv420p {
+            width: 4,
+            height: 4,
+            data: (0..24).collect(),
+        };
+        frame.flip(true, false);
+        for r in 0..4 {
+            let row = &frame.y_plane()[r * 4..r * 4 + 4];
+            assert_eq!(
+                row,
+                &[
+                    (r * 4 + 3) as u8,
+                    (r * 4 + 2) as u8,
+                    (r * 4 + 1) as u8,
+                    (r * 4) as u8
+                ]
+            );
+        }
+        assert_eq!(frame.u_plane(), &[17, 16, 19, 18]);
+        assert_eq!(frame.v_plane(), &[21, 20, 23, 22]);
+    }
+
+    #[test]
+    fn flip_both_is_full_reversal() {
+        let mut frame = Yuv420p {
+            width: 4,
+            height: 4,
+            data: (0..24).collect(),
+        };
+        frame.flip(true, true);
+        assert_eq!(frame.y_plane(), &(0..16).rev().collect::<Vec<_>>());
+        assert_eq!(frame.u_plane(), &[19, 18, 17, 16]);
+        assert_eq!(frame.v_plane(), &[23, 22, 21, 20]);
+    }
+
+    #[test]
+    fn flip_odd_height_middle_row_mirrored() {
+        let mut frame = Yuv420p {
+            width: 4,
+            height: 3,
+            data: (0..20).collect(),
+        };
+        frame.flip(true, true);
+        assert_eq!(&frame.y_plane()[0..4], &[11, 10, 9, 8]);
+        assert_eq!(&frame.y_plane()[4..8], &[7, 6, 5, 4]);
+        assert_eq!(&frame.y_plane()[8..12], &[3, 2, 1, 0]);
+        // single chroma row (c_h = 1): mirrored only
+        assert_eq!(frame.u_plane(), &[13, 12]);
+    }
+
+    #[test]
+    fn flip_noop_and_short_buffer() {
+        let mut frame = Yuv420p {
+            width: 4,
+            height: 4,
+            data: (0..24).collect(),
+        };
+        let before = frame.data.clone();
+        frame.flip(false, false);
+        assert_eq!(frame.data, before);
+        let mut short = Yuv420p {
+            width: 8,
+            height: 8,
+            data: vec![7; 10],
+        };
+        short.flip(true, true);
+        assert!(short.data.iter().all(|&b| b == 7));
     }
 }

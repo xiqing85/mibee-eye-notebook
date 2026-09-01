@@ -305,6 +305,17 @@ impl StreamManager {
                 {
                     vcs = vcs.with_target_fps(fps as f32);
                 }
+                // Device-level flips from the camera config — permanent,
+                // baked into the encoded stream and snapshots.
+                let hflip = config
+                    .get("hflip")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let vflip = config
+                    .get("vflip")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                vcs = vcs.with_flips(hflip, vflip);
                 let latest = vcs.latest_jpeg_handle();
                 let dims = vcs.dimensions_handle();
                 let tx = vcs.jpeg_sender();

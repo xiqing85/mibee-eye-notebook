@@ -72,6 +72,23 @@ function renderTile(cam) {
     actions.push(iconBtn('record', t('recordingStart'), () => toggleRecording(cam)));
   }
   if (hasCap('camera_management')) {
+    // Device-level flips: persisted in the camera config, baked into the
+    // encoded stream on (re)start — every viewer sees them.
+    const cfg = cam.config || {};
+    actions.push(el('button', {
+      className: 'btn-small btn-flip',
+      'aria-pressed': String(!!cfg.hflip),
+      title: t('flipH'), 'aria-label': t('flipH'),
+      html: icon('flip-h', 14),
+      onclick: () => toggleDeviceFlip(cam, 'hflip'),
+    }));
+    actions.push(el('button', {
+      className: 'btn-small btn-flip',
+      'aria-pressed': String(!!cfg.vflip),
+      title: t('flipV'), 'aria-label': t('flipV'),
+      html: icon('flip-v', 14),
+      onclick: () => toggleDeviceFlip(cam, 'vflip'),
+    }));
     actions.push(iconBtn('trash', t('deleteCamera'), () => deleteCamera(cam), 'btn-danger'));
   }
 
@@ -128,6 +145,26 @@ async function toggleRecording(cam) {
   const r2 = await api.post(`/api/cameras/${cam.id}/recording`, { active: !active });
   if (r2.ok) toast(t(active ? 'recordingStopped' : 'recordingStarted'), 'success');
   else toast(r2.message || t('fetchError'), 'error');
+}
+
+/// Toggle a device-level flip axis in the camera config. Flips are applied
+/// when the stream (re)starts, so cycle stop→start when the camera is live.
+async function toggleDeviceFlip(cam, axis) {
+  const cfg = { ...(cam.config || {}) };
+  cfg[axis] = !cfg[axis];
+  const r = await api.put(`/api/cameras/${cam.id}`, { config: cfg });
+  if (!r.ok) {
+    toast(r.message || t('fetchError'), 'error');
+    return;
+  }
+  const wasActive = isActive(cam);
+  if (wasActive && hasCap('camera_control')) {
+    await api.post(`/api/cameras/${cam.id}/stop`);
+    await api.post(`/api/cameras/${cam.id}/start`);
+  }
+  await refreshCameras();
+  renderCameras();
+  toast(t('flipApplied'), 'success');
 }
 
 async function deleteCamera(cam) {

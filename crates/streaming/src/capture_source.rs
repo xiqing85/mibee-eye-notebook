@@ -45,7 +45,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 /// Capacity of the JPEG preview broadcast (drop-oldest under backpressure).
 const JPEG_BROADCAST_CAPACITY: usize = 8;
 /// Re-encode a preview JPEG every Nth frame for YUYV cameras (to bound CPU).
-const YUYV_PREVIEW_EVERY_N_FRAMES: u64 = 6;
+const JPEG_REENCODE_EVERY_N_FRAMES: u64 = 6;
 
 // ---------------------------------------------------------------------------
 // VideoCaptureSource
@@ -103,6 +103,11 @@ pub struct VideoCaptureSource {
     jpeg_tx: Option<broadcast::Sender<Arc<[u8]>>>,
     /// Frame counter, used to throttle YUYV→JPEG re-encoding.
     frame_count: u64,
+    /// Device-level horizontal mirror, applied to each frame before encoding
+    /// so every consumer (RTSP, MSE, recordings, snapshots) sees it.
+    hflip: bool,
+    /// Device-level vertical flip (upside-down mount compensation).
+    vflip: bool,
 }
 
 /// Negotiated stream geometry, shared from the capture source to downstream
@@ -143,6 +148,8 @@ impl VideoCaptureSource {
             quality_preset: QualityPreset::Medium,
             jpeg_tx: Some(jpeg_tx),
             frame_count: 0,
+            hflip: false,
+            vflip: false,
         }
     }
 
@@ -208,6 +215,15 @@ impl VideoCaptureSource {
     /// `max_frame_rate` matches reality.
     pub fn with_target_fps(mut self, fps: f32) -> Self {
         self.target_fps = fps;
+        self
+    }
+
+    /// Enable device-level flips (permanent, baked into the encoded stream
+    /// and the snapshot JPEG tap). Should be called before
+    /// [`start`](Source::start).
+    pub fn with_flips(mut self, hflip: bool, vflip: bool) -> Self {
+        self.hflip = hflip;
+        self.vflip = vflip;
         self
     }
 }
@@ -327,7 +343,7 @@ impl Source for VideoCaptureSource {
                 }
 
                 // 4. Convert the raw frame to planar YUV420p.
-                let yuv: Yuv420p = if video_frame.format.contains("MJPEG") {
+                let mut yuv: Yuv420p = if video_frame.format.contains("MJPEG") {
                     mjpeg_to_yuv420p(&video_frame.data).context("MJPEG → YUV420p decode failed")?
                 } else if video_frame.format.contains("YUYV") {
                     yuyv_to_yuv420p(&video_frame.data, video_frame.width, video_frame.height)
@@ -337,11 +353,23 @@ impl Source for VideoCaptureSource {
                     mjpeg_to_yuv420p(&video_frame.data).context("MJPEG → YUV420p decode failed")?
                 };
 
-                // 5. Update the JPEG tap.
+                // Device-level flip: baked into everything downstream —
+                // the encoder (RTSP/MSE/recordings) and the JPEG tap alike.
+                if self.hflip || self.vflip {
+                    yuv.flip(self.hflip, self.vflip);
+                }
+
+                // 5. Update the JPEG tap. With flips active the raw MJPEG
+                //    bytes would NOT match the encoded orientation, so
+                //    re-encode from the flipped YUV (throttled) instead.
                 self.frame_count += 1;
-                let jpeg_bytes: Option<Arc<[u8]>> = if video_frame.format.contains("MJPEG") {
+                let mjpeg_native = video_frame.format.contains("MJPEG");
+                let jpeg_bytes: Option<Arc<[u8]>> = if mjpeg_native && !self.hflip && !self.vflip {
                     Some(Arc::from(video_frame.data.as_slice()))
-                } else if self.frame_count.is_multiple_of(YUYV_PREVIEW_EVERY_N_FRAMES) {
+                } else if self
+                    .frame_count
+                    .is_multiple_of(JPEG_REENCODE_EVERY_N_FRAMES)
+                {
                     jpeg_encode_yuv(&yuv).map(Arc::from)
                 } else {
                     None
