@@ -265,6 +265,14 @@ button { font-family: var(--font-sans); }
 }
 .btn-danger:hover { border-color: var(--danger); background: var(--danger-bg); }
 
+/* Icon-only device flip toggles on camera tiles */
+.btn-flip { padding: 6px 9px; }
+.btn-flip[aria-pressed="true"] {
+  color: var(--accent-text);
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
 /* Inline loading state: hide the label, spin a ring. */
 .is-loading { color: transparent !important; pointer-events: none; }
 .is-loading::after {
