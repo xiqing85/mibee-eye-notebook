@@ -61,9 +61,17 @@ export function initLive() {
 }
 
 /// Populate the camera <select> from store.cameras (multi-camera only).
+/// Hidden entirely when the device exposes fewer than two cameras — a
+/// selector with a single entry is noise, not a control.
 export function refreshCameraSelect() {
+  const field = $('live-camera-field');
   const sel = $('live-camera-select');
   if (!sel || !hasCap('multi_camera')) return;
+  if (!store.cameras || store.cameras.length < 2) {
+    if (field) field.classList.add('hidden');
+    return;
+  }
+  if (field) field.classList.remove('hidden');
   const prev = cameraId();
   sel.innerHTML = '';
   for (const c of store.cameras) {

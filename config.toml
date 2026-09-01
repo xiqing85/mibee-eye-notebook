@@ -1,6 +1,9 @@
 [web]
 port = 8443
 host = "0.0.0.0"
+# Optional additional plain-HTTP listener (no TLS cert warning in browsers).
+# 0 = disabled. Session cookies issued over this port omit the `Secure` flag.
+http_port = 8088
 # Hostname/IP advertised in stream URLs returned to clients (RTSP/ONVIF/Snapshot).
 # Empty = auto-detect LAN IP at startup via UDP probe.
 # Set this explicitly when behind NAT or if auto-detection picks the wrong interface.

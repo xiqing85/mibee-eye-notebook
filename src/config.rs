@@ -23,6 +23,13 @@ pub struct WebConfig {
     /// If None, auto-detected at startup via UDP socket.
     #[serde(default)]
     pub advertised_host: Option<String>,
+
+    /// Optional additional plain-HTTP listener for LAN access without TLS
+    /// ceremony (SPEC appendix A). 0 = disabled (default). Session cookies
+    /// issued over this listener omit the `Secure` flag; cookies issued
+    /// over the TLS listener keep it.
+    #[serde(default)]
+    pub http_port: u16,
 }
 
 fn default_web_port() -> u16 {
@@ -38,6 +45,7 @@ impl Default for WebConfig {
             port: 8443,
             host: "0.0.0.0".into(),
             advertised_host: None,
+            http_port: 0,
         }
     }
 }
@@ -506,6 +514,7 @@ port = 9090
                 port: 9090,
                 host: "127.0.0.1".into(),
                 advertised_host: None,
+                http_port: 0,
             },
             ..AppConfig::default()
         };
@@ -790,6 +799,7 @@ enabled = false
                 port: 80,
                 host: "0.0.0.0".into(),
                 advertised_host: None,
+                http_port: 0,
             },
             ..AppConfig::default()
         };
@@ -820,6 +830,7 @@ enabled = false
                 port: 8554,
                 host: "0.0.0.0".into(),
                 advertised_host: None,
+                http_port: 0,
             },
             rtsp: RtspConfig { server_port: 8554 },
             ..AppConfig::default()
