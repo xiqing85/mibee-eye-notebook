@@ -3,7 +3,7 @@
 
 import { api } from './api.js';
 import { cameraId, hasCap } from './store.js';
-import { $, el, toast } from './ui.js';
+import { $, el, toast, confirmDlg } from './ui.js';
 import { t } from './i18n.js';
 
 const SLIDERS = [
@@ -50,6 +50,7 @@ async function loadImaging() {
 function renderImaging(params, options) {
   const container = $('imaging-controls');
   if (!container) return;
+  container.className = 'imaging-controls-grid';
   container.innerHTML = '';
 
   for (const cfg of SLIDERS) {
@@ -123,7 +124,13 @@ function postParam(name, value) {
 }
 
 async function resetDefaults() {
-  if (!window.confirm(t('imagingResetConfirm'))) return;
+  const ok = await confirmDlg({
+    message: t('imagingResetConfirm'),
+    okText: t('imagingReset'),
+    cancelText: t('cancel'),
+    danger: true,
+  });
+  if (!ok) return;
   const defaults = {
     Brightness: 0, Contrast: 1, Saturation: 1, Sharpness: 1,
     AWBMode: 'auto', ExposureMode: 'normal', HFlip: false, VFlip: false,

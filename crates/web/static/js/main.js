@@ -2,8 +2,9 @@
 
 import { api, onSessionExpired, refreshCapabilities } from './api.js';
 import { store, setLang } from './store.js';
-import { $, toast } from './ui.js';
+import { $, toast, confirmDlg } from './ui.js';
 import { t, applyLang } from './i18n.js';
+import { icon, initIcons } from './icons.js';
 import { initTheme } from './theme.js';
 import { AuthState, detectAuthState, setAuthMode, initAuth, handleLogout } from './auth.js';
 import { connectEvents, disconnectEvents } from './sse.js';
@@ -74,11 +75,16 @@ function initNav() {
   if (initNav._done) return;
   initNav._done = true;
   document.querySelectorAll('.nav-tab').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const target = btn.dataset.view;
       if (!target || target === 'login') return;
       if (store.configDirty && target !== 'settings') {
-        if (!window.confirm(t('unsavedConfirm'))) return;
+        const ok = await confirmDlg({
+          message: t('unsavedConfirm'),
+          okText: t('confirm'),
+          cancelText: t('cancel'),
+        });
+        if (!ok) return;
         store.configDirty = false;
       }
       showView(target);
@@ -87,6 +93,7 @@ function initNav() {
 }
 
 function initShell() {
+  initIcons();
   applyLang();
   initTheme();
 
@@ -104,6 +111,8 @@ function initShell() {
     if (!input) return;
     const show = input.type === 'password';
     input.type = show ? 'text' : 'password';
+    btn.innerHTML = icon(show ? 'eye-off' : 'eye', 18);
+    btn.classList.toggle('revealed', show);
     btn.setAttribute('aria-label', show ? t('hidePassword') : t('showPassword'));
   });
 
