@@ -61,6 +61,10 @@ const DICT = {
     validationError: '请检查输入', loadError: '加载配置失败',
     configChanged: '配置已被其他客户端修改',
     applyRestart: '部分设置保存后需重启设备生效',
+    applyRestartSec: '需重启生效', applyImmediateSec: '立即生效',
+    restartNow: '立即重启', restartConfirm: '现在重启设备服务？直播与页面会中断数秒。',
+    restarting: '设备重启中…', restartTimeout: '重启超时，请稍后手动刷新页面。',
+    savedNeedRestart: '已保存，重启后生效：{sections}',
     // Status view
     statusTitle: '系统状态', statusDesc: '设备运行状态一览', connection: '连接', cameraInfo: '相机信息',
     events: '事件通道', apiLabel: 'API',
@@ -161,6 +165,10 @@ const DICT = {
     validationError: 'Please check your input', loadError: 'Failed to load config',
     configChanged: 'Settings changed by another client',
     applyRestart: 'Some settings need a device restart to take effect',
+    applyRestartSec: 'Restart to apply', applyImmediateSec: 'Immediate',
+    restartNow: 'Restart now', restartConfirm: 'Restart the device service now? Streams and the page drop for a few seconds.',
+    restarting: 'Restarting…', restartTimeout: 'Restart timed out — refresh the page manually.',
+    savedNeedRestart: 'Saved — restart to apply: {sections}',
     // Status view
     statusTitle: 'System Status', statusDesc: 'Device health at a glance', connection: 'Connection', cameraInfo: 'Camera Info',
     events: 'Events', apiLabel: 'API',

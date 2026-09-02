@@ -1014,6 +1014,43 @@ input[type="range"]::-moz-range-thumb {
   background: var(--warning-bg);
   color: var(--warning);
 }
+.apply-banner .btn-restart {
+  margin-left: auto;
+  color: var(--warning);
+  border-color: var(--warning-border);
+  white-space: nowrap;
+}
+.apply-banner .btn-restart:hover { background: var(--warning-bg); border-color: var(--warning); }
+
+/* Per-section apply badges (需重启生效 / 立即生效) in section titles */
+.section-apply-badge {
+  font-size: .62rem;
+  font-weight: 650;
+  letter-spacing: .05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.apply-restart { color: var(--warning); background: var(--warning-bg); border: 1px solid var(--warning-border); }
+.apply-immediate { color: var(--accent-text); background: var(--accent-bg); border: 1px solid var(--accent-border); }
+.config-section-title .section-apply-badge { margin-left: auto; }
+.config-section-title .chev { margin-left: 8px; }
+
+/* One-click restart overlay (SPEC §5.1) */
+.restart-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-lg);
+  background: rgba(3, 6, 11, .78);
+  backdrop-filter: blur(6px);
+  color: var(--text-secondary);
+  font-size: .95rem;
+}
 
 .config-section {
   background: var(--card-bg);

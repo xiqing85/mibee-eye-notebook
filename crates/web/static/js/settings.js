@@ -2,8 +2,8 @@
 // Device schemas differ — the editor renders whatever document it receives.
 
 import { api, refreshCapabilities } from './api.js';
-import { store } from './store.js';
-import { $, toast, setBtnLoading } from './ui.js';
+import { store, hasCap } from './store.js';
+import { $, toast, setBtnLoading, confirmDlg } from './ui.js';
 import { t, cfgLabel } from './i18n.js';
 import { icon } from './icons.js';
 import { applyTransform } from './live.js';
@@ -38,6 +38,19 @@ const stringFields = new Set();
 /// sending an index-keyed object in its place would be rejected
 /// (`expected a sequence`).
 const arrayFields = new Set();
+/// Top-level config sections the user has edited since load/save — drives
+/// the post-save restart banner (SPEC §5: restart sections need a service
+/// restart to apply; the UI surfaces a one-click restart when supported).
+const dirtySections = new Set();
+
+/// Apply semantics of a config section from capabilities.config_apply
+/// (SPEC §3.1): sections override the default; nested paths fall back to
+/// their top-level section, then the device default.
+function sectionApply(path) {
+  const ca = (store.caps && store.caps.config_apply) || {};
+  const s = ca.sections || {};
+  return s[path] || s[path.split('.')[0]] || ca.default || 'immediate';
+}
 
 export async function loadConfig() {
   const form = $('config-form'), loading = $('config-loading');
@@ -50,6 +63,7 @@ export async function loadConfig() {
     store.config = r.data;
     stringFields.clear();
     arrayFields.clear();
+    dirtySections.clear();
     buildForm(store.config, form, '');
     form.classList.remove('hidden');
   } else {
@@ -59,13 +73,26 @@ export async function loadConfig() {
   renderApplyBanner();
 }
 
-function renderApplyBanner() {
+/// Banner under the settings header: shows apply semantics, and — when the
+/// device supports it (capabilities.restart, SPEC §5.1) — a one-click
+/// restart button. `changed` lists restart sections edited in this save
+/// cycle, upgrading the copy from generic to actionable.
+function renderApplyBanner(changed = null) {
   const banner = $('config-apply-banner');
   if (!banner) return;
   const apply = (store.caps && store.caps.config_apply) || {};
   const restartish = apply.default === 'restart' ||
     Object.values(apply.sections || {}).includes('restart');
   banner.classList.toggle('hidden', !restartish);
+  if (!restartish) return;
+  const btn = $('btn-restart-device');
+  if (btn) btn.classList.toggle('hidden', !hasCap('restart'));
+  const label = banner.querySelector('[data-i18n=applyRestart]');
+  if (label) {
+    label.textContent = changed && changed.length
+      ? t('savedNeedRestart', { sections: changed.join(', ') })
+      : t('applyRestart');
+  }
 }
 
 function buildForm(obj, parent, prefix) {
@@ -111,11 +138,14 @@ function buildForm(obj, parent, prefix) {
     const p = prefix ? prefix + '.' + key : key;
     const sec = document.createElement('div');
     sec.className = 'config-section';
+    const apply = sectionApply(p);
+    const badge = '<span class="section-apply-badge apply-' + apply + '">'
+      + t(apply === 'restart' ? 'applyRestartSec' : 'applyImmediateSec') + '</span>';
     const hdr = document.createElement('button');
     hdr.type = 'button';
     hdr.className = 'config-section-title';
     hdr.setAttribute('aria-expanded', 'true');
-    hdr.innerHTML = esc(cfgLabel(p, key)) + '<span class="chev">' + icon('chevron-down', 15) + '</span>';
+    hdr.innerHTML = esc(cfgLabel(p, key)) + badge + '<span class="chev">' + icon('chevron-down', 15) + '</span>';
     hdr.addEventListener('click', () => {
       const collapsed = sec.classList.toggle('collapsed');
       hdr.setAttribute('aria-expanded', String(!collapsed));
@@ -185,8 +215,12 @@ function maybeNum(v) {
   return (v === '' || isNaN(n)) ? v : n;
 }
 
-function markDirty() {
+function markDirty(ev) {
   store.configDirty = true;
+  const node = ev && ev.target;
+  if (node && node.dataset && node.dataset.cfg) {
+    dirtySections.add(node.dataset.cfg.split('.')[0]);
+  }
   // Always re-evaluate: fixing an invalid field must re-enable Save.
   updateSaveState();
 }
@@ -221,12 +255,47 @@ export async function handleSave() {
     // Capabilities may have flipped (e.g. recording enabled) — refresh.
     await refreshCapabilities();
     initImaging();
+    // Point the user at the restart entry when edited sections need it.
+    const changedRestart = [...dirtySections].filter((s) => sectionApply(s) === 'restart');
+    renderApplyBanner(changedRestart);
+    dirtySections.clear();
   } else {
     toast(r.message || r.error || t('saveError'), 'error');
   }
   saveInProgress = false;
   setBtnLoading(btn, false);
   updateSaveState();
+}
+
+/// One-click service restart (SPEC §5.1): confirm → POST → poll the public
+/// /api/health until the service is back → hard reload (in-memory sessions
+/// die with the old process, so a clean reload is the only correct landing).
+async function restartDevice() {
+  const ok = await confirmDlg({
+    message: t('restartConfirm'),
+    okText: t('restartNow'),
+    cancelText: t('cancel'),
+  });
+  if (!ok) return;
+  const overlay = $('restart-overlay');
+  if (overlay) overlay.classList.remove('hidden');
+  try {
+    await api.post('/api/system/restart');
+  } catch (_) { /* connection resets as the process exits — expected */ }
+  const deadline = Date.now() + 90000;
+  await new Promise((r) => setTimeout(r, 3000));
+  for (;;) {
+    let up = false;
+    try {
+      const resp = await fetch('/api/health', { credentials: 'same-origin' });
+      up = resp.ok;
+    } catch (_) { up = false; }
+    if (up) { window.location.reload(); return; }
+    if (Date.now() > deadline) break;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  const label = $('restart-overlay-label');
+  if (label) label.textContent = t('restartTimeout');
 }
 
 export function deepMerge(a, b) {
@@ -247,6 +316,8 @@ export function initSettings() {
   }
   const save = $('save-config');
   if (save) save.addEventListener('click', handleSave);
+  const restartBtn = $('btn-restart-device');
+  if (restartBtn) restartBtn.addEventListener('click', restartDevice);
   window.addEventListener('beforeunload', (e) => {
     if (store.configDirty) { e.preventDefault(); e.returnValue = ''; }
   });
