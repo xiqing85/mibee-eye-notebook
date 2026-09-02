@@ -92,8 +92,15 @@ export function refreshCameraSelect() {
   store.currentCameraId = sel.value || store.currentCameraId;
 }
 
-export function startLive() {
+export async function startLive() {
   stopLive();
+  // camera.rotation lives in the config doc; fetch it once per session so
+  // the live view honors it without visiting Settings first.
+  if (!store.config) {
+    const cfg = await api.get('/api/config').catch(() => null);
+    if (cfg && cfg.ok) store.config = cfg.data;
+    applyTransform();
+  }
   $('stream-error').classList.add('hidden');
   $('stream-loading').classList.remove('hidden');
   setLoadingLabel(false);

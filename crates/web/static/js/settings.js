@@ -28,6 +28,16 @@ const PASSWORD_FIELDS = new Set(['rtsp.password', 'onvif.password', 'gb28181.pas
 const GB28181_ID_FIELDS = new Set(['gb28181.device_id', 'gb28181.channel_id']);
 
 let saveInProgress = false;
+/// Config paths whose document value is a string. collectConfig must send
+/// them back verbatim: numeric-looking strings (20-digit GB/T 28181 SIP IDs,
+/// phone numbers) would otherwise be converted to floats — losing precision
+/// above 2^53 and getting the PUT rejected by devices (`expected a string`).
+const stringFields = new Set();
+/// Config paths whose document value is an array (e.g. cpu_cores). Rendered
+/// read-only and omitted from the PUT: deepMerge keeps the stored value, and
+/// sending an index-keyed object in its place would be rejected
+/// (`expected a sequence`).
+const arrayFields = new Set();
 
 export async function loadConfig() {
   const form = $('config-form'), loading = $('config-loading');
@@ -38,6 +48,8 @@ export async function loadConfig() {
   const r = await api.get('/api/config');
   if (r.ok) {
     store.config = r.data;
+    stringFields.clear();
+    arrayFields.clear();
     buildForm(store.config, form, '');
     form.classList.remove('hidden');
   } else {
@@ -60,13 +72,20 @@ function buildForm(obj, parent, prefix) {
   parent.innerHTML = '';
   const leaf = [], nest = [];
   for (const [k, v] of Object.entries(obj)) {
-    (v && typeof v === 'object' ? nest : leaf).push([k, v]);
+    (v && typeof v === 'object' && !Array.isArray(v) ? nest : leaf).push([k, v]);
   }
   for (const [key, val] of leaf) {
     const p = prefix ? prefix + '.' + key : key;
     const row = document.createElement('div');
     row.className = 'config-field';
     row.dataset.cfg = p;
+    if (Array.isArray(val)) {
+      arrayFields.add(p);
+      row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label>'
+        + '<input type="text" id="cf-' + p + '" value="' + esc(JSON.stringify(val)) + '" data-cfg="' + p + '" disabled title="列表字段暂不支持在线编辑">';
+      parent.appendChild(row);
+      continue;
+    }
     const typ = typeof val;
     if (typ === 'boolean') {
       row.innerHTML = '<div class="field-row"><input type="checkbox" id="cf-' + p + '" ' + (val ? 'checked' : '') + ' data-cfg="' + p + '"><label for="cf-' + p + '">' + cfgLabel(p, key) + '</label></div>';
@@ -75,6 +94,7 @@ function buildForm(obj, parent, prefix) {
       const attrs = (c.min !== undefined ? ' min="' + c.min + '"' : '') + (c.max !== undefined ? ' max="' + c.max + '"' : '');
       row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><input type="number" id="cf-' + p + '" value="' + val + '" step="any"' + attrs + ' data-cfg="' + p + '">';
     } else {
+      stringFields.add(p);
       const en = ENUMS[p];
       if (en) {
         row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><select id="cf-' + p + '" data-cfg="' + p + '">' + en.map((o) => '<option ' + (o === val ? 'selected' : '') + '>' + o + '</option>').join('') + '</select>';
@@ -140,13 +160,16 @@ function validateConfig() {
 function collectConfig() {
   const out = {};
   document.querySelectorAll('#config-form [data-cfg]').forEach((node) => {
-    const parts = node.getAttribute('data-cfg').split('.');
+    const p = node.getAttribute('data-cfg');
+    if (arrayFields.has(p)) return; // omitted → deepMerge keeps the stored array
+    const parts = p.split('.');
     let val;
     if (node.type === 'checkbox') val = node.checked;
     else if (node.type === 'number') {
       const n = parseFloat(node.value);
       val = (node.value === '' || isNaN(n)) ? null : n;
-    } else val = maybeNum(node.value);
+    } else if (stringFields.has(p)) val = node.value;
+    else val = maybeNum(node.value);
     let o = out;
     for (let i = 0; i < parts.length - 1; i++) {
       if (!o[parts[i]] || typeof o[parts[i]] !== 'object') o[parts[i]] = {};
