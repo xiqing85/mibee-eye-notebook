@@ -6,6 +6,7 @@
 // the CSRF-exempt auth endpoints (SPEC §2).
 
 import { store } from './store.js';
+import { restartPending } from './restart.js';
 
 let sessionExpiredHandler = null;
 
@@ -47,8 +48,10 @@ export async function request(method, path, body) {
   }
 
   if (res.status === 401) {
-    // A session that died mid-flight (restart, expiry) — surface it once.
-    if (sessionExpiredHandler && path !== '/api/auth/login') {
+    // A session that died mid-flight (real expiry) — surface it once.
+    // During a deliberate device restart the page is already waiting to
+    // reload (restart.js); the bounce-to-login would be noise.
+    if (sessionExpiredHandler && path !== '/api/auth/login' && !restartPending()) {
       const fn = sessionExpiredHandler;
       sessionExpiredHandler = null;
       fn();

@@ -5,6 +5,7 @@ import { api } from './api.js';
 import { cameraId, hasCap } from './store.js';
 import { $, el, toast, confirmDlg } from './ui.js';
 import { t } from './i18n.js';
+import { beginDeviceRestart, restartPending } from './restart.js';
 
 const SLIDERS = [
   { name: 'Brightness', min: -1, max: 1, step: 0.01 },
@@ -15,24 +16,13 @@ const SLIDERS = [
 const AWB_ENUMS = ['auto', 'incandescent', 'fluorescent', 'warm_fluorescent', 'daylight', 'cloudy', 'shade'];
 const EXPOSURE_ENUMS = ['normal', 'sports', 'night', 'backlight', 'spotlight', 'snow', 'beach', 'verylong', 'fixedfps', 'antishake', 'fireworks'];
 const postTimers = {};
-let restartPending = false;
-
-/// Go dialect (SPEC 附录A #9): flips have no runtime channel — the device
-/// answers applied:"restart" and bakes the flip in via a service restart.
-/// Announce it once and reload after the service is back up.
-function handleRestartApply() {
-  if (restartPending) return;
-  restartPending = true;
-  toast(t('restarting'), 'info');
-  setTimeout(() => window.location.reload(), 8000);
-}
 
 function postParam(name, value) {
   clearTimeout(postTimers[name]);
   postTimers[name] = setTimeout(async () => {
     const r = await api.post(`/api/cameras/${cameraId()}/imaging/param`, { name, value });
     if (!r.ok) { toast(t('paramError', { name }), 'error'); return; }
-    if (r.data && r.data.applied === 'restart') handleRestartApply();
+    if (r.data && r.data.applied === 'restart') beginDeviceRestart();
   }, 150);
 }
 
@@ -51,10 +41,10 @@ async function resetDefaults() {
   for (const [name, value] of Object.entries(defaults)) {
     try {
       const r = await api.post(`/api/cameras/${cameraId()}/imaging/param`, { name, value });
-      if (r.ok && r.data && r.data.applied === 'restart') handleRestartApply();
+      if (r.ok && r.data && r.data.applied === 'restart') beginDeviceRestart();
     } catch { /* device may already be restarting from a flip reset */ }
   }
-  if (!restartPending) loadImaging();
+  if (!restartPending()) loadImaging();
 }
 
 export function initImaging() {

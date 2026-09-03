@@ -8,6 +8,7 @@ import { t, cfgLabel } from './i18n.js';
 import { icon } from './icons.js';
 import { applyTransform } from './live.js';
 import { initImaging } from './imaging.js';
+import { beginDeviceRestart } from './restart.js';
 
 const ENUMS = {
   'camera.mode': ['mtxrpicam', 'rtsp'],
@@ -250,6 +251,16 @@ export async function handleSave() {
   if (r.ok) {
     store.config = merged;
     store.configDirty = false;
+    // Go dialect (capabilities config_apply.auto): saving restart-sections
+    // already SIGTERMs the service — skip the post-save refreshes (they
+    // would race the dying process) and ride the shared restart flow.
+    if (r.data && r.data.applied === 'restart' && hasCap('restart')
+        && store.caps && store.caps.config_apply && store.caps.config_apply.auto) {
+      dirtySections.clear();
+      renderApplyBanner([]);
+      beginDeviceRestart();
+      return;
+    }
     toast(t('saved'), 'success');
     applyTransform();
     // Capabilities may have flipped (e.g. recording enabled) — refresh.
@@ -267,9 +278,10 @@ export async function handleSave() {
   updateSaveState();
 }
 
-/// One-click service restart (SPEC §5.1): confirm → POST → poll the public
-/// /api/health until the service is back → hard reload (in-memory sessions
-/// die with the old process, so a clean reload is the only correct landing).
+/// One-click service restart (SPEC §5.1): confirm → POST → shared restart
+/// flow (restart.js): announce, poll the public /api/health until the
+/// service is back, reload once — signed in where the dialect persists
+/// sessions (Go), login form otherwise.
 async function restartDevice() {
   const ok = await confirmDlg({
     message: t('restartConfirm'),
@@ -282,20 +294,7 @@ async function restartDevice() {
   try {
     await api.post('/api/system/restart');
   } catch (_) { /* connection resets as the process exits — expected */ }
-  const deadline = Date.now() + 90000;
-  await new Promise((r) => setTimeout(r, 3000));
-  for (;;) {
-    let up = false;
-    try {
-      const resp = await fetch('/api/health', { credentials: 'same-origin' });
-      up = resp.ok;
-    } catch (_) { up = false; }
-    if (up) { window.location.reload(); return; }
-    if (Date.now() > deadline) break;
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-  const label = $('restart-overlay-label');
-  if (label) label.textContent = t('restartTimeout');
+  beginDeviceRestart();
 }
 
 export function deepMerge(a, b) {
