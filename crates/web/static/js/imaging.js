@@ -15,6 +15,47 @@ const SLIDERS = [
 const AWB_ENUMS = ['auto', 'incandescent', 'fluorescent', 'warm_fluorescent', 'daylight', 'cloudy', 'shade'];
 const EXPOSURE_ENUMS = ['normal', 'sports', 'night', 'backlight', 'spotlight', 'snow', 'beach', 'verylong', 'fixedfps', 'antishake', 'fireworks'];
 const postTimers = {};
+let restartPending = false;
+
+/// Go dialect (SPEC 附录A #9): flips have no runtime channel — the device
+/// answers applied:"restart" and bakes the flip in via a service restart.
+/// Announce it once and reload after the service is back up.
+function handleRestartApply() {
+  if (restartPending) return;
+  restartPending = true;
+  toast(t('restarting'), 'info');
+  setTimeout(() => window.location.reload(), 8000);
+}
+
+function postParam(name, value) {
+  clearTimeout(postTimers[name]);
+  postTimers[name] = setTimeout(async () => {
+    const r = await api.post(`/api/cameras/${cameraId()}/imaging/param`, { name, value });
+    if (!r.ok) { toast(t('paramError', { name }), 'error'); return; }
+    if (r.data && r.data.applied === 'restart') handleRestartApply();
+  }, 150);
+}
+
+async function resetDefaults() {
+  const ok = await confirmDlg({
+    message: t('imagingResetConfirm'),
+    okText: t('imagingReset'),
+    cancelText: t('cancel'),
+    danger: true,
+  });
+  if (!ok) return;
+  const defaults = {
+    Brightness: 0, Contrast: 1, Saturation: 1, Sharpness: 1,
+    AWBMode: 'auto', ExposureMode: 'normal', HFlip: false, VFlip: false,
+  };
+  for (const [name, value] of Object.entries(defaults)) {
+    try {
+      const r = await api.post(`/api/cameras/${cameraId()}/imaging/param`, { name, value });
+      if (r.ok && r.data && r.data.applied === 'restart') handleRestartApply();
+    } catch { /* device may already be restarting from a flip reset */ }
+  }
+  if (!restartPending) loadImaging();
+}
 
 export function initImaging() {
   const section = $('imaging-section');
@@ -113,32 +154,6 @@ function buildSelect(name, current, enums) {
     el('label', { className: 'imaging-label', textContent: t('imaging.' + name), for: sel.dataset.param }),
     sel,
   ]);
-}
-
-function postParam(name, value) {
-  clearTimeout(postTimers[name]);
-  postTimers[name] = setTimeout(async () => {
-    const r = await api.post(`/api/cameras/${cameraId()}/imaging/param`, { name, value });
-    if (!r.ok) toast(t('paramError', { name }), 'error');
-  }, 150);
-}
-
-async function resetDefaults() {
-  const ok = await confirmDlg({
-    message: t('imagingResetConfirm'),
-    okText: t('imagingReset'),
-    cancelText: t('cancel'),
-    danger: true,
-  });
-  if (!ok) return;
-  const defaults = {
-    Brightness: 0, Contrast: 1, Saturation: 1, Sharpness: 1,
-    AWBMode: 'auto', ExposureMode: 'normal', HFlip: false, VFlip: false,
-  };
-  for (const [name, value] of Object.entries(defaults)) {
-    await api.post(`/api/cameras/${cameraId()}/imaging/param`, { name, value }).catch(() => {});
-  }
-  loadImaging();
 }
 
 function updateFill(slider) {

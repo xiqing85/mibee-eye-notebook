@@ -24,8 +24,7 @@ export async function refreshCameras() {
 export async function renderCameras() {
   const grid = $('cameras-grid');
   if (!grid) return;
-  for (const timer of tileTimers.values()) clearInterval(timer);
-  tileTimers.clear();
+  stopCameras();
   grid.innerHTML = '';
 
   if (store.cameras.length === 0) {
@@ -108,6 +107,20 @@ function renderTile(cam) {
   ]);
 }
 
+/// Drop every tile's stream (MJPEG <img> or polling timer). A hidden view's
+/// <img> keeps loading its multipart stream forever — each tile pins a
+/// browser connection slot, and enough of them starve every other request
+/// on the device (logout, config save, even navigation).
+export function stopCameras() {
+  for (const timer of tileTimers.values()) clearInterval(timer);
+  tileTimers.clear();
+  document.querySelectorAll('#cameras-grid .tile-thumb').forEach((img) => {
+    img.onload = img.onerror = null;
+    img.removeAttribute('src');
+    img.classList.add('hidden');
+  });
+}
+
 function tileMeta(cam) {
   const parts = [];
   if (cam.resolution) parts.push(cam.resolution);
@@ -139,12 +152,32 @@ async function toggleStream(cam) {
   }
 }
 
+// Recording toasts come from two sources racing each other: the POST
+// response and the SSE echo (which the device broadcasts before the fetch
+// even resolves). Funnel both through announceRecording and drop any
+// same-message repeat within a short window, regardless of arrival order.
+let lastRecordingAnnounce = null;
+
+export function announceRecording(active, type) {
+  const msg = t(active ? 'recordingStarted' : 'recordingStopped');
+  const now = Date.now();
+  if (lastRecordingAnnounce && lastRecordingAnnounce.msg === msg
+    && now - lastRecordingAnnounce.at < 2500) {
+    return;
+  }
+  lastRecordingAnnounce = { msg, at: now };
+  toast(msg, type);
+}
+
 async function toggleRecording(cam) {
   const r = await api.get(`/api/cameras/${cam.id}/recording`);
   const active = r.ok && r.data && r.data.active;
   const r2 = await api.post(`/api/cameras/${cam.id}/recording`, { active: !active });
-  if (r2.ok) toast(t(active ? 'recordingStopped' : 'recordingStarted'), 'success');
-  else toast(r2.message || t('fetchError'), 'error');
+  if (r2.ok) {
+    announceRecording(!active, 'success');
+  } else {
+    toast(r2.message || t('fetchError'), 'error');
+  }
 }
 
 /// Toggle a device-level flip axis in the camera config. Flips are applied
