@@ -11,7 +11,7 @@ import { connectEvents, disconnectEvents } from './sse.js';
 import { initLive, startLive, stopLive, refreshCameraSelect, renderDetections } from './live.js';
 import { initPtz, fetchPtz, updatePtzVisibility, handlePtzEvent } from './ptz.js';
 import { initImaging, handleParamChanged } from './imaging.js';
-import { refreshCameras, renderCameras, initCameras } from './cameras.js';
+import { refreshCameras, renderCameras, initCameras, stopCameras, announceRecording } from './cameras.js';
 import { loadConfig, initSettings } from './settings.js';
 import { checkApi, refreshStatus, initStatus, startStatusPolling } from './status.js';
 import { renderDevices, initDevices } from './devices.js';
@@ -29,6 +29,7 @@ export function showView(name) {
   if (name === 'preview') startLive();
   else stopLive();
   if (name === 'cameras') { refreshCameras().then(renderCameras); }
+  else stopCameras();
   if (name === 'settings') loadConfig();
   if (name === 'status') { checkApi(); refreshStatus(); }
   if (name === 'devices') renderDevices();
@@ -36,6 +37,7 @@ export function showView(name) {
 
 function teardownApp() {
   stopLive();
+  stopCameras();
   disconnectEvents();
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
   $('view-login').classList.add('active');
@@ -60,7 +62,9 @@ async function enterApp() {
   connectEvents({
     ai_detection: (p) => renderDetections(p.detections || []),
     param_changed: handleParamChanged,
-    recording: (p) => toast(t(p.active ? 'recordingStarted' : 'recordingStopped'), 'info'),
+    recording: (p) => {
+      if (p) announceRecording(!!p.active, 'info');
+    },
     ptz_status: handlePtzEvent,
     camera_added: () => { refreshCameras().then(() => { renderCameras(); refreshCameraSelect(); }); },
     camera_offlined: () => { refreshCameras().then(() => { renderCameras(); refreshCameraSelect(); }); },
@@ -145,10 +149,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   initShell();
   initAuth(enterApp);
   document.querySelectorAll('.logout-btn').forEach((b) => {
-    b.addEventListener('click', () => handleLogout(async () => {
-      setAuthMode(AuthState.LOGIN);
-      showView('login');
-    }));
+    b.addEventListener('click', () => {
+      // Drop tile streams BEFORE the logout POST — each hidden MJPEG <img>
+      // pins one of the browser's 6 per-origin connections, and enough of
+      // them starve the POST into never landing (logout looks dead).
+      stopCameras();
+      handleLogout(async () => {
+        setAuthMode(AuthState.LOGIN);
+        showView('login');
+      });
+    });
   });
 
   const state = await detectAuthState();
