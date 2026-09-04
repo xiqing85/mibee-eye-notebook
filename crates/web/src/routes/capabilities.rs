@@ -70,6 +70,7 @@ pub async fn get_capabilities(Extension(_user): Extension<AuthenticatedUser>) ->
         "webrtc": false,
         "events": ["camera_added", "camera_offlined"],
         "config_apply": {"default": "immediate", "sections": {}},
+        "observability": {"metrics": true, "logs": true, "requests": true},
         // Device-specific extension: the host hardware probe.
         "system": cached.system,
         "recommended_profiles": cached.recommended_profiles,

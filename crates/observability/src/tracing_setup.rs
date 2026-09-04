@@ -81,6 +81,7 @@ pub fn init_tracing(
                 .with(env_filter)
                 .with(otel_layer)
                 .with(loki_layer)
+                .with(crate::log_ring::layer())
                 .try_init()?;
 
             tokio::spawn(bg_task);
@@ -97,6 +98,7 @@ pub fn init_tracing(
                 .with(fmt_layer)
                 .with(env_filter)
                 .with(otel_layer)
+                .with(crate::log_ring::layer())
                 .try_init()?;
         }
 
@@ -109,6 +111,7 @@ pub fn init_tracing(
                 .with(fmt_layer)
                 .with(env_filter)
                 .with(loki_layer)
+                .with(crate::log_ring::layer())
                 .try_init()?;
 
             tokio::spawn(bg_task);
@@ -122,6 +125,7 @@ pub fn init_tracing(
             tracing_subscriber::registry()
                 .with(fmt_layer)
                 .with(env_filter)
+                .with(crate::log_ring::layer())
                 .try_init()?;
         }
     }
