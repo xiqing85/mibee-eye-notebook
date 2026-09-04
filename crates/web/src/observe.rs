@@ -600,7 +600,10 @@ mod tests {
                 .await
                 .unwrap();
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert!(json.get("ok").is_none(), "{uri}: handler must return bare data (envelope wraps it)");
+            assert!(
+                json.get("ok").is_none(),
+                "{uri}: handler must return bare data (envelope wraps it)"
+            );
         }
         let res = app
             .oneshot(

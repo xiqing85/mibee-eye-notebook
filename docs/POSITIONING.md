@@ -22,7 +22,7 @@ The Web UI is the **default and only** day-to-day interface. Live preview, snaps
 - **NOT an NVR / VMS / video management server.** It does not record or manage third-party cameras. It records only THIS machine's local devices.
 - **NOT a cloud service.** It must run fully air-gapped. Telemetry/log exporters are optional and fail-open.
 - **NOT a multi-tenant SaaS.** Single admin user model. No tenant isolation layer.
-- **NOT a computer-vision platform.** No motion detection, object recognition, or analytics. (Possible future direction; explicitly out of scope today.)
+- **NOT a general computer-vision platform — but it does ship on-device object detection.** Local NanoDet-Plus inference (opt-in via `[ai]`, disabled by default) annotates the live view and serves `GET /api/detections` / `ai_detection` SSE events. It is a per-camera annotation feature of the local preview, not an analytics service: no cloud inference, no event storage, no motion-triggered recording.
 
 ### 3. Target users
 
@@ -153,7 +153,7 @@ Web UI 是**默认且唯一**的日常操作界面。实时预览、截图、录
 - **不是 NVR / VMS / 视频管理服务器。** 不录像也不管理第三方摄像头。只录本机本地设备。
 - **不是云服务。** 必须能在完全气隙环境运行。遥测/日志导出器是可选的,fail-open。
 - **不是多租户 SaaS。** 单管理员用户模型,无租户隔离层。
-- **不是计算机视觉平台。** 不做运动检测、目标识别、智能分析。(可能作为未来方向;现在明确不在范围。)
+- **不是通用计算机视觉平台——但自带端侧目标检测。** 本地 NanoDet-Plus 推理(`[ai]` 显式开启,默认关闭)为实时预览叠加检测框,并提供 `GET /api/detections` / `ai_detection` SSE 事件。它是本地预览的逐相机标注能力,不是分析服务:无云端推理、无事件存储、无移动触发录像。
 
 ### 3. 目标用户
 

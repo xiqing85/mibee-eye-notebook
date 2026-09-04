@@ -137,16 +137,50 @@ async fn main() -> anyhow::Result<()> {
     // StreamManager is created and streams are auto-started).
     // This allows hot-toggling ONVIF/GB28181/RTMP without server restart.
 
+    // SSE event bus — created early so the AI engine bridge (below) and the
+    // hot-plug monitor share one bus with the web server.
+    let event_tx = Arc::new(web::routes::events::new_event_bus());
+
+    // AI detection engine (fail-open: a missing model / ONNX Runtime library
+    // leaves it inactive; the service runs on without AI).
+    let ai_engine = Arc::new(streaming::ai::AiEngine::from_config(&config.ai));
+    if !ai_engine.is_active() {
+        tracing::info!(reason = %ai_engine.inactive_reason(), "ai: detection disabled");
+    }
+
+    // Bridge AI detection events into the SSE event bus (SPEC v1 §6).
+    {
+        let mut ai_events = ai_engine.subscribe_events();
+        let bridge_tx = event_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match ai_events.recv().await {
+                    Ok(ev) => {
+                        let _ = bridge_tx.send(web::routes::events::CameraEvent::AiDetection {
+                            camera_id: ev.camera_id,
+                            detections: ev.detections,
+                            frame_number: ev.frame_number,
+                        });
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "ai: SSE bridge lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     // Create StreamManager early so protocol handlers (ONVIF/GB28181) can
     // reference it for runtime output attachment.
     // Open a second DB connection for StreamManager (WAL mode supports
     // concurrent readers; this lets StreamManager read protocol configs at
     // stream-creation time without contending with the web server's lock).
     let streamer_db = pool.clone();
-    let stream_manager = Arc::new(web::stream_manager::StreamManager::with_host_and_db(
-        advertised_host.clone(),
-        streamer_db,
-    ));
+    let stream_manager = Arc::new(
+        web::stream_manager::StreamManager::with_host_and_db(advertised_host.clone(), streamer_db)
+            .with_ai(ai_engine.clone()),
+    );
 
     // Auto-start streams for cameras with DB status "running" (resume across restart).
     // This ensures the in-memory StreamManager state matches the persistent DB state.
@@ -281,7 +315,6 @@ async fn main() -> anyhow::Result<()> {
     // On ADD: re-runs auto-discovery (does NOT auto-start the stream).
     // On REMOVE: marks the camera offline in DB and gracefully stops its
     //   active stream (flushing any in-progress recording segment).
-    let event_tx = Arc::new(web::routes::events::new_event_bus());
     let hotplug_tx = event_tx.clone();
     let hotplug_db = pool.clone();
     let hotplug_stream_manager = stream_manager.clone();
@@ -457,6 +490,7 @@ async fn main() -> anyhow::Result<()> {
         shutdown_rx,
         advertised_host.clone(),
         event_tx,
+        ai_engine,
     )
     .await?;
 

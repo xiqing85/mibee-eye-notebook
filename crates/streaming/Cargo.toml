@@ -9,8 +9,13 @@ rust-version.workspace = true
 # Enable AAC audio encoding (required for RTMP audio + standards-compliant MP4
 # audio). Off by default — G.711 μ-law is the default audio codec, which works
 # for RTSP but is non-compliant for RTMP/MP4.
-default = []
+default = ["ai"]
 aac = ["dep:fdk-aac"]
+# On-device AI object detection (NanoDet-Plus via ONNX Runtime). On by default
+# so deployed binaries are AI-capable; the feature itself is opt-in via the
+# `[ai]` config section. `ort` uses load-dynamic — libonnxruntime.so is only
+# needed at run time when `[ai] enabled = true`.
+ai = ["dep:ort"]
 # Enable Intel/AMD hardware H.264 encoding via libva (VAAPI). Requires libva at
 # build/run time. Off by default — the software (OpenH264) path is always built.
 vaapi = []
@@ -45,6 +50,7 @@ jpeg-encoder.workspace = true
 muxide.workspace = true
 fdk-aac = { workspace = true, optional = true }
 turbojpeg = { version = "1.0", optional = true }
+ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic"] }
 
 [dev-dependencies]
 axum.workspace = true

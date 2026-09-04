@@ -4,6 +4,8 @@
 ///
 /// Central hub connecting media sources to outputs with fan-out,
 /// buffer management, and resource control.
+/// On-device AI object detection (NanoDet-Plus ONNX, SPEC v1 §4.6).
+pub mod ai;
 pub mod buffer;
 pub mod capability;
 pub mod capture_source;

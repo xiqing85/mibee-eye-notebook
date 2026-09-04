@@ -9,8 +9,10 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Serialize;
+use std::sync::Arc;
 
 use security::middleware::AuthenticatedUser;
+use streaming::ai::AiEngine;
 use streaming::capability::{EncoderProfile, SystemCapabilities, probe, recommended_profiles};
 
 // ---------------------------------------------------------------------------
@@ -36,7 +38,10 @@ pub struct CapabilitiesResponse {
 /// Probing is cheap (a handful of sysfs/`/proc` reads) but not free, so the
 /// result is cached for the process lifetime via a [`std::sync::OnceLock`].
 #[tracing::instrument(skip_all)]
-pub async fn get_capabilities(Extension(_user): Extension<AuthenticatedUser>) -> impl IntoResponse {
+pub async fn get_capabilities(
+    Extension(ai): Extension<Arc<AiEngine>>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
     static CACHE: std::sync::OnceLock<CapabilitiesResponse> = std::sync::OnceLock::new();
     let cached = CACHE.get_or_init(|| {
         let system = probe();
@@ -46,6 +51,10 @@ pub async fn get_capabilities(Extension(_user): Extension<AuthenticatedUser>) ->
             recommended_profiles: recommended,
         }
     });
+    let mut events = vec!["camera_added", "camera_offlined"];
+    if ai.is_active() {
+        events.push("ai_detection");
+    }
     let superset = serde_json::json!({
         "spec_version": "1",
         "device": {
@@ -58,7 +67,7 @@ pub async fn get_capabilities(Extension(_user): Extension<AuthenticatedUser>) ->
         "camera_management": true,
         "camera_control": true,
         "imaging": false,
-        "ai": false,
+        "ai": ai.is_active(),
         "ptz": false,
         "hls": false,
         // Recording is config-only on this device (protocols.recording);
@@ -68,7 +77,7 @@ pub async fn get_capabilities(Extension(_user): Extension<AuthenticatedUser>) ->
         "mjpeg": true,
         "mse": true,
         "webrtc": false,
-        "events": ["camera_added", "camera_offlined"],
+        "events": events,
         "config_apply": {"default": "immediate", "sections": {}},
         "observability": {"metrics": true, "logs": true, "requests": true},
         // Device-specific extension: the host hardware probe.

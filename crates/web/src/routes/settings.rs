@@ -109,6 +109,10 @@ mod tests {
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
             advertised_host: Arc::new("localhost".to_string()),
+            ai: Arc::new(streaming::ai::AiEngine::from_parts(
+                streaming::ai::AiConfig::default(),
+                None,
+            )),
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),

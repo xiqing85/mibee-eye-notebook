@@ -27,6 +27,7 @@ pub struct Metrics {
     auth_failures_total: IntCounterVec,
     recording_active: IntGauge,
     frame_drops_total: IntCounter,
+    ai_inferences_total: IntCounter,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,14 @@ pub fn increment_frame_drops() {
     }
 }
 
+/// Increment the `mibee_ai_inferences_total` counter (one per completed
+/// AI detection inference, across all cameras).
+pub fn increment_ai_inferences() {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.ai_inferences_total.inc();
+    }
+}
+
 /// Render all registered metrics in Prometheus text-0.0.4 exposition format.
 pub fn render_metrics() -> String {
     let metric_families = global_metrics().registry.gather();
@@ -311,6 +320,12 @@ impl Metrics {
         )?;
         registry.register(Box::new(frame_drops_total.clone()))?;
 
+        let ai_inferences_total = IntCounter::new(
+            "mibee_ai_inferences_total",
+            "Total AI detection inferences completed",
+        )?;
+        registry.register(Box::new(ai_inferences_total.clone()))?;
+
         Ok(Metrics {
             registry,
             active_streams,
@@ -327,6 +342,7 @@ impl Metrics {
             auth_failures_total,
             recording_active,
             frame_drops_total,
+            ai_inferences_total,
         })
     }
 
