@@ -3,6 +3,8 @@
 /// Tracing subscriber initialisation (EnvFilter, fmt, OpenTelemetry OTLP).
 pub mod tracing_setup;
 
+/// In-process log ring backing `GET /api/logs` (SPEC v1 §3.2).
+pub mod log_ring;
 /// Loki log shipping layer.
 pub mod loki_layer;
 /// Custom Prometheus metrics (streams, bytes, errors).
