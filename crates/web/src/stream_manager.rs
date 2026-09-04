@@ -160,6 +160,10 @@ pub struct StreamManager {
     /// Optional DB connection for reading protocol configs (RTMP push, etc.).
     /// When None, no protocol-driven outputs are auto-attached.
     db: Option<SqlitePool>,
+    /// AI detection engine. When present and active, one detection worker
+    /// is spawned per started camera stream (it taps the JPEG preview
+    /// broadcast and exits with the stream).
+    ai: Option<Arc<streaming::ai::AiEngine>>,
 }
 
 impl StreamManager {
@@ -171,6 +175,7 @@ impl StreamManager {
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
             advertised_host: "localhost".to_string(),
             db: None,
+            ai: None,
         }
     }
 
@@ -182,6 +187,7 @@ impl StreamManager {
             resource_controller: ResourceController::new(max_streams),
             advertised_host: "localhost".to_string(),
             db: None,
+            ai: None,
         }
     }
 
@@ -196,6 +202,7 @@ impl StreamManager {
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
             advertised_host,
             db: None,
+            ai: None,
         }
     }
 
@@ -211,7 +218,16 @@ impl StreamManager {
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
             advertised_host,
             db: Some(db),
+            ai: None,
         }
+    }
+
+    /// Attach the AI detection engine so started streams get a detection
+    /// worker. No-op effect when the engine is inactive.
+    #[must_use]
+    pub fn with_ai(mut self, ai: Arc<streaming::ai::AiEngine>) -> Self {
+        self.ai = Some(ai);
+        self
     }
 
     /// Return the number of available stream slots.
@@ -323,6 +339,18 @@ impl StreamManager {
             }
             other => anyhow::bail!("unsupported camera type: {other}"),
         };
+
+        // ── 3b. Spawn the AI detection worker (when enabled) ────────
+        //
+        // The worker taps the JPEG preview broadcast — it never touches the
+        // capture/encode path — and exits automatically when the stream
+        // stops (broadcast closed), clearing its state entry.
+        if let Some(ai) = &self.ai
+            && ai.is_active()
+            && let Some(jpeg_tx) = &jpeg_tx
+        {
+            ai.spawn_worker(camera_id.clone(), jpeg_tx.subscribe());
+        }
 
         // ── 4. Set up pipeline ──────────────────────────────────────────
         let (stop_tx, stop_rx) = watch::channel(false);

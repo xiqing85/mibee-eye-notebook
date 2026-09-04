@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 pub mod cameras;
 pub mod capabilities;
 pub mod config_api;
+pub mod detections;
 pub mod devices;
 pub mod events;
 pub mod mse;

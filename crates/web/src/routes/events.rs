@@ -55,6 +55,14 @@ pub enum CameraEvent {
         camera_id: String,
         device_index: u32,
     },
+    /// An AI inference completed on a camera (SPEC v1 §6 `ai_detection`).
+    /// Produced by the AI engine's per-camera workers and bridged into
+    /// this bus by main.rs.
+    AiDetection {
+        camera_id: String,
+        detections: Vec<streaming::ai::Detection>,
+        frame_number: u64,
+    },
 }
 
 /// Type alias for the broadcast sender used to fan out camera events.
@@ -123,6 +131,18 @@ fn event_to_sse(event: CameraEvent) -> Event {
             serde_json::json!({
                 "camera_id": camera_id,
                 "device_index": device_index,
+            })
+            .to_string(),
+        ),
+        CameraEvent::AiDetection {
+            camera_id,
+            detections,
+            frame_number,
+        } => Event::default().event("ai_detection").data(
+            serde_json::json!({
+                "camera_id": camera_id,
+                "detections": detections,
+                "frame_number": frame_number,
             })
             .to_string(),
         ),

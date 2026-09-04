@@ -280,6 +280,11 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub database: DatabaseConfig,
+
+    /// On-device AI detection (`[ai]` section, SPEC v1 §5 device-specific
+    /// config). Off by default; see `streaming::ai` for semantics.
+    #[serde(default)]
+    pub ai: streaming::ai::AiConfig,
 }
 impl AppConfig {
     /// Load configuration from a TOML file.
@@ -363,6 +368,21 @@ impl AppConfig {
                 other
             ),
         }
+        // AI section
+        if self.ai.enabled {
+            if self.ai.model_path.trim().is_empty() {
+                anyhow::bail!("ai.model_path: must not be empty when ai.enabled");
+            }
+            if self.ai.interval_ms == 0 {
+                anyhow::bail!("ai.interval_ms: must be > 0, got 0");
+            }
+            if !(0.0..=1.0).contains(&self.ai.confidence_threshold) {
+                anyhow::bail!(
+                    "ai.confidence_threshold: must be within [0, 1], got {}",
+                    self.ai.confidence_threshold
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -370,6 +390,40 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ai_section_parses_and_defaults() {
+        let cfg: AppConfig = toml::from_str("").expect("empty config");
+        assert!(!cfg.ai.enabled, "AI is opt-in");
+        assert_eq!(cfg.ai.model_path, "models/nanodet-m.onnx");
+        assert_eq!(cfg.ai.interval_ms, 1000);
+        assert!(cfg.validate().is_ok());
+
+        let cfg: AppConfig = toml::from_str(
+            "[ai]\nenabled = true\nmodel_path = \"/opt/models/nanodet-m.onnx\"\ninterval_ms = 500\nconfidence_threshold = 0.4\n",
+        )
+        .expect("parse [ai]");
+        assert!(cfg.ai.enabled);
+        assert_eq!(cfg.ai.model_path, "/opt/models/nanodet-m.onnx");
+        assert_eq!(cfg.ai.interval_ms, 500);
+        assert!((cfg.ai.confidence_threshold - 0.4).abs() < f32::EPSILON);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ai_section_rejects_bad_values() {
+        let cfg: AppConfig =
+            toml::from_str("[ai]\nenabled = true\nmodel_path = \"\"\n").expect("parse");
+        assert!(cfg.validate().is_err());
+
+        let cfg: AppConfig =
+            toml::from_str("[ai]\nenabled = true\ninterval_ms = 0\n").expect("parse");
+        assert!(cfg.validate().is_err());
+
+        let cfg: AppConfig =
+            toml::from_str("[ai]\nenabled = true\nconfidence_threshold = 1.5\n").expect("parse");
+        assert!(cfg.validate().is_err());
+    }
 
     // --- Individual default tests ---
 

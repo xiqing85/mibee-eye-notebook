@@ -14,6 +14,7 @@ pub mod metrics;
 pub use metrics::{
     dec_recording_active,
     inc_recording_active,
+    increment_ai_inferences,
     increment_auth_failures,
     increment_bytes_received,
     increment_capture_errors,
