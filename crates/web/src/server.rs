@@ -176,6 +176,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/config", get(routes::config_api::get_config))
         .route("/api/config", put(routes::config_api::put_config))
         .route("/api/status", get(routes::config_api::status_handler))
+        // Observability (SPEC v1 §3.2)
+        .route("/api/metrics/summary", get(crate::observe::metrics_summary))
+        .route("/api/logs", get(crate::observe::logs_handler))
+        .route("/api/requests", get(crate::observe::requests_handler))
         // Protocol runtime status stays as a device extension (dialect A7).
         .route(
             "/api/protocols/runtime-status",
@@ -242,6 +246,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(middleware::from_fn(trace_middleware))
         // HTTP Prometheus metrics
         .layer(middleware::from_fn(metrics_middleware))
+        // Observability: request traces + traffic counters (SPEC v1 §3.2)
+        .layer(middleware::from_fn(crate::observe::observe_middleware))
         // Body size limits
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB default
         // SPEC v1 §0 response envelope — wraps successful JSON /api responses
@@ -547,6 +553,8 @@ pub async fn run_with_shutdown(
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
+    // Real-time resource sampler for /api/metrics/summary (SPEC v1 §3.2).
+    crate::observe::spawn_sampler();
 
     let state = AppRouterState {
         db,
