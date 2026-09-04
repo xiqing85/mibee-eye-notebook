@@ -68,6 +68,11 @@ const DICT = {
     // Status view
     statusTitle: '系统状态', statusDesc: '设备运行状态一览', connection: '连接', cameraInfo: '相机信息',
     events: '事件通道', apiLabel: 'API',
+    obsTitle: '资源监控', obsSystem: '系统', obsProcess: '本服务',
+    obsCpu: 'CPU', obsMem: '内存', obsDisk: '磁盘', obsNet: '网络',
+    obsRss: '内存', obsStore: '存储占用', obsTraffic: '应用流量',
+    obsLogs: '最近日志', obsRequests: '请求追踪',
+    obsReqId: 'ID', obsReqMethod: '方法', obsReqPath: '路径', obsReqStatus: '状态', obsReqDuration: '耗时',
     connected: '已连接', disconnected: '已断开', checking: '检查中...',
     uptime: '运行时长', deviceName: '设备名称', model: '型号',
     firmware: '固件版本', vendor: '厂商',
@@ -173,6 +178,11 @@ const DICT = {
     // Status view
     statusTitle: 'System Status', statusDesc: 'Device health at a glance', connection: 'Connection', cameraInfo: 'Camera Info',
     events: 'Events', apiLabel: 'API',
+    obsTitle: 'Resource Monitor', obsSystem: 'System', obsProcess: 'This Service',
+    obsCpu: 'CPU', obsMem: 'Memory', obsDisk: 'Disk', obsNet: 'Network',
+    obsRss: 'Memory', obsStore: 'Storage', obsTraffic: 'Traffic',
+    obsLogs: 'Recent Logs', obsRequests: 'Request Traces',
+    obsReqId: 'ID', obsReqMethod: 'Method', obsReqPath: 'Path', obsReqStatus: 'Status', obsReqDuration: 'Duration',
     connected: 'Connected', disconnected: 'Disconnected', checking: 'Checking...',
     uptime: 'Uptime', deviceName: 'Device name', model: 'Model',
     firmware: 'Firmware', vendor: 'Vendor',
