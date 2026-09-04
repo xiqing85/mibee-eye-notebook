@@ -435,8 +435,6 @@ pub async fn metrics_summary() -> impl IntoResponse {
     let s = observe().snapshot();
     let o = observe();
     Json(serde_json::json!({
-        "ok": true,
-        "data": {
             "ts": s.ts,
             "interval_ms": s.interval_ms,
             "system": {
@@ -470,7 +468,6 @@ pub async fn metrics_summary() -> impl IntoResponse {
                     "gb28181_tx_bytes": o.gb28181_tx.load(Ordering::Relaxed),
                 },
             },
-        },
     }))
 }
 
@@ -485,7 +482,7 @@ pub async fn logs_handler(
         .clamp(1, 1000);
     let min_level = params.get("level").map(|l| level_rank(l)).unwrap_or(0);
     let entries = observability::log_ring::newest_first(limit, min_level);
-    Json(serde_json::json!({ "ok": true, "data": { "entries": entries } }))
+    Json(serde_json::json!({ "entries": entries }))
 }
 
 /// `GET /api/requests?limit=` — recent request traces, newest first.
@@ -499,7 +496,7 @@ pub async fn requests_handler(
         .clamp(1, 500);
     let entries = observe().requests_newest_first();
     let entries: Vec<_> = entries.into_iter().take(limit).collect();
-    Json(serde_json::json!({ "ok": true, "data": { "entries": entries } }))
+    Json(serde_json::json!({ "entries": entries }))
 }
 
 #[cfg(test)]
@@ -603,7 +600,7 @@ mod tests {
                 .await
                 .unwrap();
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(json["ok"], true, "{uri}");
+            assert!(json.get("ok").is_none(), "{uri}: handler must return bare data (envelope wraps it)");
         }
         let res = app
             .oneshot(
@@ -618,8 +615,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let data = &json["data"];
-        assert!(data["system"]["memory"]["total"].as_u64().unwrap_or(0) > 0);
-        assert!(data["process"]["traffic"]["http_tx_bytes"].is_u64());
+        assert!(json["system"]["memory"]["total"].as_u64().unwrap_or(0) > 0);
+        assert!(json["process"]["traffic"]["http_tx_bytes"].is_u64());
     }
 }
