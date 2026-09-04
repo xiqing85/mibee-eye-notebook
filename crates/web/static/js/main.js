@@ -16,6 +16,13 @@ import { loadConfig, initSettings } from './settings.js';
 import { checkApi, refreshStatus, initStatus, startStatusPolling } from './status.js';
 import { renderDevices, initDevices } from './devices.js';
 
+const VIEWS = ['preview', 'cameras', 'settings', 'status', 'devices'];
+
+function currentView() {
+  const name = (location.hash || '').replace(/^#\/?/, '');
+  return VIEWS.includes(name) && $('view-' + name) ? name : 'preview';
+}
+
 export function showView(name) {
   if (name === 'login') { teardownApp(); return; }
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
@@ -25,6 +32,8 @@ export function showView(name) {
     tab.classList.toggle('active', tab.dataset.view === name);
   });
   $('app').classList.remove('hidden');
+  // Keep the view across reloads (F5 lands back on the same view, not live).
+  history.replaceState(null, '', '#' + name);
 
   if (name === 'preview') startLive();
   else stopLive();
@@ -72,7 +81,8 @@ async function enterApp() {
   });
 
   startStatusPolling();
-  showView('preview');
+  // Restore the last view after a reload; default to live view.
+  showView(currentView());
 }
 
 function initNav() {
@@ -168,4 +178,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     setAuthMode(state);
     $('view-login').classList.add('active');
   }
+});
+
+// Back/forward and manual hash edits switch views without a reload.
+window.addEventListener('hashchange', () => {
+  if (!$('app').classList.contains('hidden')) showView(currentView());
 });
