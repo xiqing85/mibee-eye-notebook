@@ -84,3 +84,20 @@ segment_duration_secs = 900
 # Max total capacity in megabytes. 0 = unlimited (no auto-pruning).
 # When exceeded, oldest segments are deleted first (FIFO).
 max_capacity_mb = 10240
+
+[ai]
+# On-device AI object detection (NanoDet-Plus 320, COCO 80 classes) — the
+# same model and semantics as the raspi cameras (SPEC v1 §4.6).
+# Off by default, like the outbound protocols. When enabled:
+#   - the model is loaded once at startup (fail-open: a missing model or
+#     libonnxruntime.so just leaves AI disabled, logged in the startup log);
+#   - each started camera stream gets a detection worker that taps the JPEG
+#     preview (never the capture/encode path);
+#   - results appear in the web UI overlay, GET /api/detections and
+#     ai_detection SSE events.
+# libonnxruntime.so is located via the ORT_DYLIB_PATH environment variable
+# or the system library path.
+enabled = false
+model_path = "models/nanodet-m.onnx"
+confidence_threshold = 0.5
+interval_ms = 1000

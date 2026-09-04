@@ -43,6 +43,9 @@ pub struct AppRouterState {
     pub protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     pub protocol_runtime: Arc<Mutex<ProtocolRuntime>>,
     pub advertised_host: Arc<String>,
+    /// AI detection engine (inactive when disabled/unavailable — never None
+    /// so capability and detections handlers can treat it uniformly).
+    pub ai: Arc<streaming::ai::AiEngine>,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +136,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let protocol_configs = state.protocol_configs.clone();
     let protocol_runtime = state.protocol_runtime.clone();
     let advertised_host = state.advertised_host.clone();
+    let ai = state.ai.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -166,6 +170,12 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/cameras/{id}/snapshot", get(routes::streams::snapshot))
         // Live preview (MJPEG stream for <img>)
         .route("/api/cameras/{id}/live", get(routes::streams::live_preview))
+        // AI detections (SPEC v1 §4.6 + per-camera multi-camera dialect)
+        .route("/api/detections", get(routes::detections::get_detections))
+        .route(
+            "/api/cameras/{id}/detections",
+            get(routes::detections::get_camera_detections),
+        )
         // MSE / fMP4 stream for <video> (H.264, hardware-decoded by browser)
         .route("/api/cameras/{id}/stream.mse", get(routes::mse::stream_mse))
         // WebRTC WHIP/WHEP signalling (sub-second latency; gated by [webrtc].enabled)
@@ -235,6 +245,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(protocol_configs))
         .layer(Extension(protocol_runtime))
         .layer(Extension(advertised_host))
+        .layer(Extension(ai))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
         // HSTS
@@ -267,6 +278,10 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
         protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
         advertised_host: Arc::new("localhost".to_string()),
+        ai: Arc::new(streaming::ai::AiEngine::from_parts(
+            streaming::ai::AiConfig::default(),
+            None,
+        )),
     })
 }
 
@@ -298,6 +313,10 @@ pub async fn test_app_with_user() -> Router {
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
         protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
         advertised_host: Arc::new("localhost".to_string()),
+        ai: Arc::new(streaming::ai::AiEngine::from_parts(
+            streaming::ai::AiConfig::default(),
+            None,
+        )),
     })
 }
 
@@ -481,6 +500,7 @@ pub async fn run(
     protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     protocol_runtime: Arc<Mutex<ProtocolRuntime>>,
     advertised_host: String,
+    ai: Arc<streaming::ai::AiEngine>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -494,6 +514,7 @@ pub async fn run(
         protocol_configs,
         protocol_runtime,
         advertised_host: Arc::new(advertised_host),
+        ai,
     };
     let app = build_app_with_state(state);
 
@@ -550,6 +571,7 @@ pub async fn run_with_shutdown(
     mut shutdown_rx: watch::Receiver<bool>,
     advertised_host: String,
     event_tx: Arc<routes::events::EventBus>,
+    ai: Arc<streaming::ai::AiEngine>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -565,6 +587,7 @@ pub async fn run_with_shutdown(
         protocol_configs,
         protocol_runtime,
         advertised_host: Arc::new(advertised_host),
+        ai,
     };
     let app = build_app_with_state(state);
     let app = app.layer(Extension(event_tx));
