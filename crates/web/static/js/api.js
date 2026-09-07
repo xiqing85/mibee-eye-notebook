@@ -80,6 +80,17 @@ export const api = {
   post: (p, b) => request('POST', p, b),
   put: (p, b) => request('PUT', p, b),
   del: (p) => request('DELETE', p),
+  postForm: (p, form) => fetch(p, {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': getCookie('csrf-token') || '' },
+    credentials: 'same-origin',
+    body: form,
+  }).then(async (r) => {
+    if (r.status === 204) return null;
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(j.message || r.statusText), j);
+    return j.data;
+  }),
   request,
 };
 

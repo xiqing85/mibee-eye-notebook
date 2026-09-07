@@ -52,8 +52,12 @@ pub async fn get_capabilities(
         }
     });
     let mut events = vec!["camera_added", "camera_offlined"];
+    let ai_hot_swap = ai.is_active() && ai_has_factory(&ai);
     if ai.is_active() {
         events.push("ai_detection");
+    }
+    if ai_hot_swap {
+        events.push("ai_model_changed");
     }
     let superset = serde_json::json!({
         "spec_version": "1",
@@ -68,6 +72,8 @@ pub async fn get_capabilities(
         "camera_control": true,
         "imaging": false,
         "ai": ai.is_active(),
+        "ai_models": ai_hot_swap,
+        "ai_upload": ai_hot_swap && ai.config().allow_upload,
         "ptz": false,
         "hls": false,
         // Recording is config-only on this device (protocols.recording);
@@ -85,6 +91,11 @@ pub async fn get_capabilities(
         "recommended_profiles": cached.recommended_profiles,
     });
     (StatusCode::OK, Json(superset)).into_response()
+}
+
+/// Whether the engine can load models at runtime (hot-switch + upload).
+fn ai_has_factory(ai: &AiEngine) -> bool {
+    ai.can_load_models()
 }
 
 // ---------------------------------------------------------------------------
