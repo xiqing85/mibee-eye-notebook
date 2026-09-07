@@ -26,6 +26,9 @@
 pub mod ort;
 pub mod postprocess;
 pub mod preprocess;
+pub mod registry;
+
+pub use registry::{ActivateError, DetectorFactory, Registry};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -73,6 +76,14 @@ pub struct AiConfig {
     /// outbound protocols.
     #[serde(default)]
     pub enabled: bool,
+    /// Registry id of the startup model (SPEC §4.6); a non-default
+    /// `model_path` overrides it (custom deployments).
+    #[serde(default = "default_model")]
+    pub model: String,
+    /// Allow runtime model uploads (SPEC §4.6 capability `ai_upload`;
+    /// model files are untrusted input to the inference engine).
+    #[serde(default)]
+    pub allow_upload: bool,
     /// Path to the NanoDet-Plus ONNX model, relative to the working
     /// directory or absolute.
     #[serde(default = "default_model_path")]
@@ -85,8 +96,11 @@ pub struct AiConfig {
     pub interval_ms: u64,
 }
 
-fn default_model_path() -> String {
+pub(crate) fn default_model_path() -> String {
     "models/nanodet-m.onnx".to_string()
+}
+fn default_model() -> String {
+    "nanodet-plus-m-320".to_string()
 }
 fn default_confidence_threshold() -> f32 {
     0.5
@@ -99,6 +113,8 @@ impl Default for AiConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            model: default_model(),
+            allow_upload: false,
             model_path: default_model_path(),
             confidence_threshold: default_confidence_threshold(),
             interval_ms: default_interval_ms(),
@@ -143,6 +159,14 @@ impl AiState {
         self.inner.write().insert(entry.camera_id.clone(), entry);
     }
 
+    /// Clear every camera's detections (model hot-swap: results from the
+    /// previous model must not be attributed to the new one).
+    pub fn clear_all(&self) {
+        for entry in self.inner.write().values_mut() {
+            entry.detections.clear();
+        }
+    }
+
     fn clear_detections(&self, camera_id: &str) {
         if let Some(entry) = self.inner.write().get_mut(camera_id) {
             entry.detections.clear();
@@ -158,7 +182,16 @@ impl AiState {
 /// the detection event bus.
 pub struct AiEngine {
     config: AiConfig,
-    detector: Option<Arc<dyn AiDetector>>,
+    /// Swappable detector slot (SPEC §4.6 hot-switch): workers clone the
+    /// `Arc` out per inference, so swaps apply without restart.
+    detector: Arc<RwLock<Option<Arc<dyn AiDetector>>>>,
+    /// Active model id (SPEC §4.6 model identifier).
+    active_model: Arc<RwLock<String>>,
+    /// Runtime model registry (builtin + uploaded overlay).
+    registry: Arc<RwLock<Registry>>,
+    /// Detector factory for activate/upload (None in plain builds and
+    /// test engines — the routes answer not-implemented).
+    factory: Option<DetectorFactory>,
     /// `None` when inactive; human-readable reason surfaced in logs.
     inactive_reason: Option<String>,
     state: Arc<AiState>,
@@ -174,7 +207,30 @@ impl AiEngine {
     #[must_use]
     pub fn from_config(config: &AiConfig) -> Self {
         let detector = Self::load_detector(config);
-        Self::from_parts(config.clone(), detector)
+        let registry = Registry::load(std::path::Path::new(registry::MODELS_DIR));
+        let model_id = registry
+            .resolve_active(&config.model, &config.model_path)
+            .map(|m| m.id)
+            .unwrap_or_else(|e| {
+                warn!("ai: {e}");
+                "unknown".to_string()
+            });
+        let mut engine = Self::from_parts(config.clone(), detector);
+        *engine.active_model.write() = model_id;
+        engine.registry = Arc::new(RwLock::new(registry));
+        #[cfg(feature = "ai")]
+        {
+            engine.factory = Some(std::sync::Arc::new(|path: &str| {
+                match ort::OrtDetector::new(path) {
+                    Ok(d) => {
+                        let size = d.input_size();
+                        Ok((Arc::new(d) as Arc<dyn AiDetector>, size))
+                    }
+                    Err(e) => Err(registry::ActivateError::LoadFailed(format!("{e:#}"))),
+                }
+            }));
+        }
+        engine
     }
 
     fn load_detector(config: &AiConfig) -> Option<Arc<dyn AiDetector>> {
@@ -215,19 +271,84 @@ impl AiEngine {
             None
         };
         let (event_tx, _) = broadcast::channel(64);
+        let active_model = config.model.clone();
         Self {
             config,
-            detector,
+            detector: Arc::new(RwLock::new(detector)),
+            active_model: Arc::new(RwLock::new(active_model)),
+            registry: Arc::new(RwLock::new(Registry::builtin_only())),
+            factory: None,
             inactive_reason,
             state: Arc::new(AiState::default()),
             event_tx,
         }
     }
 
+    /// Test seam: inject a detector factory for activate/upload routes.
+    #[must_use]
+    pub fn with_factory(mut self, factory: DetectorFactory) -> Self {
+        self.factory = Some(factory);
+        self
+    }
+
+    /// The `[ai]` configuration (routes read `allow_upload` from it).
+    #[must_use]
+    pub fn config(&self) -> &AiConfig {
+        &self.config
+    }
+
+    /// Whether models can be loaded at runtime (drives the `ai_models` /
+    /// `ai_upload` capabilities).
+    #[must_use]
+    pub fn can_load_models(&self) -> bool {
+        self.factory.is_some()
+    }
+
+    /// Shared registry handle (routes list/insert/remove entries).
+    #[must_use]
+    pub fn registry(&self) -> Arc<RwLock<Registry>> {
+        Arc::clone(&self.registry)
+    }
+
+    /// The active model id (SPEC §4.6).
+    #[must_use]
+    pub fn active_model(&self) -> String {
+        self.active_model.read().clone()
+    }
+
+    /// Hot-swap the detector (SPEC §4.6 activate). Callers must only do
+    /// this after the new detector is fully constructed. Stale detections
+    /// from the previous model are cleared for every camera.
+    pub fn set_detector(&self, model_id: &str, detector: Arc<dyn AiDetector>) {
+        *self.active_model.write() = model_id.to_string();
+        *self.detector.write() = Some(detector);
+        self.state.clear_all();
+    }
+
+    /// Load a detector for a model file (the upload validation gate);
+    /// returns the detector and its square input size.
+    pub fn load_for(
+        &self,
+        path: &str,
+    ) -> Result<(Arc<dyn AiDetector>, u32), registry::ActivateError> {
+        if !registry::is_available(path) {
+            return Err(registry::ActivateError::Unavailable(format!(
+                "model file not available: {path}"
+            )));
+        }
+        self.factory
+            .as_ref()
+            .ok_or_else(|| {
+                registry::ActivateError::LoadFailed(
+                    "detector factory unavailable in this build".to_string(),
+                )
+            })?(path)
+    }
+
     /// Whether a real detector is loaded and workers may run.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.detector.is_some()
+        self.detector.read().is_some()
     }
 
     /// Why the engine is inactive (empty string when active).
@@ -236,10 +357,15 @@ impl AiEngine {
         self.inactive_reason.as_deref().unwrap_or("")
     }
 
-    /// Identifier of the active model (empty string when inactive).
+    /// Identifier of the active model (SPEC §4.6 model id; empty when
+    /// inactive).
     #[must_use]
-    pub fn model_name(&self) -> &str {
-        self.detector.as_ref().map_or("", |d| d.model_name())
+    pub fn model_name(&self) -> String {
+        if self.detector.read().is_none() {
+            String::new()
+        } else {
+            self.active_model.read().clone()
+        }
     }
 
     /// Shared detection state for the web API.
@@ -265,16 +391,20 @@ impl AiEngine {
         camera_id: String,
         mut jpeg_rx: broadcast::Receiver<Arc<[u8]>>,
     ) -> tokio::task::JoinHandle<()> {
-        let Some(detector) = self.detector.clone() else {
+        if self.detector.read().is_none() {
             tracing::debug!(%camera_id, "ai: engine inactive, no worker spawned");
             return tokio::spawn(async {});
-        };
+        }
+        // The SLOT, not the detector: model swaps apply to running
+        // workers from the next frame on.
+        let slot = Arc::clone(&self.detector);
+        let startup_name = self.model_name();
         let threshold = self.config.confidence_threshold;
         let interval = Duration::from_millis(self.config.interval_ms.max(1));
         let state = Arc::clone(&self.state);
         let event_tx = self.event_tx.clone();
 
-        info!(%camera_id, model = %detector.model_name(), interval_ms = interval.as_millis() as u64, "ai: detection worker started");
+        info!(%camera_id, model = %startup_name, interval_ms = interval.as_millis() as u64, "ai: detection worker started");
 
         tokio::spawn(async move {
             let mut last_run = tokio::time::Instant::now()
@@ -290,7 +420,10 @@ impl AiEngine {
                         last_run = tokio::time::Instant::now();
                         frame_number += 1;
 
-                        let detect = detector.clone();
+                        let detect = slot
+                            .read()
+                            .clone()
+                            .expect("worker keeps running only while a detector is loaded");
                         let result = tokio::task::spawn_blocking(move || detect.detect(&jpeg))
                             .await
                             .unwrap_or_else(|e| Err(anyhow::anyhow!("inference task failed: {e}")));
@@ -389,7 +522,7 @@ pub(crate) mod tests {
     fn test_engine_disabled_by_default() {
         let engine = AiEngine::from_config(&AiConfig::default());
         assert!(!engine.is_active());
-        assert_eq!(engine.model_name(), "");
+        assert!(engine.model_name().is_empty());
         assert_eq!(engine.inactive_reason(), "disabled by configuration");
     }
 

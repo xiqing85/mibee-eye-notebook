@@ -55,6 +55,12 @@ pub enum CameraEvent {
         camera_id: String,
         device_index: u32,
     },
+    /// The active AI model was hot-switched (SPEC v1 §6 `ai_model_changed`).
+    /// Device-wide on this multi-camera device: `camera_id` is `"all"`
+    /// (SPEC appendix A notebook dialect).
+    AiModelChanged {
+        model: String,
+    },
     /// An AI inference completed on a camera (SPEC v1 §6 `ai_detection`).
     /// Produced by the AI engine's per-camera workers and bridged into
     /// this bus by main.rs.
@@ -134,6 +140,15 @@ fn event_to_sse(event: CameraEvent) -> Event {
             })
             .to_string(),
         ),
+        CameraEvent::AiModelChanged { model } => Event::default()
+            .event("ai_model_changed")
+            .data(
+                serde_json::json!({
+                    "camera_id": "all",
+                    "model": model,
+                })
+                .to_string(),
+            ),
         CameraEvent::AiDetection {
             camera_id,
             detections,

@@ -140,7 +140,8 @@ mod tests {
             .unwrap();
         let body = axum::body::to_bytes(res.into_body(), 65536).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["model"], "test-model.onnx");
+        // SPEC §4.6: "model" is the registry id, not the file name.
+        assert_eq!(json["model"], "nanodet-plus-m-320");
         assert_eq!(json["timestamp"], 1_700_000_000);
         assert_eq!(json["detections"][0]["label"], "laptop");
         assert_eq!(

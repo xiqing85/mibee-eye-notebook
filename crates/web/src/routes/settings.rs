@@ -108,6 +108,7 @@ mod tests {
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            event_tx: Arc::new(crate::routes::events::new_event_bus()),
             advertised_host: Arc::new("localhost".to_string()),
             ai: Arc::new(streaming::ai::AiEngine::from_parts(
                 streaming::ai::AiConfig::default(),
