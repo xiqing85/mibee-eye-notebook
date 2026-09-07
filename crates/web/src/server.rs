@@ -42,6 +42,7 @@ pub struct AppRouterState {
     pub rtsp_server: Arc<RtspServer>,
     pub protocol_configs: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     pub protocol_runtime: Arc<Mutex<ProtocolRuntime>>,
+    pub event_tx: Arc<routes::events::EventBus>,
     pub advertised_host: Arc<String>,
     /// AI detection engine (inactive when disabled/unavailable — never None
     /// so capability and detections handlers can treat it uniformly).
@@ -176,6 +177,22 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             "/api/cameras/{id}/detections",
             get(routes::detections::get_camera_detections),
         )
+        // Model registry: list / hot-switch / upload / delete (SPEC §4.6).
+        .route("/api/ai/models", get(routes::ai_models::get_models))
+        .route(
+            "/api/ai/models/{id}/activate",
+            post(routes::ai_models::activate_model),
+        )
+        .route(
+            "/api/ai/models/{id}",
+            post(routes::ai_models::upload_model)
+                .delete(routes::ai_models::delete_model)
+                // Axum's 2 MB default body cap rejects model files as
+                // opaque parse errors; allow the SPEC §4.6 upload size.
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    streaming::ai::registry::UPLOAD_MAX_BYTES + (1 << 20),
+                )),
+        )
         // MSE / fMP4 stream for <video> (H.264, hardware-decoded by browser)
         .route("/api/cameras/{id}/stream.mse", get(routes::mse::stream_mse))
         // WebRTC WHIP/WHEP signalling (sub-second latency; gated by [webrtc].enabled)
@@ -244,6 +261,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(db))
         .layer(Extension(protocol_configs))
         .layer(Extension(protocol_runtime))
+        .layer(Extension(state.event_tx.clone()))
         .layer(Extension(advertised_host))
         .layer(Extension(ai))
         // CSP — strict Content-Security-Policy
@@ -277,6 +295,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
         protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
+        event_tx: Arc::new(routes::events::new_event_bus()),
         advertised_host: Arc::new("localhost".to_string()),
         ai: Arc::new(streaming::ai::AiEngine::from_parts(
             streaming::ai::AiConfig::default(),
@@ -312,6 +331,7 @@ pub async fn test_app_with_user() -> Router {
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
         protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
+        event_tx: Arc::new(routes::events::new_event_bus()),
         advertised_host: Arc::new("localhost".to_string()),
         ai: Arc::new(streaming::ai::AiEngine::from_parts(
             streaming::ai::AiConfig::default(),
@@ -513,6 +533,7 @@ pub async fn run(
         rtsp_server,
         protocol_configs,
         protocol_runtime,
+        event_tx: Arc::new(routes::events::new_event_bus()),
         advertised_host: Arc::new(advertised_host),
         ai,
     };
@@ -586,11 +607,11 @@ pub async fn run_with_shutdown(
         rtsp_server,
         protocol_configs,
         protocol_runtime,
+        event_tx,
         advertised_host: Arc::new(advertised_host),
         ai,
     };
     let app = build_app_with_state(state);
-    let app = app.layer(Extension(event_tx));
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
 

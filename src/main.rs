@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         return reset_password_cli(&args).await;
     }
 
-    let config = mibee_rec::config::AppConfig::load(&args.config)?;
+    let mut config = mibee_rec::config::AppConfig::load(&args.config)?;
     config.validate()?;
 
     // Resolve advertised host: use configured value or auto-detect LAN IP
@@ -143,6 +143,14 @@ async fn main() -> anyhow::Result<()> {
 
     // AI detection engine (fail-open: a missing model / ONNX Runtime library
     // leaves it inactive; the service runs on without AI).
+    // The runtime model choice (SPEC §4.6 activate) persists as a db
+    // setting; overlay it over the TOML boot default.
+    if config.ai.enabled
+        && let Ok(Some(v)) = web::db::get_setting(&pool, "ai.model").await
+        && streaming::ai::registry::valid_model_id(&v)
+    {
+        config.ai.model = v;
+    }
     let ai_engine = Arc::new(streaming::ai::AiEngine::from_config(&config.ai));
     if !ai_engine.is_active() {
         tracing::info!(reason = %ai_engine.inactive_reason(), "ai: detection disabled");

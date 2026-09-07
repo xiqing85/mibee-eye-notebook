@@ -136,6 +136,13 @@ impl AiDetector for OrtDetector {
     }
 }
 
+impl OrtDetector {
+    /// Square model input size in pixels (registry metadata, SPEC §4.6).
+    pub fn input_size(&self) -> u32 {
+        self.input_width
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
