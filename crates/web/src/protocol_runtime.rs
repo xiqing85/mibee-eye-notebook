@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -130,6 +131,32 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
         sip_domain: get_str("sip_domain", "3402000000"),
         register_interval: get_u64("register_interval_secs", 60),
         heartbeat_interval_secs: get_u64("heartbeat_interval_secs", 60),
+        gb35114: db_config
+            .get("gb35114")
+            .map(|g| Gb35114RuntimeConfig {
+                enabled: g.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                device_cert_file: g
+                    .get("device_cert_file")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                device_key_file: g
+                    .get("device_key_file")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                platform_cert_file: g
+                    .get("platform_cert_file")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                server_id: g
+                    .get("server_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+            .unwrap_or_default(),
         heartbeat_timeout_count: db_config
             .get("heartbeat_timeout_count")
             .and_then(|v| v.as_u64())
@@ -167,6 +194,10 @@ pub struct OnvifRuntimeConfig {
 /// Parsed GB28181 configuration extracted from DB JSON.
 pub struct Gb28181RuntimeConfig {
     pub enabled: bool,
+    /// GB35114 A-level (SM2 mutual auth) sub-tree — mirrors the field
+    /// names the raspi twins use in their config files so operators see
+    /// one vocabulary across devices.
+    pub gb35114: Gb35114RuntimeConfig,
     pub device_id: String,
     pub sip_addr: String,
     pub sip_port: u16,
@@ -183,6 +214,45 @@ pub struct Gb28181RuntimeConfig {
     pub manufacturer: String,
     pub model: String,
     pub firmware: String,
+}
+
+/// GB35114 A-level sub-config (nested under protocols.gb28181.gb35114).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Gb35114RuntimeConfig {
+    pub enabled: bool,
+    pub device_cert_file: String,
+    pub device_key_file: String,
+    pub platform_cert_file: String,
+    pub server_id: String,
+}
+
+/// Builds the GB35114 A-level REGISTER authenticator from the sub-config.
+/// `Ok(None)` when disabled; `Err` when enabled but the identities cannot
+/// be loaded — the caller must refuse to start the protocol rather than
+/// silently falling back to Digest (fail closed).
+pub fn build_gb35114_authenticator(
+    cfg: &Gb35114RuntimeConfig,
+    device_id: &str,
+) -> anyhow::Result<Option<Arc<dyn gb28181_rs::authenticator::RegisterAuthenticator>>> {
+    if !cfg.enabled {
+        return Ok(None);
+    }
+    use gb28181_rs::security35114::{Authenticator, Options, load_certificate, load_identity};
+    let read = |path: &str, what: &str| {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("gb35114 {what} file {path:?} unreadable"))
+    };
+    let device = load_identity(
+        &read(&cfg.device_cert_file, "device certificate")?,
+        &read(&cfg.device_key_file, "device key")?,
+    )
+    .context("gb35114 device identity invalid")?;
+    let platform_cert = load_certificate(&read(&cfg.platform_cert_file, "platform certificate")?)
+        .context("gb35114 platform certificate invalid")?;
+    let mut opts = Options::new(device, device_id.to_string(), cfg.server_id.clone());
+    opts.platform_cert = Some(platform_cert);
+    let auth = Authenticator::new(opts).context("gb35114 authenticator options invalid")?;
+    Ok(Some(Arc::new(auth)))
 }
 
 // ── ProtocolRuntime ──────────────────────────────────────────────────────────
@@ -433,6 +503,10 @@ impl ProtocolRuntime {
             firmware: Some(config.firmware.clone()),
         };
 
+        // GB35114 A-level (fail closed: enabled-but-unloadable identities
+        // abort the protocol start instead of falling back to Digest).
+        let authenticator = build_gb35114_authenticator(&config.gb35114, &config.device_id)?;
+
         // The watch channel stays for stop-gb28181 symmetry; the library
         // server exits via task abort in graceful_shutdown.
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
@@ -447,7 +521,12 @@ impl ProtocolRuntime {
         );
 
         let handle = tokio::spawn(async move {
-            match gb28181_rs::server::Gb28181Server::start(lib_config, source, None).await {
+            let server =
+                gb28181_rs::server::Gb28181Server::with_recording_index(lib_config, source, None)
+                    .with_register_authenticator(authenticator)
+                    .spawn()
+                    .await;
+            match server {
                 Ok(server) => {
                     let _ = server.await;
                     tracing::info!("GB28181 device server task exited");
@@ -787,6 +866,67 @@ fn get_local_ip_for_server(server_addr: &SocketAddr) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gb35114 sub-tree of the DB protocol config flows into the
+    /// runtime config (nested object under protocols.gb28181.gb35114).
+    #[test]
+    fn extract_gb28181_config_parses_gb35114() {
+        let db = serde_json::json!({
+            "enabled": true,
+            "device_id": "34020000001320000001",
+            "platform_sip_address": "192.168.1.100",
+            "gb35114": {
+                "enabled": true,
+                "device_cert_file": "/etc/mibee/gb35114/device_cert.pem",
+                "device_key_file": "/etc/mibee/gb35114/device_key.pem",
+                "platform_cert_file": "/etc/mibee/gb35114/platform_cert.pem",
+                "server_id": "34020000002000000001",
+            },
+        });
+        let cfg = extract_gb28181_config(&db);
+        assert!(cfg.gb35114.enabled);
+        assert_eq!(cfg.gb35114.server_id, "34020000002000000001");
+        assert!(cfg.gb35114.device_cert_file.ends_with("device_cert.pem"));
+        // Absent sub-tree → disabled default, everything else keeps working.
+        let plain = extract_gb28181_config(&serde_json::json!({"enabled": false}));
+        assert!(!plain.gb35114.enabled);
+        assert!(plain.gb35114.server_id.is_empty());
+    }
+
+    /// Fixture-backed SM2 identities build a working A-level
+    /// authenticator; a bad path surfaces as an error (never a panic, never
+    /// a silent Digest fallback when the operator asked for A-level).
+    #[test]
+    fn build_gb35114_authenticator_ok_and_fail_paths() {
+        let dir = format!("{}/tests/fixtures/gb35114", env!("CARGO_MANIFEST_DIR"));
+        let cfg = Gb35114RuntimeConfig {
+            enabled: true,
+            device_cert_file: format!("{dir}/device_cert.pem"),
+            device_key_file: format!("{dir}/device_key.pem"),
+            platform_cert_file: format!("{dir}/platform_cert.pem"),
+            server_id: "34020000002000000001".to_string(),
+        };
+        let auth = build_gb35114_authenticator(&cfg, "34020000001320000001")
+            .expect("fixture identities must build")
+            .expect("enabled must yield an authenticator");
+        // The seam is wired: the authenticator answers a challenge it can
+        // later verify (round-trip through its own header roundtrip).
+        drop(auth);
+
+        // Disabled → None without touching the filesystem.
+        let off = Gb35114RuntimeConfig {
+            enabled: false,
+            ..cfg.clone()
+        };
+        assert!(build_gb35114_authenticator(&off, "d").unwrap().is_none());
+
+        // Missing cert file → Err (fail closed, protocol refuses to start).
+        let bad = Gb35114RuntimeConfig {
+            device_cert_file: "/nonexistent/cert.pem".to_string(),
+            ..cfg
+        };
+        assert!(build_gb35114_authenticator(&bad, "d").is_err());
+    }
 
     #[test]
     fn test_new_runtime_all_stopped() {

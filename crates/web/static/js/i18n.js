@@ -121,6 +121,12 @@ const DICT = {
     'gb28181.heartbeat_interval_secs': '心跳间隔（秒）',
     'gb28181.heartbeat_timeout_count': '心跳超时次数',
     'gb28181.id20Placeholder': '20 位数字',
+    'gb28181.gb35114': 'GB35114 A 级（国密证书认证）',
+    'gb28181.gb35114.enabled': '启用 A 级认证',
+    'gb28181.gb35114.device_cert_file': '设备 SM2 证书路径',
+    'gb28181.gb35114.device_key_file': '设备 SM2 私钥路径',
+    'gb28181.gb35114.platform_cert_file': '平台 SM2 证书路径',
+    'gb28181.gb35114.server_id': '平台 SIP 服务器 ID',
   },
   en: {
     appTitle: 'MiBee Cam',
@@ -238,6 +244,12 @@ const DICT = {
     'gb28181.heartbeat_interval_secs': 'Heartbeat interval (s)',
     'gb28181.heartbeat_timeout_count': 'Heartbeat timeout count',
     'gb28181.id20Placeholder': '20 digits',
+    'gb28181.gb35114': 'GB35114 A-level (SM2 certificate auth)',
+    'gb28181.gb35114.enabled': 'Enable A-level auth',
+    'gb28181.gb35114.device_cert_file': 'Device SM2 certificate path',
+    'gb28181.gb35114.device_key_file': 'Device SM2 private key path',
+    'gb28181.gb35114.platform_cert_file': 'Platform SM2 certificate path',
+    'gb28181.gb35114.server_id': 'Platform SIP server ID',
   },
 };
 
