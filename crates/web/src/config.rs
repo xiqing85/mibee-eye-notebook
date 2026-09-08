@@ -96,6 +96,33 @@ pub struct Gb28181Config {
     pub channel_id: String,
     #[serde(default = "default_gb28181_local_sip_port")]
     pub local_sip_port: u16,
+    #[serde(default)]
+    pub gb35114: Gb35114Config,
+}
+
+/// GB 35114 A-level (SM2 certificate) REGISTER authentication settings.
+/// Certificate paths are read by the device at protocol start; enabling
+/// with missing/invalid files fails closed (GB28181 refuses to start).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Gb35114Config {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the device certificate (PEM, SM2).
+    #[serde(default)]
+    pub device_cert_file: String,
+    /// Path to the device private key (PEM, SM2).
+    #[serde(default)]
+    pub device_key_file: String,
+    /// Path to the platform certificate (PEM, SM2) used to verify the platform.
+    #[serde(default)]
+    pub platform_cert_file: String,
+    /// Platform server ID (20-digit) for the signed REGISTER exchange.
+    #[serde(default = "default_gb35114_server_id")]
+    pub server_id: String,
+}
+
+fn default_gb35114_server_id() -> String {
+    "34020000002000000001".into()
 }
 
 fn default_gb28181_sip_address() -> String {
@@ -147,6 +174,7 @@ impl Default for Gb28181Config {
             heartbeat_timeout_count: 3,
             channel_id: default_gb28181_channel_id(),
             local_sip_port: 5060,
+            gb35114: Gb35114Config::default(),
         }
     }
 }
