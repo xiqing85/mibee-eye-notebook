@@ -349,11 +349,14 @@ impl ProtocolRuntime {
             ..Default::default()
         });
 
+        // onvif-device-rs 0.6 fail-closes on placeholder identity (its
+        // issue #20); the DB-backed defaults are real values, so an error
+        // here aborts the protocol start with the library's reason.
         let device_svc = Arc::new(onvif_device_rs::device::DeviceServiceHandlers::new(
             config.device.clone(),
             config.onvif_port,
             device_ip.clone(),
-        ));
+        )?);
         for action in [
             "GetSystemDateAndTime",
             "GetDeviceInformation",
@@ -496,6 +499,13 @@ impl ProtocolRuntime {
             heartbeat_interval_secs: config.heartbeat_interval_secs,
             heartbeat_timeout_count: config.heartbeat_timeout_count,
             transport: gb28181_rs::config::Transport::Udp,
+            // gb28181-rs 0.10 additions: keep the historical warn-only
+            // example-default policy; verify downstream Notes with the
+            // default reject posture (only fires on Note-bearing requests
+            // after an A-level handshake, which this Digest platform does
+            // not use).
+            strict_example_defaults: false,
+            incoming_note_policy: gb28181_rs::authenticator::IncomingNotePolicy::default(),
             user_agent: Some(format!("mibee-rec/{}", env!("CARGO_PKG_VERSION"))),
             device_name: Some(config.device_name.clone()),
             manufacturer: Some(config.manufacturer.clone()),
