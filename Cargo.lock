@@ -1452,9 +1452,9 @@ dependencies = [
 
 [[package]]
 name = "gb28181-rs"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b291477dcf9037c5f9797aa5ce760464eb2be3a86c4f503ab80e87b6cd5b4c16"
+checksum = "ac1eb0b8685a83e1f90ca36a44f53c0b83bd66a271e7e1261525573d7cccdf5a"
 dependencies = [
  "anyhow",
  "base64",
@@ -2845,12 +2845,13 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onvif-device-rs"
-version = "0.3.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fdb334251bb49561a654f04f4112194c0e4661a464e80ddafaca9e2425d5895"
+checksum = "042cabd909fb7125c907fe3901f2003e933bbedb4e1e4665117122f9d0e3a959"
 dependencies = [
  "async-trait",
  "base64",
+ "futures-util",
  "hex",
  "log",
  "quick-xml",
