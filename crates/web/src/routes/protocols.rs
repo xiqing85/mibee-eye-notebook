@@ -37,6 +37,7 @@ fn schema_for(protocol: &str) -> serde_json::Value {
         "rtmp_push" => schemars::schema_for!(crate::config::RtmpPushConfig),
         "recording" => schemars::schema_for!(crate::config::RecordingConfig),
         "webrtc" => schemars::schema_for!(crate::config::WebRtcConfig),
+        "watermark" => schemars::schema_for!(crate::config::WatermarkConfig),
         _ => return serde_json::json!({}),
     };
     serde_json::to_value(&schema).unwrap_or_else(|_| serde_json::json!({}))
@@ -196,7 +197,33 @@ fn coerce_leaf(
             coerce_uint(v, min, max).map(serde_json::Value::from)
         }
         "string" => match v {
-            serde_json::Value::String(_) => Ok(v),
+            serde_json::Value::String(ref s) => {
+                // Enum-constrained strings (e.g. watermark.position) must be
+                // one of the schema's declared values.
+                if let Some(allowed) = prop_schema.get("enum").and_then(|e| e.as_array())
+                    && !allowed.iter().any(|a| a.as_str() == Some(s.as_str()))
+                {
+                    let values = allowed
+                        .iter()
+                        .filter_map(|a| a.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(format!("value {s:?} not in [{values}]"));
+                }
+                // maxLength (char count) when the schema declares one.
+                if let Some(max_len) = prop_schema.get("maxLength")
+                    && let Some(max_len) = max_len
+                        .as_u64()
+                        .or_else(|| max_len.as_f64().map(|f| f as u64))
+                    && s.chars().count() as u64 > max_len
+                {
+                    return Err(format!(
+                        "string length {} exceeds maxLength {max_len}",
+                        s.chars().count()
+                    ));
+                }
+                Ok(v)
+            }
             other => Err(format!("expected string, got {}", type_name(&other))),
         },
         _ => Ok(v),
@@ -643,6 +670,63 @@ mod tests {
         assert_eq!(result["device_name"], json!("kitchen-cam"));
         // Only the provided field is in the validated output.
         assert_eq!(result.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_watermark_schema_and_validation() {
+        // Schema carries the SPEC §5.2 constraints the coercion relies on.
+        let schema = schema_for("watermark");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("watermark schema must have properties");
+        for key in [
+            "enabled",
+            "text",
+            "show_timestamp",
+            "timestamp_format",
+            "position",
+            "font_size",
+            "font_path",
+        ] {
+            assert!(props.contains_key(key), "missing property {key}");
+        }
+        let pos = resolve_ref(&schema, &props["position"]);
+        let allowed = pos
+            .get("enum")
+            .and_then(|e| e.as_array())
+            .expect("position enum");
+        assert!(allowed.contains(&json!("top-left")));
+        assert!(allowed.contains(&json!("bottom-right")));
+        let size = resolve_ref(&schema, &props["font_size"]);
+        let as_f64 = |v: Option<&serde_json::Value>| v.and_then(|x| x.as_f64());
+        assert_eq!(as_f64(size.get("minimum")), Some(12.0), "font_size minimum");
+        assert_eq!(as_f64(size.get("maximum")), Some(96.0), "font_size maximum");
+        let text = resolve_ref(&schema, &props["text"]);
+        assert_eq!(as_f64(text.get("maxLength")), Some(128.0), "text maxLength");
+
+        // Valid payload passes and coerces nothing unexpected.
+        let payload = json!({"enabled": true, "text": "前门", "position": "bottom-right"});
+        let result = validate_and_coerce("watermark", &payload).unwrap();
+        assert_eq!(result["position"], json!("bottom-right"));
+
+        // Enum values are enforced.
+        let err = validate_and_coerce("watermark", &json!({"position": "middle"})).unwrap_err();
+        assert!(err.contains("not in ["), "got: {err}");
+
+        // Numeric range is enforced (schema minimum/maximum).
+        let err = validate_and_coerce("watermark", &json!({"font_size": 5})).unwrap_err();
+        assert!(err.contains("out of range"), "got: {err}");
+
+        // Text length cap counts characters.
+        let err =
+            validate_and_coerce("watermark", &json!({ "text": "米".repeat(129) })).unwrap_err();
+        assert!(err.contains("exceeds maxLength"), "got: {err}");
+
+        // Unknown fields are rejected with the actionable message.
+        let err = validate_and_coerce("watermark", &json!({"position": "top-left", "bogus": 1}))
+            .unwrap_err();
+        assert!(err.contains("unknown field"), "got: {err}");
     }
 
     #[test]

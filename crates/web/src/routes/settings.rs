@@ -256,4 +256,115 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
+
+    /// SPEC v1 §5.2: `protocols.watermark` round-trips through
+    /// `PUT/GET /api/config` with partial-merge semantics, and invalid
+    /// updates are rejected with 400 without touching stored state.
+    #[tokio::test]
+    async fn test_config_watermark_section_roundtrip() {
+        let (pool, auth_db) = test_db().await;
+        let token = {
+            let c = auth_db.lock().await;
+            security::auth::create_session(&c, "admin").unwrap()
+        };
+        let state = build_state(pool, auth_db);
+        let app = crate::server::build_app_with_state(state);
+
+        let put = |body: serde_json::Value| {
+            Request::builder()
+                .uri("/api/config")
+                .method("PUT")
+                .header("content-type", "application/json")
+                .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+                .header("x-csrf-token", "test-csrf")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        };
+        let get = || {
+            Request::builder()
+                .uri("/api/config")
+                .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+                .header("x-csrf-token", "test-csrf")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let json_body = |res: axum::response::Response| async move {
+            serde_json::from_slice::<serde_json::Value>(
+                &axum::body::to_bytes(res.into_body(), 1024 * 64)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+
+        // Full-section write.
+        let res = app
+            .clone()
+            .oneshot(put(serde_json::json!({
+                "protocols": { "watermark": {
+                    "enabled": true, "text": "前门", "position": "bottom-right", "font_size": 32
+                }}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Partial write touches only the submitted key.
+        let res = app
+            .clone()
+            .oneshot(put(serde_json::json!({
+                "protocols": {"watermark": {"text": "后院"}}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body = json_body(app.clone().oneshot(get()).await.unwrap()).await;
+        let wm = &body["data"]["protocols"]["watermark"];
+        assert_eq!(wm["enabled"], serde_json::json!(true));
+        assert_eq!(wm["text"], "后院");
+        assert_eq!(wm["position"], "bottom-right");
+        assert_eq!(wm["font_size"], serde_json::json!(32));
+
+        // Enum violation → 400, stored state keeps the last valid values.
+        let res = app
+            .clone()
+            .oneshot(put(serde_json::json!({
+                "protocols": {"watermark": {"position": "middle"}}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Semantic violation (SPEC §5.2: enabled requires content) → 400.
+        let res = app
+            .clone()
+            .oneshot(put(serde_json::json!({
+                "protocols": {"watermark": {"text": "", "show_timestamp": false}}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let err = json_body(res).await;
+        assert!(
+            err["message"].as_str().unwrap().contains("show_timestamp"),
+            "got: {err}"
+        );
+
+        // Semantic violation (format whitelist) → 400.
+        let res = app
+            .clone()
+            .oneshot(put(serde_json::json!({
+                "protocols": {"watermark": {"timestamp_format": "%y"}}
+            })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Stored values survive the rejected updates.
+        let body = json_body(app.oneshot(get()).await.unwrap()).await;
+        let wm = &body["data"]["protocols"]["watermark"];
+        assert_eq!(wm["text"], "后院");
+        assert_eq!(wm["position"], "bottom-right");
+    }
 }

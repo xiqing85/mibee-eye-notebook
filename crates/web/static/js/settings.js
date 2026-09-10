@@ -14,6 +14,8 @@ const ENUMS = {
   'camera.mode': ['mtxrpicam', 'rtsp'],
   'camera.codec': ['h264', 'h265'],
   'logging.level': ['debug', 'info', 'warn', 'error'],
+  'watermark.position': ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+  'protocols.watermark.position': ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
 };
 const CONSTRAINTS = {
   'camera.width': { min: 64, max: 4608, required: true },
@@ -23,6 +25,10 @@ const CONSTRAINTS = {
   'onvif.port': { min: 1, max: 65535, required: false },
   'rtsp.port': { min: 1, max: 65535, required: false },
   'web.port': { min: 1, max: 65535, required: false },
+  'watermark.font_size': { min: 12, max: 96, required: false },
+  'watermark.text': { maxlength: 128 },
+  'protocols.watermark.font_size': { min: 12, max: 96, required: false },
+  'protocols.watermark.text': { maxlength: 128 },
 };
 const PASSWORD_FIELDS = new Set(['rtsp.password', 'onvif.password', 'gb28181.password', 'web.password']);
 // GB/T 28181 device/channel IDs are exactly 20 digits.
@@ -130,7 +136,8 @@ function buildForm(obj, parent, prefix) {
         row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><div class="password-wrap"><input type="password" id="cf-' + p + '" value="' + esc(String(val)) + '" data-cfg="' + p + '" autocomplete="new-password"><button type="button" class="password-toggle" data-target="cf-' + p + '" aria-label="' + t('showPassword') + '">' + icon('eye', 18) + '</button></div>';
       } else {
         const idAttrs = GB28181_ID_FIELDS.has(p) ? ' maxlength="20" placeholder="' + t('gb28181.id20Placeholder') + '"' : '';
-        row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><input type="text" id="cf-' + p + '" value="' + esc(String(val)) + '"' + idAttrs + ' data-cfg="' + p + '">';
+        const ml = (CONSTRAINTS[p] || {}).maxlength !== undefined ? ' maxlength="' + CONSTRAINTS[p].maxlength + '"' : '';
+        row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><input type="text" id="cf-' + p + '" value="' + esc(String(val)) + '"' + idAttrs + ml + ' data-cfg="' + p + '">';
       }
     }
     parent.appendChild(row);

@@ -39,6 +39,9 @@ protocols = { path = "../protocols" }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
+fontdue.workspace = true
+schemars.workspace = true
 futures = "0.3"
 cpal.workspace = true
 parking_lot = "0.12"

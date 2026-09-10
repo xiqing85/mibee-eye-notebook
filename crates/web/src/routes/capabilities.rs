@@ -79,6 +79,9 @@ pub async fn get_capabilities(
         // Recording is config-only on this device (protocols.recording);
         // there is no per-camera record endpoint yet.
         "recording": false,
+        // SPEC v1 §5.2: burned into every video output pre-encode; config
+        // lives in protocols.watermark (applies at next stream start).
+        "watermark": true,
         "devices": true,
         "mjpeg": true,
         "mse": true,
@@ -115,5 +118,26 @@ mod tests {
         };
         let json = serde_json::to_value(&resp).expect("must serialise");
         assert!(json.get("system").is_some());
+    }
+
+    /// The capability superset is hand-built JSON — a check that the
+    /// watermark key (SPEC v1 §5.2) stays present and true.
+    #[tokio::test]
+    async fn capabilities_advertise_watermark() {
+        let ai = Arc::new(AiEngine::from_parts(
+            streaming::ai::AiConfig::default(),
+            None,
+        ));
+        let res = get_capabilities(
+            Extension(ai),
+            Extension(security::middleware::AuthenticatedUser("admin".to_string())),
+        )
+        .await
+        .into_response();
+        let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["watermark"], serde_json::json!(true));
     }
 }

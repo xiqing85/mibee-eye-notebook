@@ -85,6 +85,25 @@ segment_duration_secs = 900
 # When exceeded, oldest segments are deleted first (FIFO).
 max_capacity_mb = 10240
 
+# Video watermark (SPEC v1 §5.2) — bootstrap default only; runtime config is
+# persisted in the DB as protocols.watermark (editable via Web UI, applies at
+# the next camera stream (re)start). Burned into every video output (live /
+# RTSP / MSE / recordings / snapshots), white text + 1px black outline.
+[watermark]
+enabled = false
+# Custom text (≤128 chars; CJK needs font_path pointing at a CJK font).
+text = ""
+# Real-time clock next to the text (device local timezone).
+show_timestamp = true
+# strftime subset: %Y %m %d %H %M %S %F %T %% plus literals.
+timestamp_format = "%Y-%m-%d %H:%M:%S"
+# top-left | top-right | bottom-left | bottom-right
+position = "top-left"
+# Font height in pixels (12..96).
+font_size = 24
+# Optional TTF/OTF for non-ASCII text; empty = built-in ASCII font.
+font_path = ""
+
 [ai]
 # On-device AI object detection (NanoDet-Plus 320, COCO 80 classes) — the
 # same model and semantics as the raspi cameras (SPEC v1 §4.6).

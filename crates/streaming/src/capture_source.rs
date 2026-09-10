@@ -108,6 +108,10 @@ pub struct VideoCaptureSource {
     hflip: bool,
     /// Device-level vertical flip (upside-down mount compensation).
     vflip: bool,
+    /// Video watermark (SPEC v1 §5.2) burned into each frame after the
+    /// flips, before the JPEG tap and the encoder — same "baked into
+    /// everything downstream" semantics.
+    watermark: Option<crate::watermark::Watermark>,
 }
 
 /// Negotiated stream geometry, shared from the capture source to downstream
@@ -150,6 +154,7 @@ impl VideoCaptureSource {
             frame_count: 0,
             hflip: false,
             vflip: false,
+            watermark: None,
         }
     }
 
@@ -226,6 +231,22 @@ impl VideoCaptureSource {
         self.vflip = vflip;
         self
     }
+
+    /// Attach a watermark renderer (permanent, burned into the encoded
+    /// stream and the JPEG tap). Should be called before
+    /// [`start`](Source::start).
+    pub fn with_watermark(mut self, watermark: crate::watermark::Watermark) -> Self {
+        self.watermark = Some(watermark);
+        self
+    }
+}
+
+/// Whether the JPEG tap may pass the camera's native MJPEG bytes through
+/// untouched. Any pre-encode pixel modification (flips, watermark) means
+/// the raw MJPEG would no longer match the encoded orientation/content, so
+/// the tap must re-encode from the modified YUV instead.
+fn mjpeg_passthrough(mjpeg_native: bool, hflip: bool, vflip: bool, watermark: bool) -> bool {
+    mjpeg_native && !hflip && !vflip && !watermark
 }
 
 impl Source for VideoCaptureSource {
@@ -359,12 +380,23 @@ impl Source for VideoCaptureSource {
                     yuv.flip(self.hflip, self.vflip);
                 }
 
-                // 5. Update the JPEG tap. With flips active the raw MJPEG
-                //    bytes would NOT match the encoded orientation, so
-                //    re-encode from the flipped YUV (throttled) instead.
+                // Watermark (SPEC v1 §5.2): burned in after the flips,
+                // before the JPEG tap and the encoder.
+                if let Some(watermark) = &mut self.watermark {
+                    watermark.render_into(&mut yuv);
+                }
+
+                // 5. Update the JPEG tap. With flips or a watermark active
+                //    the raw MJPEG bytes would NOT match the encoded frame,
+                //    so re-encode from the modified YUV (throttled) instead.
                 self.frame_count += 1;
                 let mjpeg_native = video_frame.format.contains("MJPEG");
-                let jpeg_bytes: Option<Arc<[u8]>> = if mjpeg_native && !self.hflip && !self.vflip {
+                let jpeg_bytes: Option<Arc<[u8]>> = if mjpeg_passthrough(
+                    mjpeg_native,
+                    self.hflip,
+                    self.vflip,
+                    self.watermark.is_some(),
+                ) {
                     Some(Arc::from(video_frame.data.as_slice()))
                 } else if self
                     .frame_count
@@ -696,6 +728,18 @@ impl Source for AudioCaptureSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mjpeg_passthrough_requires_pristine_pipeline() {
+        // Native MJPEG with no pre-encode pixel edits passes through untouched.
+        assert!(mjpeg_passthrough(true, false, false, false));
+        // Any flip or an active watermark forces the re-encode path.
+        assert!(!mjpeg_passthrough(true, true, false, false));
+        assert!(!mjpeg_passthrough(true, false, true, false));
+        assert!(!mjpeg_passthrough(true, false, false, true));
+        // Non-MJPEG cameras always re-encode.
+        assert!(!mjpeg_passthrough(false, false, false, false));
+    }
 
     // ── Constructor tests ──────────────────────────────────────────────────
 
