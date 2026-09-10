@@ -332,6 +332,31 @@ impl StreamManager {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 vcs = vcs.with_flips(hflip, vflip);
+                // Watermark (SPEC v1 §5.2): device-global `protocols.watermark`,
+                // read at use time like `protocols.recording` — a config change
+                // applies on the next stream (re)start. Burned pre-encode into
+                // every camera's frames.
+                if let Some(db) = &self.db
+                    && let Ok(Some(cfg)) = crate::db::get_protocol_config(db, "watermark").await
+                {
+                    match serde_json::from_value::<streaming::watermark::WatermarkSettings>(cfg) {
+                        Ok(wm_cfg) if wm_cfg.enabled => {
+                            match streaming::watermark::Watermark::new(&wm_cfg) {
+                                Ok(wm) => {
+                                    info!(%camera_id, position = ?wm_cfg.position, font_size = wm_cfg.font_size, "watermark attached");
+                                    vcs = vcs.with_watermark(wm);
+                                }
+                                Err(e) => {
+                                    warn!(%camera_id, error = %e, "watermark init failed; streaming without watermark")
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(%camera_id, error = %e, "invalid protocols.watermark config in DB; streaming without watermark")
+                        }
+                    }
+                }
                 let latest = vcs.latest_jpeg_handle();
                 let dims = vcs.dimensions_handle();
                 let tx = vcs.jpeg_sender();
