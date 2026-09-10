@@ -315,3 +315,37 @@ pub struct WebRtcConfig {
 fn default_webrtc_udp_port_max() -> u16 {
     0
 }
+
+// ---------------------------------------------------------------------------
+// Watermark (SPEC v1 §5.2)
+// ---------------------------------------------------------------------------
+
+pub use streaming::watermark::Position as WatermarkPosition;
+/// Video watermark configuration (`protocols.watermark`, SPEC v1 §5.2).
+///
+/// Defined in the streaming crate (single source of truth — the JsonSchema
+/// derive drives the Web API's field/type/range/enum validation). Burned
+/// into the pre-encode YUV frames of every camera stream like the
+/// device-level flips — RTSP, MSE, recordings and snapshots all see it.
+/// Read at stream start (like `protocols.recording`); a config change takes
+/// effect on the next camera (re)start.
+pub use streaming::watermark::WatermarkSettings as WatermarkConfig;
+
+/// SPEC §5.2 semantic validation over a **merged** `protocols.watermark`
+/// blob (schema validation covers types/ranges/enums; this covers
+/// semantics): `enabled` requires something to render, and the timestamp
+/// format must be in the strftime whitelist.
+pub fn validate_watermark_blob(blob: &serde_json::Value) -> Result<(), String> {
+    let cfg: WatermarkConfig =
+        serde_json::from_value(blob.clone()).map_err(|e| format!("watermark: {e}"))?;
+    if cfg.enabled && cfg.text.trim().is_empty() && !cfg.show_timestamp {
+        return Err("watermark: enabled requires text or show_timestamp".into());
+    }
+    if !streaming::watermark::valid_timestamp_format(&cfg.timestamp_format) {
+        return Err(format!(
+            "watermark.timestamp_format only allows %Y %m %d %H %M %S %F %T %% and literals, got: {}",
+            cfg.timestamp_format
+        ));
+    }
+    Ok(())
+}

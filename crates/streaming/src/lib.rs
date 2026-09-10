@@ -19,3 +19,4 @@ pub mod mibee;
 pub mod output;
 pub mod resource;
 pub mod source;
+pub mod watermark;

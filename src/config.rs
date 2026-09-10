@@ -275,6 +275,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub recording: RecordingConfig,
 
+    /// Video watermark bootstrap default (`[watermark]`; SPEC v1 §5.2).
+    /// Runtime config lives in the DB (`protocols.watermark`) — this only
+    /// seeds it on first run.
+    #[serde(default)]
+    pub watermark: web::config::WatermarkConfig,
+
     #[serde(default)]
     pub webrtc: WebRtcConfig,
 

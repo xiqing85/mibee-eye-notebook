@@ -120,7 +120,14 @@ pub async fn get_config(Extension(db): Extension<Db>) -> Response {
         }
     };
     let mut protocols = serde_json::Map::new();
-    for key in ["onvif", "gb28181", "rtmp_push", "recording", "webrtc"] {
+    for key in [
+        "onvif",
+        "gb28181",
+        "rtmp_push",
+        "recording",
+        "webrtc",
+        "watermark",
+    ] {
         match db::get_protocol_config(&db, key).await {
             Ok(Some(v)) => {
                 protocols.insert(key.to_string(), v);
@@ -200,6 +207,15 @@ pub async fn put_config(
                 for (k, v) in obj {
                     current[k.as_str()] = v.clone();
                 }
+            }
+            // SPEC §5.2 semantic checks over the MERGED blob (types, ranges
+            // and enums are already schema-validated above) — before persist,
+            // so a rejected update leaves the stored config untouched:
+            // enabled requires content; timestamp format whitelist.
+            if db_key == "watermark"
+                && let Err(msg) = crate::config::validate_watermark_blob(&current)
+            {
+                return ApiError::bad_request(&msg).into_response();
             }
             if let Err(e) = db::set_protocol_config(&db, db_key, &current).await {
                 tracing::error!(error = %e, protocol = db_key, "failed to persist protocol config");

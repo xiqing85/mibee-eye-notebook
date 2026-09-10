@@ -105,6 +105,12 @@ async fn main() -> anyhow::Result<()> {
             &serde_json::to_value(&config.recording)?,
         )
         .await?;
+        web::db::set_protocol_config(
+            &pool,
+            "watermark",
+            &serde_json::to_value(&config.watermark)?,
+        )
+        .await?;
         web::db::set_protocol_config(&pool, "webrtc", &serde_json::to_value(&config.webrtc)?)
             .await?;
     } else {
