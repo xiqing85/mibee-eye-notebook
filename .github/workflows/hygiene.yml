@@ -1,0 +1,13 @@
+name: Hygiene
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repo hygiene gate (junk/secret files must not be tracked)
+        run: tools/check-repo-hygiene.sh
