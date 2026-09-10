@@ -58,3 +58,17 @@ tools/esbuild-linux-x64
 
 # Temporary files (safe to rm -rf)
 tmp/
+
+# AI model files (deployed out-of-band, same convention as mibee-eye-raspi-rs;
+# canonical copy + md5 documented in workspace AGENTS.md)
+models/*.onnx
+
+# Hygiene additions (2026-09-10, enforced by tools/check-repo-hygiene.sh)
+/-*
+*.pcap
+*.pcapng
+*.sqlite
+*.sqlite3
+*.log
+config.local.*
+cookies.txt
