@@ -4,9 +4,9 @@
 //! exactly like the device-level flips.
 //!
 //! Rendering is cached: the composed line (text + timestamp) only changes
-//! when the formatted timestamp changes (typically once per second), so
-//! glyph rasterization runs at ~1 Hz and each frame pays only a small
-//! luma/chroma blit. Style is fixed in v1: white text with a 1px black
+//! when the formatted timestamp changes (typically once per second), so glyph
+//! rasterization runs at ~1 Hz and each frame pays only a small luma/chroma
+//! blit. Style is fixed in v1: anti-aliased white text with a 1px black
 //! outline (readable on any background), 16 px frame margin.
 //!
 //! Fonts: the embedded ASCII subset covers the timestamp and ASCII text out
@@ -21,20 +21,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::encoder::convert::Yuv420p;
 
-/// Embedded default font: DejaVu Sans Mono subsetted to printable ASCII
-/// (~8 KB; license: `assets/fonts/LICENSE-DejaVu.txt`). Non-ASCII text needs
-/// `font_path` pointing at a font with those glyphs.
-pub const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono-ASCII.ttf");
+/// Embedded default font: Noto Sans CJK SC subsetted to printable ASCII
+/// (~8 KB; license: `assets/fonts/LICENSE-NotoCJK.txt`). Same design as the
+/// shipped CJK subset, so ASCII-only and CJK watermarks look consistent.
+/// Non-ASCII text needs `font_path` pointing at a font with those glyphs.
+pub const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/fonts/NotoSans-Latin-ASCII.ttf");
 
 /// BT.601 studio-swing luma for text (white) and outline (black).
 const Y_TEXT: u8 = 235;
 const Y_OUTLINE: u8 = 16;
-/// Neutral chroma painted over every 2×2 block touched by the mask.
+/// Neutral chroma blended into every 2×2 block touched by the mask.
 const UV_NEUTRAL: u8 = 128;
 /// Distance of the mask from the frame edges (SPEC §5.2: fixed, not configurable).
 const MARGIN_PX: usize = 16;
-/// Alpha threshold above which a rasterized pixel counts as "on".
-const ALPHA_THRESHOLD: u8 = 128;
+/// Coverages below this are imperceptible — skipped entirely.
+const MIN_ALPHA: u8 = 12;
 
 /// Watermark position on the frame (SPEC §5.2; kebab-case wire format).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -146,23 +147,28 @@ pub fn format_timestamp(fmt: &str, now: &DateTime<Local>) -> String {
     now.format(fmt).to_string()
 }
 
-/// A rasterized text line: binary fill mask plus its 1px dilation (outline).
+/// A rasterized text line: anti-aliased fill coverage (glyph alpha) plus its
+/// 1px grayscale dilation (the black stroke, including under the glyph).
 struct TextMask {
     w: usize,
     h: usize,
-    fill: Vec<bool>,
-    outline: Vec<bool>,
+    /// Glyph coverage per pixel, 0..=255.
+    fill: Vec<u8>,
+    /// Stroke coverage per pixel, 0..=255 (max of the 3×3 neighborhood of
+    /// `fill`, so it also covers the glyph interior — the white fill is
+    /// composited on top of it).
+    outline: Vec<u8>,
 }
 
-#[allow(dead_code)]
 impl TextMask {
+    #[cfg(test)]
     fn painted(&self) -> usize {
-        self.fill.iter().filter(|&&on| on).count()
+        self.fill.iter().filter(|&&a| a >= 128).count()
     }
 }
 
-/// Rasterize one line of text at `px` height into a binary fill mask plus an
-/// 8-neighborhood-dilated outline mask.
+/// Rasterize one line of text at `px` height into an anti-aliased fill
+/// coverage mask plus a 1px grayscale-dilated stroke mask.
 fn rasterize_line(font: &Font, line: &str, px: f32) -> TextMask {
     // First pass: pen advance + ascent/descent to size the mask.
     let mut pen = 0.0_f32;
@@ -184,8 +190,9 @@ fn rasterize_line(font: &Font, line: &str, px: f32) -> TextMask {
             outline: Vec::new(),
         };
     }
-    let mut fill = vec![false; w * h];
-    // Second pass: rasterize and stamp pixels that cross the alpha threshold.
+    let mut fill = vec![0_u8; w * h];
+    // Second pass: stamp the sub-pixel coverage fontdue produced — this is
+    // the anti-aliasing; no thresholding.
     let mut pen = 0.0_f32;
     for ch in line.chars() {
         let (m, bitmap) = font.rasterize(ch, px);
@@ -201,18 +208,19 @@ fn rasterize_line(font: &Font, line: &str, px: f32) -> TextMask {
                 if dx >= w {
                     break;
                 }
-                if bitmap[row * m.width + col] >= ALPHA_THRESHOLD {
-                    fill[dy * w + dx] = true;
-                }
+                let idx = dy * w + dx;
+                fill[idx] = fill[idx].max(bitmap[row * m.width + col]);
             }
         }
         pen += m.advance_width;
     }
-    // Outline = dilation of fill, minus fill itself.
-    let mut outline = vec![false; w * h];
+    // Stroke = grayscale dilation of fill (max over the 3×3 neighborhood,
+    // including the center, so the stroke never punches through the glyph).
+    let mut outline = vec![0_u8; w * h];
     for y in 0..h {
         for x in 0..w {
-            if !fill[y * w + x] {
+            let a = fill[y * w + x];
+            if a == 0 {
                 continue;
             }
             for dy in -1_i64..=1 {
@@ -222,14 +230,10 @@ fn rasterize_line(font: &Font, line: &str, px: f32) -> TextMask {
                     if ny < 0 || nx < 0 || ny >= h as i64 || nx >= w as i64 {
                         continue;
                     }
-                    outline[ny as usize * w + nx as usize] = true;
+                    let idx = (ny as usize) * w + nx as usize;
+                    outline[idx] = outline[idx].max(a);
                 }
             }
-        }
-    }
-    for (o, f) in outline.iter_mut().zip(&fill) {
-        if *f {
-            *o = false;
         }
     }
     TextMask {
@@ -383,9 +387,19 @@ impl Watermark {
     }
 }
 
+/// Alpha-composite `fg` over the current value `bg` (both 0..=255 luma),
+/// rounding to nearest.
+fn blend_over(bg: u8, fg: u8, alpha: u8) -> u8 {
+    let bg = bg as u32;
+    let fg = fg as u32;
+    let a = alpha as u32;
+    ((bg * (255 - a) + fg * a + 127) / 255) as u8
+}
+
 /// Paint `mask` into the frame at the position-derived origin, clipping at
-/// frame edges. Luma: fill → white (235), outline → black (16); every
-/// touched 2×2 chroma block → neutral (128, 128).
+/// frame edges. Anti-aliased: luma is alpha-composited background → black
+/// stroke → white text; each touched 2×2 chroma block is blended toward
+/// neutral with the block's max coverage.
 fn blit_mask(yuv: &mut Yuv420p, mask: &TextMask, position: Position) {
     let (width, height) = (yuv.width as usize, yuv.height as usize);
     if mask.w == 0 || mask.h == 0 || width == 0 || height == 0 {
@@ -399,6 +413,9 @@ fn blit_mask(yuv: &mut Yuv420p, mask: &TextMask, position: Position) {
     let (x0, y0) = origin(position, width, height, mask.w, mask.h);
     let (y_plane, rest) = yuv.data.split_at_mut(width * height);
     let (u_plane, v_plane) = rest.split_at_mut(chroma_stride * (height / 2));
+
+    // Luma pass: stroke first, glyph on top — order-independent where they
+    // overlap (the stroke also covers the glyph interior).
     for my in 0..mask.h {
         let dy = y0 + my;
         if dy >= height {
@@ -409,14 +426,47 @@ fn blit_mask(yuv: &mut Yuv420p, mask: &TextMask, position: Position) {
             if dx >= width {
                 break;
             }
-            let (fill, outline) = (mask.fill[my * mask.w + mx], mask.outline[my * mask.w + mx]);
-            if !fill && !outline {
+            let stroke = mask.outline[my * mask.w + mx];
+            let glyph = mask.fill[my * mask.w + mx];
+            if stroke < MIN_ALPHA && glyph < MIN_ALPHA {
                 continue;
             }
-            y_plane[dy * width + dx] = if fill { Y_TEXT } else { Y_OUTLINE };
-            let cidx = (dy / 2) * chroma_stride + (dx / 2);
-            u_plane[cidx] = UV_NEUTRAL;
-            v_plane[cidx] = UV_NEUTRAL;
+            let idx = dy * width + dx;
+            let mut y = y_plane[idx];
+            if stroke >= MIN_ALPHA {
+                y = blend_over(y, Y_OUTLINE, stroke);
+            }
+            if glyph >= MIN_ALPHA {
+                y = blend_over(y, Y_TEXT, glyph);
+            }
+            y_plane[idx] = y;
+        }
+    }
+
+    // Chroma pass: one blend per covered 2×2 cell, using the cell's max
+    // coverage so the (subsampling) color wash matches the perceived ink.
+    let cells_y = ((y0 + mask.h).min(height)).div_ceil(2);
+    let cells_x = ((x0 + mask.w).min(width)).div_ceil(2);
+    for cy in (y0 / 2)..cells_y {
+        for cx in (x0 / 2)..cells_x {
+            let mut coverage = 0_u8;
+            for dy in (2 * cy)..(2 * cy + 2) {
+                for dx in (2 * cx)..(2 * cx + 2) {
+                    let my = dy.saturating_sub(y0);
+                    let mx = dx.saturating_sub(x0);
+                    if my >= mask.h || mx >= mask.w || dy >= height || dx >= width {
+                        continue;
+                    }
+                    let a = mask.outline[my * mask.w + mx].max(mask.fill[my * mask.w + mx]);
+                    coverage = coverage.max(a);
+                }
+            }
+            if coverage < MIN_ALPHA {
+                continue;
+            }
+            let cidx = cy * chroma_stride + cx;
+            u_plane[cidx] = blend_over(u_plane[cidx], UV_NEUTRAL, coverage);
+            v_plane[cidx] = blend_over(v_plane[cidx], UV_NEUTRAL, coverage);
         }
     }
 }
@@ -504,30 +554,57 @@ mod tests {
     }
 
     #[test]
-    fn blit_paints_white_text_and_black_outline() {
+    fn blit_paints_antialiased_white_text_with_black_outline() {
         let wm = wm_or_fail(&settings("ABC", false, Position::TopLeft, 16));
         let mask = rasterize_line(&wm.font, "ABC", 16.0);
         assert!(mask.painted() > 0);
-        let mut yuv = frame(64, 32);
-        blit_mask(&mut yuv, &mask, Position::TopLeft);
+        // The mask itself carries anti-aliased coverage: interior ≈ opaque,
+        // edges partial.
         assert!(
-            yuv.y_plane().contains(&Y_TEXT),
-            "no white text pixels painted"
+            mask.fill.contains(&255),
+            "glyph interior must reach full coverage"
         );
         assert!(
-            yuv.y_plane().contains(&Y_OUTLINE),
+            mask.fill.iter().any(|&a| (16..255).contains(&a)),
+            "glyph edges must carry partial coverage (anti-aliasing)"
+        );
+        let mut yuv = frame(64, 32);
+        blit_mask(&mut yuv, &mask, Position::TopLeft);
+        let luma = yuv.y_plane();
+        // Strong white text cores…
+        assert!(
+            luma.iter().any(|&y| y >= 200),
+            "no white text pixels painted"
+        );
+        // …strong black outline…
+        assert!(
+            luma.iter().any(|&y| y <= 60),
             "no black outline pixels painted"
+        );
+        // …and anti-aliased in-between pixels (gray 128 background blended).
+        assert!(
+            luma.iter().any(|&y| (100..200).contains(&y)),
+            "no anti-aliased transition pixels"
         );
         assert_eq!(yuv.y_plane()[31 * 64 + 63], 128, "background must survive");
     }
 
     #[test]
-    fn blit_neutralizes_chroma_of_painted_blocks_only() {
+    fn blit_blends_chroma_of_painted_blocks_only() {
         let wm = wm_or_fail(&settings("ABC", false, Position::TopLeft, 16));
         let mask = rasterize_line(&wm.font, "ABC", 16.0);
         let mut yuv = frame(64, 32);
         blit_mask(&mut yuv, &mask, Position::TopLeft);
-        assert!(yuv.u_plane().contains(&128), "no chroma blocks neutralized");
+        // Covered blocks moved (partially) toward neutral 128 from 90…
+        assert!(
+            yuv.u_plane().iter().any(|&u| (91..128).contains(&u)),
+            "no chroma blocks blended toward neutral"
+        );
+        // …and at least one is strongly inked.
+        assert!(
+            yuv.u_plane().iter().any(|&u| u >= 120),
+            "no strongly-covered chroma block"
+        );
         // Last chroma block (row 15 of 16, col 31 of 32) must stay untouched.
         assert_eq!(
             yuv.v_plane()[15 * 32 + 31],
@@ -548,7 +625,10 @@ mod tests {
             let mask = rasterize_line(&wm.font, "ABC", 16.0);
             let mut yuv = frame(64, 32);
             blit_mask(&mut yuv, &mask, pos);
-            assert!(yuv.y_plane().contains(&Y_TEXT), "{pos:?} painted nothing");
+            assert!(
+                yuv.y_plane().iter().any(|&y| y >= 200),
+                "{pos:?} painted nothing"
+            );
         }
         // Oversized mask on a tiny frame must clip without panicking.
         let wm = wm_or_fail(&settings("ABC", false, Position::TopLeft, 96));
@@ -580,7 +660,10 @@ mod tests {
         let mut wm = wm_or_fail(&settings("", true, Position::TopLeft, 16));
         let mut yuv = frame(64, 32);
         wm.render_into(&mut yuv);
-        assert!(yuv.y_plane().contains(&Y_TEXT), "timestamp not painted");
+        assert!(
+            yuv.y_plane().iter().any(|&y| y >= 200),
+            "timestamp not painted"
+        );
     }
 
     #[test]
@@ -618,7 +701,7 @@ mod tests {
         let mut yuv = frame(64, 32);
         wm.render_into(&mut yuv);
         assert!(
-            yuv.y_plane().contains(&Y_TEXT),
+            yuv.y_plane().iter().any(|&y| y >= 200),
             "fallback embedded font painted nothing"
         );
     }
