@@ -164,6 +164,10 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
             .unwrap_or(3),
         channel_id: get_str("channel_id", "34020000001320000001"),
         local_sip_port: get_u16("local_sip_port", 5060),
+        talkback_playback: db_config
+            .get("talkback_playback")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
         device_name: get_str("device_name", "mibee-rec"),
         manufacturer: get_str("manufacturer", "MiBee"),
         model: get_str("model", "Rec-01"),
@@ -208,6 +212,10 @@ pub struct Gb28181RuntimeConfig {
     pub heartbeat_timeout_count: u32,
     pub channel_id: String,
     pub local_sip_port: u16,
+    /// Play platform-initiated voice talkback on the local output device
+    /// (GB/T 28181-2022 §9.2). Fail-open: off, or no usable output
+    /// device, → no sink registered → talkback INVITEs answered 488.
+    pub talkback_playback: bool,
     /// Catalog/DeviceInfo identity. gb28181-rs 0.6.0 defaults to neutral
     /// placeholders unless the host stamps its product identity here.
     pub device_name: String,
@@ -530,13 +538,34 @@ impl ProtocolRuntime {
             "GB28181 device server starting (gb28181-rs)"
         );
 
+        // Talkback receive (audio-only INVITE): decode G.711 to the local
+        // output device. Fail-open — disabled or no output device means no
+        // sink registered and the library answers talkback INVITEs 488.
+        let talkback = match crate::gb28181_talkback::open_sink(config.talkback_playback) {
+            Ok(opened) => opened,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "GB28181 talkback playback unavailable — audio INVITEs will be refused 488"
+                );
+                None
+            }
+        };
+
+        let mut server_builder =
+            gb28181_rs::server::Gb28181Server::with_recording_index(lib_config, source, None)
+                .with_register_authenticator(authenticator);
+        let mut audio_stream = None;
+        if let Some((sink, stream)) = talkback {
+            server_builder = server_builder.with_audio_sink(sink);
+            audio_stream = Some(stream);
+        }
+
         let handle = tokio::spawn(async move {
-            let server =
-                gb28181_rs::server::Gb28181Server::with_recording_index(lib_config, source, None)
-                    .with_register_authenticator(authenticator)
-                    .spawn()
-                    .await;
-            match server {
+            // Keep the output stream alive for the server task's lifetime;
+            // dropping it (task stop) stops talkback playback too.
+            let _audio_stream = audio_stream;
+            match server_builder.spawn().await {
                 Ok(server) => {
                     let _ = server.await;
                     tracing::info!("GB28181 device server task exited");
@@ -901,6 +930,18 @@ mod tests {
         let plain = extract_gb28181_config(&serde_json::json!({"enabled": false}));
         assert!(!plain.gb35114.enabled);
         assert!(plain.gb35114.server_id.is_empty());
+    }
+
+    /// Talkback playback is on by default (the point of enabling GB28181
+    /// talk on a device with speakers) and can be turned off per config.
+    #[test]
+    fn extract_gb28181_config_talkback_playback() {
+        let default = extract_gb28181_config(&serde_json::json!({}));
+        assert!(default.talkback_playback);
+        let off = extract_gb28181_config(&serde_json::json!({"talkback_playback": false}));
+        assert!(!off.talkback_playback);
+        let on = extract_gb28181_config(&serde_json::json!({"talkback_playback": true}));
+        assert!(on.talkback_playback);
     }
 
     /// Fixture-backed SM2 identities build a working A-level

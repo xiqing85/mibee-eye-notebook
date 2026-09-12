@@ -96,6 +96,12 @@ pub struct Gb28181Config {
     pub channel_id: String,
     #[serde(default = "default_gb28181_local_sip_port")]
     pub local_sip_port: u16,
+    /// Play platform-initiated voice talkback (audio-only INVITE,
+    /// GB/T 28181-2022 §9.2) on the local output device. Fail-open: with
+    /// this off, or with no usable output device, talkback INVITEs are
+    /// refused with 488.
+    #[serde(default = "default_gb28181_talkback_playback")]
+    pub talkback_playback: bool,
     #[serde(default)]
     pub gb35114: Gb35114Config,
 }
@@ -158,6 +164,9 @@ fn default_gb28181_channel_id() -> String {
 fn default_gb28181_local_sip_port() -> u16 {
     5060
 }
+fn default_gb28181_talkback_playback() -> bool {
+    true
+}
 
 impl Default for Gb28181Config {
     fn default() -> Self {
@@ -174,6 +183,7 @@ impl Default for Gb28181Config {
             heartbeat_timeout_count: 3,
             channel_id: default_gb28181_channel_id(),
             local_sip_port: 5060,
+            talkback_playback: default_gb28181_talkback_playback(),
             gb35114: Gb35114Config::default(),
         }
     }

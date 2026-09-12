@@ -1482,9 +1482,8 @@ dependencies = [
 
 [[package]]
 name = "gb28181-rs"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac1eb0b8685a83e1f90ca36a44f53c0b83bd66a271e7e1261525573d7cccdf5a"
+version = "0.11.0"
+source = "git+https://github.com/mickeyzzc/gb28181-rs.git?rev=7331beb#7331beb5f92cce2aae79c97aa36607808109eb26"
 dependencies = [
  "anyhow",
  "base64",
@@ -5484,6 +5483,7 @@ dependencies = [
  "axum",
  "axum-server",
  "capture",
+ "cpal",
  "futures",
  "futures-core",
  "gb28181-rs",
