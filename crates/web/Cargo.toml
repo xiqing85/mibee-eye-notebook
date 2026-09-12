@@ -32,6 +32,7 @@ rustls.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }
 futures-core.workspace = true
 parking_lot.workspace = true
+cpal.workspace = true
 futures = "0.3.32"
 tokio-stream = { version = "0.1", features = ["sync"] }
 schemars.workspace = true
