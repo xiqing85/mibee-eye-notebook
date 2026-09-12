@@ -67,7 +67,8 @@ pub fn valid_model_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && id.chars()
+        && id
+            .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
@@ -176,11 +177,7 @@ impl Registry {
     /// Resolve `(model id, model path)` against the registry: a non-default
     /// `model_path` is a custom override; otherwise the id must name an
     /// entry.
-    pub fn resolve_active(
-        &self,
-        model: &str,
-        model_path: &str,
-    ) -> Result<ActiveModel, String> {
+    pub fn resolve_active(&self, model: &str, model_path: &str) -> Result<ActiveModel, String> {
         if model_path != crate::ai::default_model_path() {
             return Ok(ActiveModel {
                 id: "custom".to_string(),
@@ -270,11 +267,8 @@ impl Registry {
 /// Loads a detector for a model file path, returning the detector and its
 /// square input size. Production builds construct an ONNX Runtime session
 /// (the load doubles as upload validation); tests inject fakes.
-pub type DetectorFactory = Arc<
-    dyn Fn(&str) -> Result<(Arc<dyn crate::ai::AiDetector>, u32), ActivateError>
-        + Send
-        + Sync,
->;
+pub type DetectorFactory =
+    Arc<dyn Fn(&str) -> Result<(Arc<dyn crate::ai::AiDetector>, u32), ActivateError> + Send + Sync>;
 
 #[cfg(test)]
 mod tests {
@@ -299,9 +293,10 @@ mod tests {
             .resolve_active("nanodet-plus-m-320", "/opt/custom.onnx")
             .expect("custom path wins");
         assert_eq!(m.source, "custom");
-        assert!(reg
-            .resolve_active("yolo-9000", &crate::ai::default_model_path())
-            .is_err());
+        assert!(
+            reg.resolve_active("yolo-9000", &crate::ai::default_model_path())
+                .is_err()
+        );
     }
 
     #[test]
@@ -321,10 +316,7 @@ mod tests {
         })
         .expect("persist");
         let reloaded = Registry::load(&dir);
-        assert_eq!(
-            reloaded.find("custom").expect("survives").input,
-            320
-        );
+        assert_eq!(reloaded.find("custom").expect("survives").input, 320);
 
         std::fs::remove_file(&file).unwrap();
         assert!(Registry::load(&dir).find("custom").is_none());

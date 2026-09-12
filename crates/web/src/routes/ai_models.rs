@@ -14,8 +14,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use sqlx::SqlitePool;
-use streaming::ai::registry::{ActivateError, UPLOAD_MAX_BYTES, valid_model_id};
 use streaming::ai::AiEngine;
+use streaming::ai::registry::{ActivateError, UPLOAD_MAX_BYTES, valid_model_id};
 
 use security::middleware::AuthenticatedUser;
 
@@ -79,11 +79,9 @@ pub async fn activate_model(
 
     let built = match ai.load_for(&spec.path) {
         Ok(built) => built,
-        Err(ActivateError::Unavailable(msg)) => {
-            return api_error(StatusCode::CONFLICT, &msg)
-        }
+        Err(ActivateError::Unavailable(msg)) => return api_error(StatusCode::CONFLICT, &msg),
         Err(ActivateError::LoadFailed(msg)) => {
-            return api_error(StatusCode::INTERNAL_SERVER_ERROR, &msg)
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, &msg);
         }
     };
 
@@ -91,9 +89,7 @@ pub async fn activate_model(
     if let Err(e) = crate::db::set_setting(&db, "ai.model", &id).await {
         tracing::error!(error = %e, "failed to persist ai.model");
     }
-    let _ = event_tx.send(CameraEvent::AiModelChanged {
-        model: id.clone(),
-    });
+    let _ = event_tx.send(CameraEvent::AiModelChanged { model: id.clone() });
     (
         StatusCode::OK,
         Json(json!({ "active": id, "applied": "immediate" })),
@@ -112,7 +108,10 @@ pub async fn upload_model(
     mut multipart: axum::extract::Multipart,
 ) -> Response {
     if !ai.config().allow_upload {
-        return api_error(StatusCode::NOT_IMPLEMENTED, "model upload disabled ([ai] allow_upload)");
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "model upload disabled ([ai] allow_upload)",
+        );
     }
     if !valid_model_id(&id) {
         return api_error(
@@ -121,11 +120,19 @@ pub async fn upload_model(
         );
     }
     if ai.registry().read().find(&id).is_some() {
-        return api_error(StatusCode::CONFLICT, &format!("model id already exists: {id}"));
+        return api_error(
+            StatusCode::CONFLICT,
+            &format!("model id already exists: {id}"),
+        );
     }
     let dir = match ai.registry().read().models_dir() {
         Some(dir) => dir.to_path_buf(),
-        None => return api_error(StatusCode::NOT_IMPLEMENTED, "no models directory configured"),
+        None => {
+            return api_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "no models directory configured",
+            );
+        }
     };
 
     let mut family: Option<String> = None;
@@ -155,10 +162,7 @@ pub async fn upload_model(
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            return api_error(
-                                StatusCode::BAD_REQUEST,
-                                &format!("file field: {e}"),
-                            )
+                            return api_error(StatusCode::BAD_REQUEST, &format!("file field: {e}"));
                         }
                     }
                 }
@@ -169,14 +173,20 @@ pub async fn upload_model(
     }
     // This build's decoder is NanoDet-only; the family field must say so.
     if family.as_deref() != Some("nanodet") {
-        return api_error(StatusCode::BAD_REQUEST, "family must be nanodet on this device");
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "family must be nanodet on this device",
+        );
     }
     let Some(file) = file else {
         return api_error(StatusCode::BAD_REQUEST, "missing file field");
     };
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        return api_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("models dir: {e}"));
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("models dir: {e}"),
+        );
     }
     let tmp = dir.join(format!(".upload-{id}.tmp"));
     if let Err(e) = std::fs::write(&tmp, &file) {
@@ -234,7 +244,10 @@ pub async fn delete_model(
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> Response {
     if !ai.config().allow_upload {
-        return api_error(StatusCode::NOT_IMPLEMENTED, "model upload disabled ([ai] allow_upload)");
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "model upload disabled ([ai] allow_upload)",
+        );
     }
     if ai.is_active() && ai.active_model() == id {
         return api_error(
@@ -304,7 +317,10 @@ mod tests {
         };
         let engine = AiEngine::from_parts(config, Some(Arc::new(FakeDetector)));
         let factory: streaming::ai::DetectorFactory = Arc::new(|_path: &str| {
-            Ok((Arc::new(FakeDetector) as Arc<dyn streaming::ai::AiDetector>, 416))
+            Ok((
+                Arc::new(FakeDetector) as Arc<dyn streaming::ai::AiDetector>,
+                416,
+            ))
         });
         let engine = Arc::new(engine.with_factory(factory));
         if let Some(dir) = dir {
@@ -322,7 +338,10 @@ mod tests {
         let app = Router::new()
             .route("/api/ai/models", get(get_models))
             .route("/api/ai/models/{id}/activate", post(activate_model))
-            .route("/api/ai/models/{id}", post(upload_model).delete(delete_model))
+            .route(
+                "/api/ai/models/{id}",
+                post(upload_model).delete(delete_model),
+            )
             .layer(Extension(engine))
             .layer(Extension(pool.clone()))
             .layer(Extension(bus.clone()))
