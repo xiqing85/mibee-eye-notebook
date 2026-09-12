@@ -220,15 +220,15 @@ impl AiEngine {
         engine.registry = Arc::new(RwLock::new(registry));
         #[cfg(feature = "ai")]
         {
-            engine.factory = Some(std::sync::Arc::new(|path: &str| {
-                match ort::OrtDetector::new(path) {
+            engine.factory = Some(std::sync::Arc::new(
+                |path: &str| match ort::OrtDetector::new(path) {
                     Ok(d) => {
                         let size = d.input_size();
                         Ok((Arc::new(d) as Arc<dyn AiDetector>, size))
                     }
                     Err(e) => Err(registry::ActivateError::LoadFailed(format!("{e:#}"))),
-                }
-            }));
+                },
+            ));
         }
         engine
     }
@@ -336,13 +336,11 @@ impl AiEngine {
                 "model file not available: {path}"
             )));
         }
-        self.factory
-            .as_ref()
-            .ok_or_else(|| {
-                registry::ActivateError::LoadFailed(
-                    "detector factory unavailable in this build".to_string(),
-                )
-            })?(path)
+        self.factory.as_ref().ok_or_else(|| {
+            registry::ActivateError::LoadFailed(
+                "detector factory unavailable in this build".to_string(),
+            )
+        })?(path)
     }
 
     /// Whether a real detector is loaded and workers may run.
