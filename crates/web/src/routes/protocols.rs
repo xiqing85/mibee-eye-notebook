@@ -762,6 +762,7 @@ mod tests {
         assert!(props.contains_key("platform_sip_port"));
         assert!(props.contains_key("device_id"));
         assert!(props.contains_key("register_interval_secs"));
+        assert!(props.contains_key("talkback_playback"));
     }
 
     #[test]
