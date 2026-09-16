@@ -19,6 +19,7 @@
 
 - **本地采集** — 摄像头通过 V4L2（Linux）/ MSMF（Windows），麦克风通过 ALSA / WASAPI
 - **对外协议** — RTSP 服务端（客户端拉流）、RTMP 推流、ONVIF 设备端点、GB/T 28181 设备注册（全部默认关闭，通过 Web 界面启用）
+- **GB/T 28181-2022 设备面** — 告警事件（SSE `alarm` + Alarm NOTIFY，AI 上升沿 + 冷却）、DeviceControl（IFrameCmd 强制关键帧、RecordCmd 录像门）、优雅注销（REGISTER Expires: 0）、静态 MobilePosition 上报——全部随共享库 gb28181-rs 提供
 - **H.264 / H.265** — 手写 NAL 单元解析器、关键帧检测、SPS/PPS 提取
 - **MiBee NVR 集成** — REST API 客户端、摄像头同步、SSE 事件流
 - **Web 界面** — Axum REST API + 嵌入式 SPA、TLS 通过 rustls、基于会话的身份认证、双语（zh-CN / en-US）、日/夜间主题
@@ -43,31 +44,40 @@
 
 ## 架构
 
-```
-┌──────────────────────────────────┐
-│        Web UI (Axum + SPA)       │
-│  REST API · TLS · Auth Session   │
-│  双语（zh-CN/en-US）· 主题        │
-├──────────────────────────────────┤
-│       Streaming Hub              │
-│  Source → BufferPool → fan-out   │
-│  ResourceController (max 16)     │
-│    ↓ ↓ ↓ ↓ ↓ ↓                  │
-│ Web Preview · File Output       │
-│   RTSP · RTMP · ONVIF · GB28181  │
-├──────────────────────────────────┤
-│        Protocol Layer            │
-│  RTSP · RTMP · ONVIF · GB28181   │
-│  RTP · H.264 NAL Parser          │
-├──────────────────────────────────┤
-│        Capture Layer             │
-│  Video (nokhwa) · Audio (cpal)   │
-│  Hot-plug detection (udev)       │
-├──────────────────────────────────┤
-│   Security · Observability       │
-│  Auth · TLS · CSRF · CSP         │
-│  Tracing · Metrics · Loki logs   │
-└──────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph L1["Web UI（Axum + SPA）"]
+        direction LR
+        L1a["REST API · TLS · 会话认证"]
+        L1b["双语（zh-CN/en-US）· 主题 · SSE 事件"]
+    end
+    subgraph L2["Streaming Hub"]
+        direction LR
+        L2a["Source → BufferPool → fan-out"]
+        L2b["ResourceController（最多 16 路流）"]
+    end
+    subgraph L3["输出面"]
+        direction LR
+        L3a["Web 预览 · MP4 录制"]
+        L3b["RTSP · RTMP 推流"]
+        L3c["ONVIF · GB28181 设备端"]
+    end
+    subgraph L4["协议层"]
+        direction LR
+        L4a["RTP/RTSP/RTMP · H.264 NAL（仓内自实现，媒体面）"]
+        L4b["信令：onvif-device-rs · gb28181-rs"]
+    end
+    subgraph L5["采集层"]
+        direction LR
+        L5a["视频（nokhwa）· 音频（cpal）"]
+        L5b["OpenH264 进程内编码 · udev 热插拔"]
+    end
+    SEC["安全 · 可观测性<br/>认证 · TLS · CSRF · CSP<br/>追踪 · 指标 · Loki 日志"]
+    L5 -->|"H.264 AU + G.711/AAC"| L2
+    L1 -->|"配置 / 控制"| L2
+    L2 --> L3
+    L3 --- L4
+    SEC -.->|包裹| L1
 ```
 
 ## 工作空间布局
@@ -96,6 +106,10 @@ mibee-rec/
 | **RTMP 推流** | 握手 + 连接 + 发布 | 手写（`RtmpOutput`，当 `rtmp_push.enabled=true` 时通过 StreamHub 自动连接） | ✅ 已实现并连接 |
 | **ONVIF 设备** | WS-Discovery + SOAP 设备服务 | [`onvif-device-rs`](https://github.com/mickeyzzc/onvif-rs)（当 `onvif.enabled=true` 时启动） | ✅ 已实现并连接 |
 | **GB/T 28181 设备** | SIP REGISTER (Digest) + INVITE + RTP 推送 | [`gb28181-rs`](https://github.com/mickeyzzc/gb28181-rs)（含 GB35114 认证；`Gb28181Output` 在 INVITE 时动态连接，BYE 时断开） | ✅ 已实现并连接 |
+| **GB28181 告警管线** | AI 检测上升沿 → `alarm` SSE + Alarm NOTIFY | `AlarmBridge`（冷却门控）+ gb28181-rs `notifier()`；优先级 4 / 方法 5 / 类型 2（2022 标准表） | ✅ 已实现并连接 |
+| **GB28181 DeviceControl** | IFrameCmd / RecordCmd / GuardCmd / TeleBoot / PTZ | gb28181-rs 控制接缝：OpenH264 强制关键帧、RecordCmd 门控本地录制、无执行器命令 ack-only | ✅ 已实现并连接 |
+| **GB28181 优雅注销** | SIGTERM / 协议停止时发 REGISTER `Expires: 0` | gb28181-rs `shutdown_with_deregister`（401 全套舞步、2s 超时、超时兜底 abort） | ✅ 已实现并连接 |
+| **GB28181 MobilePosition** | 订阅周期上报静态坐标 | gb28181-rs `with_position_source`（配置为空则不上报） | ✅ 已实现并连接 |
 | **H.264** | NAL 单元解析器、SPS/PPS、关键帧检测 | 手写（`H264Parser`） | ✅ 用于所有视频输出 |
 | **H.265 解码** | 浏览器回退到 H.264 | — | ⚠️ 浏览器不支持通用；v1 仅 H.264 |
 | **浏览器实时预览** | 通过 `<img>` 的 MJPEG 多部分流 | `/api/cameras/{id}/live` 路由（ffmpeg 转码） | ✅ 已实现并连接 |

@@ -264,6 +264,10 @@ device_id = "34020000002000000001"
 username = ""
 password = ""
 sip_domain = "3402000000"
+alarm_notify_enabled = true
+alarm_cooldown_secs = 30
+position_longitude = ""
+position_latitude = ""
 register_interval_secs = 60
 ```
 
@@ -279,11 +283,22 @@ register_interval_secs = 60
 | `password` | String | `""` | SIP authentication password |
 | `sip_domain` | String | `"3402000000"` | SIP domain |
 | `register_interval_secs` | u64 | `60` | SIP REGISTER interval in seconds (must be > 0 if enabled) |
+| `channel_id` | String | `"34020000001320000001"` | 20-character GB28181 channel ID |
+| `local_sip_port` | u16 | `5060` | Local SIP listen port |
+| `heartbeat_interval_secs` | u64 | `60` | Keepalive interval in seconds |
+| `heartbeat_timeout_count` | u32 | `3` | Missed keepalives before reconnect |
+| `talkback_playback` | bool | `true` | Play platform voice talkback on the local output device (fail-open 488 when unavailable) |
+| `alarm_notify_enabled` | bool | `true` | Initial AI alarm NOTIFY gate (platform DeviceConfig AlarmReport overrides at runtime) |
+| `alarm_cooldown_secs` | u64 | `30` | Rising-edge alarm cooldown in seconds (SPEC §6 `alarm` + NOTIFY) |
+| `position_longitude` | String | `""` | Static MobilePosition longitude (empty = no position reporting) |
+| `position_latitude` | String | `""` | Static MobilePosition latitude (empty = no position reporting) |
 
 **Notes:**
 
 - OUTBOUND protocol — this device registers WITH the platform, not the platform role
 - GB28181 signaling via the `gb28181-rs` library, RTP/PS push over UDP
+- AI detection rising edges fire the SPEC §6 `alarm` SSE event and (when the platform subscribed and the gate allows) an Alarm NOTIFY — priority 4, method 5, type 2 per the 2022 standard table
+- SIGTERM / protocol stop de-registers with REGISTER `Expires: 0` (failures logged and ignored)
 - Protocol hot-toggle available via Web UI without server restart
 
 ### [recording] - Local Recording
