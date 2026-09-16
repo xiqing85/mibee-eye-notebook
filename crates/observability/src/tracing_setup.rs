@@ -165,10 +165,10 @@ fn init_otlp_tracer(endpoint: &str) -> Result<sdktrace::Tracer> {
 
     let provider = sdktrace::SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
-        .with_resource(Resource::builder().with_service_name("mibee-rec").build())
+        .with_resource(Resource::builder().with_service_name("mibee-eye").build())
         .build();
 
-    let tracer = provider.tracer("mibee-rec");
+    let tracer = provider.tracer("mibee-eye");
     global::set_tracer_provider(provider);
 
     Ok(tracer)

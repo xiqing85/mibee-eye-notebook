@@ -2,7 +2,7 @@
 
 ## 概览
 
-mibee-rec REST API 遵循 **MiBee 摄像头设备 Web API 统一规范 v1**
+mibee-eye REST API 遵循 **MiBee 摄像头设备 Web API 统一规范 v1**
 （工作区内 `mibee-webui/SPEC.md`）——与树莓派摄像头项目同一契约。
 除特别说明外，所有 API 走 TLS 并要求会话认证。
 

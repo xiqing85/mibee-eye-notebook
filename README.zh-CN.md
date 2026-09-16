@@ -13,7 +13,7 @@
 
 **MiBee Eye** 摄像头家族成员：[mibee-eye-rs](https://github.com/xiqing85/mibee-eye-rs) · [mibee-eye-go](https://github.com/xiqing85/mibee-eye-go) · [mibee-eye-webui](https://github.com/xiqing85/mibee-eye-webui)（共享前端 + API 规范）。
 
-> 二进制与 systemd 服务保留历史名称 `mibee-rec`。
+> 二进制与 systemd 服务保留历史名称 `mibee-eye`。
 
 ## 功能特性
 
@@ -83,7 +83,7 @@ flowchart TB
 ## 工作空间布局
 
 ```
-mibee-rec/
+mibee-eye/
 ├─ src/                # 二进制入口、配置、类型、错误处理
 ├─ crates/
 │  ├─ protocols/       # RTSP、RTMP、ONVIF、GB28181、RTP、H.264

@@ -1,6 +1,6 @@
 # 快速入门
 
-mibee-rec（MiBee Rec）快速入门指南 — 基于 Rust 构建的专业笔记本监控代理。
+mibee-eye（MiBee Eye）快速入门指南 — 基于 Rust 构建的专业笔记本监控代理。
 
 ## 前置条件
 
@@ -32,7 +32,7 @@ cargo build
 cargo build --release
 ```
 
-发布版二进制文件将位于 `target/release/mibee-rec`。
+发布版二进制文件将位于 `target/release/mibee-eye`。
 
 默认端口：
 - Web UI：8443（HTTPS 使用自签名 TLS）
@@ -94,7 +94,7 @@ Web 界面提供：
 
 ## 产品范围
 
-**mibee-rec 是仅本地捕获代理：**
+**mibee-eye 是仅本地捕获代理：**
 
 - 仅从此机器捕获物理连接的设备（USB 摄像头、内置/USB 麦克风）
 - 不会发现或连接到远程网络摄像头
@@ -119,4 +119,4 @@ Web 界面提供：
 祝监控愉快！
 
 ---
-*MiBee-Rec（MiBee Rec）— 基于 Rust 构建的专业笔记本监控代理。*
+*MiBee Eye（MiBee Eye）— 基于 Rust 构建的专业笔记本监控代理。*

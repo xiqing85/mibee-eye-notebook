@@ -1,5 +1,5 @@
 # =============================================================================
-# Dockerfile — mibee-rec (MiBee Rec)
+# Dockerfile — mibee-eye (MiBee Eye)
 # Multi-stage build: builder (rust:1-slim, latest stable) → runtime (debian:bookworm-slim)
 # =============================================================================
 
@@ -11,7 +11,7 @@
 # kernels.
 FROM rust:1.88-bookworm AS builder
 
-WORKDIR /usr/src/mibee-rec
+WORKDIR /usr/src/mibee-eye
 
 # Install build-time system dependencies.
 # g++ (C++ compiler) is required by openh264-sys2's build.rs — it compiles the
@@ -53,15 +53,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary (renamed from mibee-rec to mibee-rec for consistency)
-COPY --from=builder /usr/src/mibee-rec/target/release/mibee-rec /usr/local/bin/mibee-rec
+# Copy binary
+COPY --from=builder /usr/src/mibee-eye/target/release/mibee-eye /usr/local/bin/mibee-eye
 
 # Copy configuration and migrations
-COPY --from=builder /usr/src/mibee-rec/config.toml /etc/mibee-rec/config.toml
-COPY --from=builder /usr/src/mibee-rec/migrations/ /usr/local/share/mibee-rec/migrations/
+COPY --from=builder /usr/src/mibee-eye/config.toml /etc/mibee-eye/config.toml
+COPY --from=builder /usr/src/mibee-eye/migrations/ /usr/local/share/mibee-eye/migrations/
 
 # Create working directory
-WORKDIR /var/lib/mibee-rec
+WORKDIR /var/lib/mibee-eye
 
 # Expose ports: web UI (8443), RTSP (8554), RTMP (1935)
 EXPOSE 8443
@@ -71,12 +71,12 @@ EXPOSE 1935
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s CMD curl -kf https://localhost:8443/health || exit 1
 
-# Create mibee-rec user with video/audio groups for device access
-RUN useradd -r -m -G video,audio mibee-rec \
-    && mkdir -p /var/lib/mibee-rec \
-    && chown mibee-rec:mibee-rec /var/lib/mibee-rec
+# Create mibee-eye user with video/audio groups for device access
+RUN useradd -r -m -G video,audio mibee-eye \
+    && mkdir -p /var/lib/mibee-eye \
+    && chown mibee-eye:mibee-eye /var/lib/mibee-eye
 
-# Switch to mibee-rec user (non-root for security)
-USER mibee-rec
+# Switch to mibee-eye user (non-root for security)
+USER mibee-eye
 
-ENTRYPOINT ["/usr/local/bin/mibee-rec", "--config", "/etc/mibee-rec/config.toml"]
+ENTRYPOINT ["/usr/local/bin/mibee-eye", "--config", "/etc/mibee-eye/config.toml"]

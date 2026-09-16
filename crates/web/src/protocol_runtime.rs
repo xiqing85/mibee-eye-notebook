@@ -169,7 +169,7 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
             .get("talkback_playback")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
-        device_name: get_str("device_name", "mibee-rec"),
+        device_name: get_str("device_name", "mibee-eye"),
         manufacturer: get_str("manufacturer", "MiBee"),
         model: get_str("model", "Rec-01"),
         firmware: get_str("firmware", env!("CARGO_PKG_VERSION")),
@@ -599,7 +599,7 @@ impl ProtocolRuntime {
             // not use).
             strict_example_defaults: false,
             incoming_note_policy: gb28181_rs::authenticator::IncomingNotePolicy::default(),
-            user_agent: Some(format!("mibee-rec/{}", env!("CARGO_PKG_VERSION"))),
+            user_agent: Some(format!("mibee-eye/{}", env!("CARGO_PKG_VERSION"))),
             device_name: Some(config.device_name.clone()),
             manufacturer: Some(config.manufacturer.clone()),
             model: Some(config.model.clone()),

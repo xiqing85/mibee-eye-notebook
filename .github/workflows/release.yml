@@ -43,9 +43,9 @@ jobs:
         run: |
           DIR="mibee-eye-notebook-${GITHUB_REF_NAME}.linux-amd64"
           mkdir -p "${DIR}"
-          cp target/release/mibee-rec "${DIR}/"
+          cp target/release/mibee-eye "${DIR}/"
           cp config.toml "${DIR}/config.example.toml"
-          cp mibee-rec.service "${DIR}/"
+          cp mibee-eye.service "${DIR}/"
           cp LICENSE NOTICE README.md README.zh-CN.md "${DIR}/"
           tar czf "${DIR}.tar.gz" "${DIR}"
           sha256sum "${DIR}.tar.gz" > checksums.txt

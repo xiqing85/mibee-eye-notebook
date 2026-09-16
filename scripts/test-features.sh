@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/test-features.sh
 #
-# Full feature-matrix test for a deployed mibee-rec instance.
+# Full feature-matrix test for a deployed mibee-eye instance.
 # Exercises each subsystem end-to-end per the protocol support table (README).
 #
 # Usage:
@@ -45,7 +45,7 @@ echo "[1] Hot-plug event path"
 # log an ADD event. This does NOT physically disconnect the camera.
 ssh "$HOST" "sudo -n udevadm trigger --action=add --subsystem-match=video4linux 2>/dev/null || udevadm trigger --action=add --subsystem-match=video4linux 2>/dev/null || true"
 sleep 2
-HOTPLUG_LOG=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '15 sec ago' --no-pager 2>/dev/null | grep -iE 'hotplug|udev|video4linux|device.*add' | head -3 || echo ''")
+HOTPLUG_LOG=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '15 sec ago' --no-pager 2>/dev/null | grep -iE 'hotplug|udev|video4linux|device.*add' | head -3 || echo ''")
 if [ -n "$HOTPLUG_LOG" ]; then
     pass "hot-plug monitor observed udev event"
     echo "      log: $(echo "$HOTPLUG_LOG" | head -1)"
@@ -59,19 +59,19 @@ echo "[2] MP4 recording (local recording)"
 # Enable recording via the protocols API if not already on.
 ssh "$HOST" "curl -skf -X PUT https://localhost:8443/api/protocols/recording \
     -H 'Content-Type: application/json' \
-    -d '{\"enabled\":true,\"path\":\"/tmp/mibee-rec-test\",\"segment_duration_secs\":5,\"max_capacity_mb\":50}' \
+    -d '{\"enabled\":true,\"path\":\"/tmp/mibee-eye-test\",\"segment_duration_secs\":5,\"max_capacity_mb\":50}' \
     >/dev/null 2>&1" || true
 # Restart the stream so FileOutput attaches.
 ssh "$HOST" "curl -skf -X POST https://localhost:8443/api/cameras/$CAM_ID/stop >/dev/null 2>&1; \
     curl -skf -X POST https://localhost:8443/api/cameras/$CAM_ID/start >/dev/null 2>&1" || true
 echo "  → Recording for 12s (segment boundary at 5s)..."
 sleep 12
-SEGMENTS=$(ssh "$HOST" "ls -1 /tmp/mibee-rec-test/*.mp4 2>/dev/null | wc -l || echo 0")
+SEGMENTS=$(ssh "$HOST" "ls -1 /tmp/mibee-eye-test/*.mp4 2>/dev/null | wc -l || echo 0")
 if [ "$SEGMENTS" -ge 1 ]; then
     pass "≥1 MP4 segment written ($SEGMENTS found)"
     # Verify the segment is a valid MP4 with an H.264 track (ffprobe if available).
     if ssh "$HOST" "command -v ffprobe >/dev/null 2>&1"; then
-        PROBE=$(ssh "$HOST" "ffprobe -v error -select_streams v -show_entries stream=codec_name -of csv=p=0 /tmp/mibee-rec-test/*.mp4 2>/dev/null | head -1 || echo ''")
+        PROBE=$(ssh "$HOST" "ffprobe -v error -select_streams v -show_entries stream=codec_name -of csv=p=0 /tmp/mibee-eye-test/*.mp4 2>/dev/null | head -1 || echo ''")
         if echo "$PROBE" | grep -qi "h264"; then
             pass "MP4 segment contains H.264 video track (ffprobe)"
         else
@@ -91,7 +91,7 @@ RTMP_CFG=$(ssh "$HOST" "curl -skf https://localhost:8443/api/protocols/rtmp_push
 if echo "$RTMP_CFG" | grep -q '"enabled":true'; then
     RTMP_URL=$(echo "$RTMP_CFG" | grep -oE '"push_url":"[^"]+"' | cut -d'"' -f4)
     echo "  → Push target: $RTMP_URL"
-    RTMP_LOG=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '60 sec ago' --no-pager 2>/dev/null | grep -iE 'rtmp.*connect|rtmp.*publish|rtmp.*handshake' | head -2 || echo ''")
+    RTMP_LOG=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '60 sec ago' --no-pager 2>/dev/null | grep -iE 'rtmp.*connect|rtmp.*publish|rtmp.*handshake' | head -2 || echo ''")
     if [ -n "$RTMP_LOG" ]; then
         pass "RTMP push connection observed in journal"
     else
@@ -139,7 +139,7 @@ echo ""
 echo "[5] GB28181 SIP REGISTER"
 GB_CFG=$(ssh "$HOST" "curl -skf https://localhost:8443/api/protocols/gb28181 2>/dev/null || echo ''")
 if echo "$GB_CFG" | grep -q '"enabled":true'; then
-    GB_LOG=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '120 sec ago' --no-pager 2>/dev/null | grep -iE 'sip.*register|gb28181.*register' | head -2 || echo ''")
+    GB_LOG=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '120 sec ago' --no-pager 2>/dev/null | grep -iE 'sip.*register|gb28181.*register' | head -2 || echo ''")
     if [ -n "$GB_LOG" ]; then
         pass "GB28181 SIP REGISTER activity in journal"
     else

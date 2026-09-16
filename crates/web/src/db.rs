@@ -89,12 +89,12 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     //
     // Resolution order (first existing dir wins):
     //   1. `migrations/` relative to the current working directory — this is
-    //      what deployed instances use (WorkingDirectory=~/mibee-rec, with
+    //      what deployed instances use (WorkingDirectory=~/mibee-eye, with
     //      migrations/ deployed alongside the binary).
     //   2. The build-time path `{CARGO_MANIFEST_DIR}/../../migrations` — used
     //      during `cargo run` from the source tree. In a deployed binary this
     //      path points to the build container and won't exist, so we fall back.
-    //   3. `/usr/local/share/mibee-rec/migrations` — the container install
+    //   3. `/usr/local/share/mibee-eye/migrations` — the container install
     //      location baked into the Dockerfile.
     let migrations_dir = {
         let cwd_migrations = Path::new("migrations");
@@ -109,7 +109,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             if build_time.is_dir() {
                 build_time
             } else {
-                Path::new("/usr/local/share/mibee-rec/migrations").to_path_buf()
+                Path::new("/usr/local/share/mibee-eye/migrations").to_path_buf()
             }
         }
     };
