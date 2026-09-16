@@ -26,7 +26,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -109,6 +109,10 @@ pub struct VideoCaptureSource {
     hflip: bool,
     /// Device-level vertical flip (upside-down mount compensation).
     vflip: bool,
+    /// Runtime mirror flags from the GB28181 DeviceConfig FrameMirror
+    /// control (A.2.3.2.9), composed with the static `hflip`/`vflip`
+    /// above — see [`effective_flips`].
+    gb_flips: Option<Arc<Flips>>,
     /// Video watermark (SPEC v1 §5.2) burned into each frame after the
     /// DeviceControl IFrameCmd latch: the GB28181 control handler sets
     /// this; the encode loop consumes it (swap false) and forces the next
@@ -117,6 +121,58 @@ pub struct VideoCaptureSource {
     /// flips, before the JPEG tap and the encoder — same "baked into
     /// everything downstream" semantics.
     watermark: Option<crate::watermark::Watermark>,
+}
+
+/// Runtime mirror flags driven by the GB/T 28181 DeviceConfig FrameMirror
+/// control (A.2.3.2.9): the platform sets the mode, every capture loop
+/// reads it per frame. Atomic so the config handler writes race-free
+/// against the capture threads (relaxed ordering — per-frame reads
+/// tolerate tearing on the exact transition frame).
+#[derive(Debug, Default)]
+pub struct Flips {
+    hflip: AtomicBool,
+    vflip: AtomicBool,
+}
+
+impl Flips {
+    #[must_use]
+    pub fn new(hflip: bool, vflip: bool) -> Self {
+        Self {
+            hflip: AtomicBool::new(hflip),
+            vflip: AtomicBool::new(vflip),
+        }
+    }
+
+    /// Update both flags (absolute — mode semantics per A.2.1.22).
+    pub fn set(&self, hflip: bool, vflip: bool) {
+        self.hflip.store(hflip, Ordering::Relaxed);
+        self.vflip.store(vflip, Ordering::Relaxed);
+    }
+
+    /// Current flags.
+    #[must_use]
+    pub fn load(&self) -> (bool, bool) {
+        (
+            self.hflip.load(Ordering::Relaxed),
+            self.vflip.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// Compose the static mount-compensation flips with the platform's
+/// runtime FrameMirror flags. XOR: two mirrors of the same axis cancel
+/// (a platform mirror on top of an already-compensated mount restores
+/// the platform's intended view), and `None` platform flags leave the
+/// static flips untouched.
+#[must_use]
+pub fn effective_flips(static_hflip: bool, static_vflip: bool, gb: Option<&Flips>) -> (bool, bool) {
+    match gb {
+        None => (static_hflip, static_vflip),
+        Some(f) => {
+            let (gh, gv) = f.load();
+            (static_hflip ^ gh, static_vflip ^ gv)
+        }
+    }
 }
 
 /// Negotiated stream geometry, shared from the capture source to downstream
@@ -160,6 +216,7 @@ impl VideoCaptureSource {
             frame_count: 0,
             hflip: false,
             vflip: false,
+            gb_flips: None,
             watermark: None,
         }
     }
@@ -238,10 +295,20 @@ impl VideoCaptureSource {
 
     /// Enable device-level flips (permanent, baked into the encoded stream
     /// and the snapshot JPEG tap). Should be called before
-    /// [`start`](Source::start).
+    /// [`start`](Source::start). Runtime platform mirrors
+    /// ([`with_gb_flips`]) compose with these via XOR.
     pub fn with_flips(mut self, hflip: bool, vflip: bool) -> Self {
         self.hflip = hflip;
         self.vflip = vflip;
+        self
+    }
+
+    /// Share the GB/T 28181 DeviceConfig FrameMirror flags (A.2.3.2.9).
+    /// One set spans all cameras of this process; the platform flips it
+    /// at runtime and every capture loop composes it with its static
+    /// mount-compensation flips (see [`effective_flips`]).
+    pub fn with_gb_flips(mut self, flips: Arc<Flips>) -> Self {
+        self.gb_flips = Some(flips);
         self
     }
 
@@ -398,9 +465,13 @@ impl Source for VideoCaptureSource {
                 };
 
                 // Device-level flip: baked into everything downstream —
-                // the encoder (RTSP/MSE/recordings) and the JPEG tap alike.
-                if self.hflip || self.vflip {
-                    yuv.flip(self.hflip, self.vflip);
+                // the encoder (RTSP/MSE/recordings) and the JPEG tap
+                // alike. Static mount compensation XOR the platform's
+                // runtime FrameMirror flags.
+                let (hflip, vflip) =
+                    effective_flips(self.hflip, self.vflip, self.gb_flips.as_deref());
+                if hflip || vflip {
+                    yuv.flip(hflip, vflip);
                 }
 
                 // Watermark (SPEC v1 §5.2): burned in after the flips,
@@ -414,21 +485,17 @@ impl Source for VideoCaptureSource {
                 //    so re-encode from the modified YUV (throttled) instead.
                 self.frame_count += 1;
                 let mjpeg_native = video_frame.format.contains("MJPEG");
-                let jpeg_bytes: Option<Arc<[u8]>> = if mjpeg_passthrough(
-                    mjpeg_native,
-                    self.hflip,
-                    self.vflip,
-                    self.watermark.is_some(),
-                ) {
-                    Some(Arc::from(video_frame.data.as_slice()))
-                } else if self
-                    .frame_count
-                    .is_multiple_of(JPEG_REENCODE_EVERY_N_FRAMES)
-                {
-                    jpeg_encode_yuv(&yuv).map(Arc::from)
-                } else {
-                    None
-                };
+                let jpeg_bytes: Option<Arc<[u8]>> =
+                    if mjpeg_passthrough(mjpeg_native, hflip, vflip, self.watermark.is_some()) {
+                        Some(Arc::from(video_frame.data.as_slice()))
+                    } else if self
+                        .frame_count
+                        .is_multiple_of(JPEG_REENCODE_EVERY_N_FRAMES)
+                    {
+                        jpeg_encode_yuv(&yuv).map(Arc::from)
+                    } else {
+                        None
+                    };
                 if let Some(jpeg) = jpeg_bytes {
                     *self.latest_jpeg.lock() = Some(Arc::clone(&jpeg));
                     if let Some(tx) = &self.jpeg_tx {
@@ -762,6 +829,51 @@ mod tests {
         assert!(!mjpeg_passthrough(true, false, false, true));
         // Non-MJPEG cameras always re-encode.
         assert!(!mjpeg_passthrough(false, false, false, false));
+    }
+
+    // ── GB FrameMirror runtime flags ───────────────────────────────────────
+
+    #[test]
+    fn flips_store_and_load_roundtrip() {
+        let flips = Flips::default();
+        assert_eq!(flips.load(), (false, false));
+        flips.set(true, false);
+        assert_eq!(flips.load(), (true, false));
+        flips.set(false, true);
+        assert_eq!(flips.load(), (false, true));
+        flips.set(true, true);
+        assert_eq!(flips.load(), (true, true));
+    }
+
+    #[test]
+    fn effective_flips_composes_by_xor() {
+        let gb = Flips::new(false, false);
+        // No platform flags set → static flips unchanged.
+        assert_eq!(effective_flips(true, false, Some(&gb)), (true, false));
+        // Platform mirror composes: same-axis mirrors cancel.
+        gb.set(true, false);
+        assert_eq!(effective_flips(true, false, Some(&gb)), (false, false));
+        assert_eq!(effective_flips(false, false, Some(&gb)), (true, false));
+        gb.set(true, true);
+        assert_eq!(effective_flips(true, false, Some(&gb)), (false, true));
+        // No shared handle at all → static flips pass through.
+        assert_eq!(effective_flips(true, true, None), (true, true));
+    }
+
+    #[test]
+    fn with_gb_flips_shares_the_handle() {
+        let flips = Arc::new(Flips::new(false, false));
+        let source = VideoCaptureSource::new(0).with_gb_flips(Arc::clone(&flips));
+        assert_eq!(
+            effective_flips(false, false, source.gb_flips.as_deref()),
+            (false, false)
+        );
+        // A runtime platform update is visible through the source's handle.
+        flips.set(false, true);
+        assert_eq!(
+            effective_flips(false, false, source.gb_flips.as_deref()),
+            (false, true)
+        );
     }
 
     // ── Constructor tests ──────────────────────────────────────────────────

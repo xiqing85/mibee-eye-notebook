@@ -164,6 +164,9 @@ pub struct StreamManager {
     recording_pause_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Shared IFrameCmd latch consumed by each camera's encode loop.
     force_idr_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared GB FrameMirror runtime flags (DeviceConfig A.2.3.2.9),
+    /// XOR-composed with each camera's static mount flips per frame.
+    gb_flips: Option<Arc<streaming::capture_source::Flips>>,
     /// AI detection engine. When present and active, one detection worker
     /// is spawned per started camera stream (it taps the JPEG preview
     /// broadcast and exits with the stream).
@@ -181,6 +184,7 @@ impl StreamManager {
             db: None,
             recording_pause_flag: None,
             force_idr_flag: None,
+            gb_flips: None,
             ai: None,
         }
     }
@@ -195,6 +199,7 @@ impl StreamManager {
             db: None,
             recording_pause_flag: None,
             force_idr_flag: None,
+            gb_flips: None,
             ai: None,
         }
     }
@@ -212,6 +217,7 @@ impl StreamManager {
             db: None,
             recording_pause_flag: None,
             force_idr_flag: None,
+            gb_flips: None,
             ai: None,
         }
     }
@@ -230,6 +236,7 @@ impl StreamManager {
             db: Some(db),
             recording_pause_flag: None,
             force_idr_flag: None,
+            gb_flips: None,
             ai: None,
         }
     }
@@ -248,6 +255,15 @@ impl StreamManager {
     /// handler, consumed by the next camera encode loop pass.
     pub fn with_force_idr_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.force_idr_flag = Some(flag);
+        self
+    }
+
+    /// Share the GB FrameMirror runtime flags (DeviceConfig A.2.3.2.9):
+    /// every camera started afterwards composes them with its static
+    /// mount-compensation flips.
+    #[must_use]
+    pub fn with_gb_flips(mut self, flips: Arc<streaming::capture_source::Flips>) -> Self {
+        self.gb_flips = Some(flips);
         self
     }
 
@@ -333,6 +349,9 @@ impl StreamManager {
                     streaming::capture_source::VideoCaptureSource::new(device_index as usize);
                 if let Some(flag) = &self.force_idr_flag {
                     vcs = vcs.with_force_idr_flag(Arc::clone(flag));
+                }
+                if let Some(flips) = &self.gb_flips {
+                    vcs = vcs.with_gb_flips(Arc::clone(flips));
                 }
                 // Adapt the encoder to the host: probe once (cached) and pick
                 // the recommended quality preset. A user-set override from the
