@@ -1,0 +1,15 @@
+MiBee Eye Notebook — mibee-eye-notebook
+Copyright 2026 MiBee Eye contributors
+
+This product includes software developed as part of MiBee Eye
+(https://github.com/xiqing85/mibee-eye-notebook), licensed under the
+Apache License, Version 2.0.
+
+This product includes software from the OpenH264 project
+(https://github.com/cisco/openh264), Copyright (c) Cisco Systems, Inc.,
+licensed under the BSD 2-Clause License (vendored via the openh264 Rust
+crate with the `source` feature and built from source at compile time).
+
+Optional at runtime: ONNX Runtime (https://github.com/microsoft/onnxruntime,
+MIT License) is loaded dynamically when AI detection is enabled — it is not
+distributed as part of this product's release artifacts.
