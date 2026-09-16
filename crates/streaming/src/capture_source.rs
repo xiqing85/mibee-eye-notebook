@@ -26,6 +26,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -109,6 +110,10 @@ pub struct VideoCaptureSource {
     /// Device-level vertical flip (upside-down mount compensation).
     vflip: bool,
     /// Video watermark (SPEC v1 §5.2) burned into each frame after the
+    /// DeviceControl IFrameCmd latch: the GB28181 control handler sets
+    /// this; the encode loop consumes it (swap false) and forces the next
+    /// encoded frame to an IDR via the OpenH264 encoder.
+    force_idr: Option<Arc<AtomicBool>>,
     /// flips, before the JPEG tap and the encoder — same "baked into
     /// everything downstream" semantics.
     watermark: Option<crate::watermark::Watermark>,
@@ -140,6 +145,7 @@ impl VideoCaptureSource {
             capture: None,
             frame_rx: None,
             encoder: None,
+            force_idr: None,
             pending_nals: Default::default(),
             running: false,
             start_time: None,
@@ -199,6 +205,13 @@ impl VideoCaptureSource {
     /// default.
     pub fn dimensions_handle(&self) -> Arc<Mutex<Option<StreamDimensions>>> {
         Arc::clone(&self.dimensions)
+    }
+
+    /// Share the DeviceControl IFrameCmd latch. One flag spans all
+    /// cameras of this process; whichever camera encodes next consumes it.
+    pub fn with_force_idr_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.force_idr = Some(flag);
+        self
     }
 
     /// Override the encoder quality preset.
@@ -361,6 +374,16 @@ impl Source for VideoCaptureSource {
                         format = %video_frame.format,
                         "encoder initialized for camera format"
                     );
+                }
+
+                // 3b. DeviceControl IFrameCmd: consume a pending
+                // force-keyframe request so the next encoded frame is an IDR.
+                if let Some(flag) = &self.force_idr
+                    && flag.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    && let Some(enc) = self.encoder.as_mut()
+                {
+                    enc.force_keyframe();
+                    tracing::info!("DeviceControl IFrameCmd: next frame forced to IDR");
                 }
 
                 // 4. Convert the raw frame to planar YUV420p.

@@ -96,7 +96,7 @@ This replaces the former `GET/PUT /api/settings` and the per-protocol
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined` |
+| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"`, `targets`, `timestamp` epoch-ms) |
 
 ### Devices (SPEC §4.8)
 

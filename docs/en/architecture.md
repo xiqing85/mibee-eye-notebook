@@ -194,39 +194,30 @@ Starting → Running → Stopping → Stopped
 
 ### Capture → Streaming Pipeline
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│   Capture   │    │   Streaming  │    │ Protocols   │
-│  (nokhwa/   │──▶│   Pipeline   │──▶│ (RTSP/RTMP/ │
-│  cpal)      │    │ (StreamHub)  │    │ ONVIF/GB28181│
-└─────────────┘    └─────────────┘    └─────────────┘
+```mermaid
+flowchart LR
+    CAP["Capture<br/>(nokhwa / cpal)"] -->|"OpenH264 H.264 · G.711/AAC<br/>(in-process, ffmpeg-free)"| PIPE["Streaming Pipeline<br/>(StreamHub fan-out)"] --> OUT["Protocols<br/>(RTSP / RTMP / ONVIF / GB28181)"]
 ```
 
-**Note**: The CaptureSource adapter (`crates/streaming/src/capture_source.rs`) bridges nokhwa video capture and cpal audio capture into the streaming pipeline via ffmpeg encoding (H.264 for video, PCM/G.711 for audio).
+**Note**: The CaptureSource adapter (`crates/streaming/src/capture_source.rs`) bridges nokhwa video capture and cpal audio capture into the streaming pipeline with **fully in-process encoding** — OpenH264 for H.264 video (with `force_keyframe()` backing the GB28181 IFrameCmd), G.711/AAC for audio. There is no ffmpeg dependency anywhere in the runtime.
 
 ### HTTP → API → Streaming → Protocol Clients
 
-```
-┌─────────┐    ┌──────────┐    ┌──────────┐    ┌─────────────┐
-│  Web UI │    │  REST    │    │  Stream-  │    │ Protocol    │
-│  (SPA)  │──▶│  API     │──▶│  Hub     │──▶│  Clients    │
-└─────────┘    └──────────┘    └──────────┘    └─────────────┘
-      ↑               │              │              │
-      └─────┘        └───┬─────────┘              │
-          │              │                       │
-          └───────────────┼───────────────────────┘
-                          │
-                  ┌───────┴───────┐
-                  │  Security     │
-                  │  (Auth/TLS)   │
-                  └───────────────┘
+```mermaid
+flowchart LR
+    UI["Web UI<br/>(SPA)"] --> API["REST API"] --> HUB["Streaming Hub"] --> PC["Protocol Clients"]
+    SEC["Security<br/>(Auth / TLS)"]
+    API -.-> SEC
+    HUB -.-> SEC
+    PC -.-> SEC
+    UI -.-> SEC
 ```
 
 ## Current Limitations
 
 1. **Windows / macOS**: Do not compile yet (planned Tier 2). Blockers: `libc::getifaddrs` is POSIX-only, `#[cfg(unix)]` guards without Windows fallbacks, hardcoded `/dev/videoN` paths.
 2. **H.265 web preview**: Not universal in browsers — the web pipeline uses H.264/MJPEG only.
-3. **No motion detection / computer vision**: Out of scope for current version.
+3. ~~No motion detection / computer vision~~: on-device AI object detection (NanoDet-Plus, SPEC v1 §4.6) shipped — including the `alarm` SSE event and GB28181 Alarm NOTIFY pipeline.
 
 ## Implemented Systems (beyond core pipeline)
 

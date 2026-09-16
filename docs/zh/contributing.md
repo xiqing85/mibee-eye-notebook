@@ -85,7 +85,7 @@ mibee-rec/
 │  ├─ config.rs           # 配置管理，使用 TOML
 │  └─ types.rs            # 核心领域类型 (CameraId, StreamId, CameraType)
 ├─ crates/                # 工作区 crate
-│  ├─ protocols/         # RTSP 服务端、RTMP 推流、ONVIF、GB28181、RTP、H.264、RTCP
+│  ├─ protocols/         # 媒体面：RTSP 服务端、RTMP 推流、RTP、H.264、RTCP（信令在共享协议库中）
 │  ├─ streaming/         # StreamHub 分发、CaptureSource、输出适配器、MiBee 客户端
 │  ├─ web/              # Axum REST API + 内嵌 SPA + TLS + i18n + ProtocolRuntime
 │  ├─ security/         # 认证、TLS、限流、CSRF、密码哈希

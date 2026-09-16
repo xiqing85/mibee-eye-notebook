@@ -279,11 +279,22 @@ register_interval_secs = 60
 | `password` | String | `""` | SIP 身份验证密码 |
 | `sip_domain` | String | `"3402000000"` | SIP 域 |
 | `register_interval_secs` | u64 | `60` | SIP REGISTER 间隔（秒）（如果启用，必须 > 0） |
+| `channel_id` | String | `"34020000001320000001"` | 20 字符 GB28181 通道 ID |
+| `local_sip_port` | u16 | `5060` | 本地 SIP 监听端口 |
+| `heartbeat_interval_secs` | u64 | `60` | 心跳间隔（秒） |
+| `heartbeat_timeout_count` | u32 | `3` | 判定重连前允许丢失的心跳次数 |
+| `talkback_playback` | bool | `true` | 在本机输出设备播放平台语音对讲（不可用时 fail-open 488） |
+| `alarm_notify_enabled` | bool | `true` | AI 告警 NOTIFY 初始门控（平台 DeviceConfig AlarmReport 可运行时覆盖） |
+| `alarm_cooldown_secs` | u64 | `30` | 告警上升沿冷却（秒）（SPEC §6 `alarm` + NOTIFY） |
+| `position_longitude` | String | `""` | 静态 MobilePosition 经度（空 = 不上报位置） |
+| `position_latitude` | String | `""` | 静态 MobilePosition 纬度（空 = 不上报位置） |
 
 **注意事项：**
 
 - 出站协议 — 此设备向平台注册，而不是平台角色
 - GB28181 信令由 `gb28181-rs` 库提供，RTP/PS over UDP 推流
+- AI 检测上升沿触发 SPEC §6 `alarm` SSE 事件，并在平台已订阅且门控允许时发送 Alarm NOTIFY——优先级 4、方法 5、类型 2（2022 标准表）
+- SIGTERM / 协议停止时以 REGISTER `Expires: 0` 注销（失败仅记录日志并忽略）
 - 可通过 Web UI 进行协议热切换，无需重启服务器
 
 ### [recording] - 本地录制
@@ -388,6 +399,10 @@ username = "admin"
 password = "secret123"
 sip_domain = "3402000000"
 register_interval_secs = 60
+alarm_notify_enabled = true
+alarm_cooldown_secs = 30
+position_longitude = ""
+position_latitude = ""
 
 [recording]
 enabled = true

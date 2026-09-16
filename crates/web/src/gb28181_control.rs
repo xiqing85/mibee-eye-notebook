@@ -18,14 +18,16 @@ pub struct Gb28181ControlHandler {
     /// Shared with the recording `FileOutput`s: `true` pauses local
     /// recording (platform RecordCmd StopRecord), `false` resumes.
     recording_paused: Arc<AtomicBool>,
-    force_idr_unsupported_logged: AtomicBool,
+    /// Shared with the camera encode loops (OpenH264): setting this makes
+    /// the next encoded frame an IDR (platform IFrameCmd).
+    force_idr: Arc<AtomicBool>,
 }
 
 impl Gb28181ControlHandler {
-    pub fn new(recording_paused: Arc<AtomicBool>) -> Self {
+    pub fn new(recording_paused: Arc<AtomicBool>, force_idr: Arc<AtomicBool>) -> Self {
         Self {
             recording_paused,
-            force_idr_unsupported_logged: AtomicBool::new(false),
+            force_idr,
         }
     }
 
@@ -37,15 +39,8 @@ impl Gb28181ControlHandler {
 
 impl DeviceControlHandler for Gb28181ControlHandler {
     fn on_force_iframe(&self) {
-        if !self
-            .force_idr_unsupported_logged
-            .swap(true, Ordering::SeqCst)
-        {
-            tracing::warn!(
-                "DeviceControl IFrameCmd unsupported: H.264 comes from the camera's \
-                 native stream — no encoder to force a keyframe on"
-            );
-        }
+        self.force_idr.store(true, Ordering::SeqCst);
+        tracing::info!("DeviceControl IFrameCmd: keyframe request queued for the encoder");
     }
 
     fn on_record(&self, start: bool) {
@@ -101,7 +96,8 @@ mod tests {
     #[test]
     fn record_cmd_flips_pause_gate() {
         let flag = Arc::new(AtomicBool::new(false));
-        let handler = Gb28181ControlHandler::new(Arc::clone(&flag));
+        let handler =
+            Gb28181ControlHandler::new(Arc::clone(&flag), Arc::new(AtomicBool::new(false)));
         assert!(!handler.recording_paused());
 
         handler.on_record(false); // StopRecord
@@ -129,11 +125,12 @@ mod tests {
     }
 
     #[test]
-    fn force_idr_marks_logged_once() {
-        let handler = Gb28181ControlHandler::new(Arc::new(AtomicBool::new(false)));
-        // The handler logs once per process; the latch is observable.
-        assert!(!handler.force_idr_unsupported_logged.load(Ordering::SeqCst));
+    fn force_idr_sets_shared_latch() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let handler =
+            Gb28181ControlHandler::new(Arc::new(AtomicBool::new(false)), Arc::clone(&flag));
+        assert!(!flag.load(Ordering::SeqCst));
         handler.on_force_iframe();
-        assert!(handler.force_idr_unsupported_logged.load(Ordering::SeqCst));
+        assert!(flag.load(Ordering::SeqCst));
     }
 }

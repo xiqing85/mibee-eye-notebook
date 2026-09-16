@@ -91,7 +91,7 @@ Cookie 会话 + CSRF 双提交：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined` |
+| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"`、`targets`、`timestamp` 毫秒时间戳） |
 
 ### 主机设备（规范 §4.8）
 
