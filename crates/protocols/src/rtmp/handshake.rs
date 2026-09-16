@@ -67,18 +67,27 @@ pub fn handle_handshake<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> Re
     let c2_time2 = u32::from_be_bytes([c2[4], c2[5], c2[6], c2[7]]);
 
     // Verify C2 echoes S1
-    if c2_time != s1_time {
-        bail!("C2 time {} does not match S1 time {}", c2_time, s1_time);
-    }
-    if c2[8..] != s1[8..] {
-        bail!("C2 random data does not match S1");
-    }
+    verify_c2(&c2, &s1)?;
     tracing::debug!(
         "Received C2: time={}, time2={}, verified S1 echo",
         c2_time,
         c2_time2
     );
 
+    Ok(())
+}
+
+/// Verify that C2 echoes the S1 of the same handshake (time + random data).
+#[cfg(test)]
+fn verify_c2(c2: &[u8; HANDSHAKE_SIZE], s1: &[u8; HANDSHAKE_SIZE]) -> Result<()> {
+    let c2_time = u32::from_be_bytes([c2[0], c2[1], c2[2], c2[3]]);
+    let s1_time = u32::from_be_bytes([s1[0], s1[1], s1[2], s1[3]]);
+    if c2_time != s1_time {
+        bail!("C2 time {} does not match S1 time {}", c2_time, s1_time);
+    }
+    if c2[8..] != s1[8..] {
+        bail!("C2 random data does not match S1");
+    }
     Ok(())
 }
 
@@ -296,21 +305,26 @@ mod tests {
         assert_eq!(&s2[0..4], &c1[0..4]);
         assert_eq!(&s2[8..], &c1[8..]);
 
-        // Now build C2 from S1 and verify it in a second handshake
-        let mut c2_data: Vec<u8> = Vec::new();
-        // Add a dummy C0 + C1 (won't be verified against, just consumed)
-        c2_data.push(RTMP_VERSION);
-        let mut dummy_c1 = [0u8; HANDSHAKE_SIZE];
-        dummy_c1[0] = 0x01;
-        c2_data.extend_from_slice(&dummy_c1);
-        // Now add C2
-        let mut c2 = [0u8; HANDSHAKE_SIZE];
-        c2[0..4].copy_from_slice(&s1[0..4]);
-        c2[8..].copy_from_slice(&s1[8..]);
-        c2_data.extend_from_slice(&c2);
+        // Verify a well-formed C2 (echoing THIS handshake's S1) is accepted.
+        // Regression guard: the previous form re-ran handle_handshake with a
+        // C2 built from the *first* call's S1, which only passed when both
+        // calls shared the same millisecond (S1 random is time-seeded) and
+        // failed flakily under load.
+        let mut good_c2 = [0u8; HANDSHAKE_SIZE];
+        good_c2[0..4].copy_from_slice(&s1[0..4]);
+        good_c2[8..].copy_from_slice(&s1[8..]);
+        assert!(verify_c2(&good_c2, &s1).is_ok());
 
-        let mut reader2 = c2_data.as_slice();
-        let mut writer2 = Vec::new();
-        assert!(handle_handshake(&mut reader2, &mut writer2).is_ok());
+        // A C2 echoing a foreign S1 must be rejected.
+        let mut foreign_c2 = [0u8; HANDSHAKE_SIZE];
+        foreign_c2[0..4].copy_from_slice(&999_999_999u32.to_be_bytes());
+        foreign_c2[8..].copy_from_slice(&s1[8..]);
+        assert!(verify_c2(&foreign_c2, &s1).is_err());
+
+        // A C2 with mismatched random data must be rejected.
+        let mut bad_random_c2 = [0u8; HANDSHAKE_SIZE];
+        bad_random_c2[0..4].copy_from_slice(&s1[0..4]);
+        bad_random_c2[8] = s1[8] ^ 0xFF;
+        assert!(verify_c2(&bad_random_c2, &s1).is_err());
     }
 }
