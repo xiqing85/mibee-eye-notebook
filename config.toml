@@ -42,10 +42,10 @@ log_level = "info"
 # endpoint = "http://loki:3100"
 # batch_size = 100
 # flush_interval_secs = 5
-# labels = { service = "mibee-rec" }
+# labels = { service = "mibee-eye" }
 [onvif]
 enabled = false
-device_name = "mibee-rec"
+device_name = "mibee-eye"
 manufacturer = "MiBee"
 model = "Rec-01"
 serial = "NC00000001"

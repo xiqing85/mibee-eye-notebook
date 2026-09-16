@@ -1,10 +1,10 @@
 # 配置参考
 
-本文档提供了 mibee-rec 配置系统的完整参考。
+本文档提供了 mibee-eye 配置系统的完整参考。
 
 ## 概述
 
-配置文件控制 mibee-rec 行为的所有方面。配置系统支持层次化优先级，允许为开发、测试和生产环境设置不同的配置。
+配置文件控制 mibee-eye 行为的所有方面。配置系统支持层次化优先级，允许为开发、测试和生产环境设置不同的配置。
 
 ### 配置文件位置
 
@@ -177,7 +177,7 @@ flush_interval_secs = 5
 
 [observability.logs.labels]
 environment = "production"
-service = "mibee-rec"
+service = "mibee-eye"
 ```
 
 **字段参考：**
@@ -223,7 +223,7 @@ service = "mibee-rec"
 ```toml
 [onvif]
 enabled = false
-device_name = "mibee-rec"
+device_name = "mibee-eye"
 manufacturer = "MiBee"
 model = "Rec-01"
 serial = "NC00000001"
@@ -236,7 +236,7 @@ port = 3702
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|---------|------|
 | `enabled` | bool | `false` | 主启用开关（所有出站协议默认关闭） |
-| `device_name` | String | `"mibee-rec"` | ONVIF 设备名称 |
+| `device_name` | String | `"mibee-eye"` | ONVIF 设备名称 |
 | `manufacturer` | String | `"MiBee"` | 制造商名称 |
 | `model` | String | `"Rec-01"` | 设备型号 |
 | `serial` | String | `"NC00000001"` | 序列号 |
@@ -330,19 +330,19 @@ max_capacity_mb = 10240
 
 ```toml
 [database]
-path = "~/.local/share/mibee-rec/mibee_rec.db"
+path = "~/.local/share/mibee-eye/mibee_eye.db"
 ```
 
 **字段参考：**
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|---------|------|
-| `path` | String | `~/.local/share/mibee-rec/mibee_rec.db` | SQLite 数据库文件路径（XDG 兼容默认值） |
+| `path` | String | `~/.local/share/mibee-eye/mibee_eye.db` | SQLite 数据库文件路径（XDG 兼容默认值） |
 
 **注意事项：**
 
-- 使用 XDG 数据目录作为默认路径：`~/.local/share/mibee-rec/mibee_rec.db`
-- 如果 XDG 数据目录不可用，则回退到 `/tmp/mibee-rec/mibee_rec.db`
+- 使用 XDG 数据目录作为默认路径：`~/.local/share/mibee-eye/mibee_eye.db`
+- 如果 XDG 数据目录不可用，则回退到 `/tmp/mibee-eye/mibee_eye.db`
 - 存储摄像头配置、协议配置、会话、用户和流会话数据
 
 ## 配置验证
@@ -383,7 +383,7 @@ max_reconnect_attempts = 10
 
 [onvif]
 enabled = true
-device_name = "mibee-rec"
+device_name = "mibee-eye"
 manufacturer = "MiBee"
 model = "Rec-01"
 serial = "NC00000001"
@@ -406,12 +406,12 @@ position_latitude = ""
 
 [recording]
 enabled = true
-path = "/var/lib/mibee-rec/recordings"
+path = "/var/lib/mibee-eye/recordings"
 segment_duration_secs = 900
 max_capacity_mb = 20480
 
 [database]
-path = "/var/lib/mibee-rec/mibee_rec.db"
+path = "/var/lib/mibee-eye/mibee_eye.db"
 
 [security]
 rate_limit_max = 10
@@ -428,7 +428,7 @@ flush_interval_secs = 5
 
 [observability.logs.labels]
 environment = "production"
-service = "mibee-rec"
+service = "mibee-eye"
 ```
 
 ### 本地开发配置
@@ -515,7 +515,7 @@ port = 8443
 - 首次运行时在 `tls/cert.pem` + `tls/key.pem` 自动生成自签名证书
 - 证书支持文件 mtime 更改时的热重载
 - 生产环境应提供 CA 签名的证书
-- 通用名称：CN=mibee-rec，SAN：mibee-rec.local
+- 通用名称：CN=mibee-eye，SAN：mibee-eye.local
 - 自动生成的开发证书的有效期：约 30 天
 
 ## 配置最佳实践

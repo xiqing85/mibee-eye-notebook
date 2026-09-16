@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/soak-report.sh
 #
-# Review the health of a long-running (overnight) mibee-rec deployment.
+# Review the health of a long-running (overnight) mibee-eye deployment.
 # Run this the morning after leaving the service streaming overnight.
 #
 # Usage:
@@ -29,7 +29,7 @@ echo "=== Soak report: $HOST (since '$SINCE') ==="
 echo ""
 
 # ── 1. Service uptime ─────────────────────────────────────────────────────────
-UPTIME=$(ssh "$HOST" "systemctl --user show mibee-rec -p ActiveEnterTimestamp --value 2>/dev/null || echo 'unknown'")
+UPTIME=$(ssh "$HOST" "systemctl --user show mibee-eye -p ActiveEnterTimestamp --value 2>/dev/null || echo 'unknown'")
 if [ "$UPTIME" != "unknown" ]; then
     pass "service has been running since $UPTIME"
 else
@@ -37,29 +37,29 @@ else
 fi
 
 # ── 2. Panics ─────────────────────────────────────────────────────────────────
-PANICS=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '$SINCE' --no-pager 2>/dev/null | grep -ciE 'panic|RUST_BACKTRACE|fatal' || echo 0")
+PANICS=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '$SINCE' --no-pager 2>/dev/null | grep -ciE 'panic|RUST_BACKTRACE|fatal' || echo 0")
 if [ "$PANICS" = "0" ]; then
     pass "zero panics in the soak window"
 else
     fail "$PANICS panic/fatal entries found"
-    ssh "$HOST" "journalctl --user -u mibee-rec --since '$SINCE' --no-pager 2>/dev/null | grep -iE 'panic|fatal' | head -5" >&2 || true
+    ssh "$HOST" "journalctl --user -u mibee-eye --since '$SINCE' --no-pager 2>/dev/null | grep -iE 'panic|fatal' | head -5" >&2 || true
 fi
 
 # ── 3. ERROR-level entries (excluding known dev noise) ────────────────────────
-ERRORS=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '$SINCE' --no-pager -p err 2>/dev/null \
+ERRORS=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '$SINCE' --no-pager -p err 2>/dev/null \
     | grep -viE 'opentelemetry|BatchSpanProcessor|ExportError|Connection refused|otel|otlp' \
     | grep -c '' || echo 0")
 if [ "$ERRORS" = "0" ]; then
     pass "zero ERROR entries (excluding known OTel dev noise)"
 else
     fail "$ERRORS ERROR entries (excluding OTel noise)"
-    ssh "$HOST" "journalctl --user -u mibee-rec --since '$SINCE' --no-pager -p err 2>/dev/null \
+    ssh "$HOST" "journalctl --user -u mibee-eye --since '$SINCE' --no-pager -p err 2>/dev/null \
         | grep -viE 'opentelemetry|BatchSpanProcessor|ExportError|Connection refused|otel|otlp' \
         | head -5" >&2 || true
 fi
 
 # ── 4. Memory growth (current vs baseline) ────────────────────────────────────
-PID=$(ssh "$HOST" "pgrep -u \$USER -f 'mibee-rec.*config' | head -1" || echo "")
+PID=$(ssh "$HOST" "pgrep -u \$USER -f 'mibee-eye.*config' | head -1" || echo "")
 if [ -n "$PID" ]; then
     CUR_RSS_KB=$(ssh "$HOST" "ps -o rss= -p $PID" | tr -d ' ')
     CUR_RSS_MB=$((CUR_RSS_KB / 1024))
@@ -72,11 +72,11 @@ if [ -n "$PID" ]; then
         fail "RSS is ${CUR_RSS_MB} MB — possible memory leak"
     fi
 else
-    fail "could not find mibee-rec process"
+    fail "could not find mibee-eye process"
 fi
 
 # ── 5. Encoder stalls / frame timing warnings ─────────────────────────────────
-STALLS=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '$SINCE' --no-pager 2>/dev/null \
+STALLS=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '$SINCE' --no-pager 2>/dev/null \
     | grep -ciE 'encoder.*stall|encode.*fail|frame.*drop|lagged' || echo 0")
 if [ "$STALLS" -lt 100 ]; then
     pass "few encoder/frame warnings ($STALLS — under 100, acceptable for an 8h run)"
@@ -85,7 +85,7 @@ else
 fi
 
 # ── 6. ffmpeg references (regression guard) ───────────────────────────────────
-FFMPEG_HITS=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '$SINCE' --no-pager 2>/dev/null | grep -ci 'ffmpeg' || echo 0")
+FFMPEG_HITS=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '$SINCE' --no-pager 2>/dev/null | grep -ci 'ffmpeg' || echo 0")
 if [ "$FFMPEG_HITS" = "0" ]; then
     pass "zero ffmpeg references over the soak window (full removal confirmed)"
 else
@@ -107,7 +107,7 @@ if [ -n "$REC_DIR" ]; then
         fail "recording size ${SEG_TOTAL_MB} MB exceeds cap ${CAP_MB} MB"
     fi
     # Check for pruning log entries.
-    PRUNE_LOG=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '$SINCE' --no-pager 2>/dev/null | grep -ci 'pruned' || echo 0")
+    PRUNE_LOG=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '$SINCE' --no-pager 2>/dev/null | grep -ci 'pruned' || echo 0")
     if [ "$PRUNE_LOG" -gt 0 ]; then
         pass "segment pruning active ($PRUNE_LOG prune events logged)"
     else

@@ -71,7 +71,7 @@ pub async fn get_capabilities(
     let superset = serde_json::json!({
         "spec_version": "1",
         "device": {
-            "name": "mibee-rec",
+            "name": "mibee-eye",
             "model": "notebook",
             "vendor": "MiBee Studio",
         },

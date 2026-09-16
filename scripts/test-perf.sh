@@ -41,9 +41,9 @@ echo "  Warming up (10s)..."
 sleep 10
 
 # Capture PID + baseline metrics.
-PID=$(ssh "$HOST" "pgrep -u \$USER -f 'mibee-rec.*config' | head -1")
+PID=$(ssh "$HOST" "pgrep -u \$USER -f 'mibee-eye.*config' | head -1")
 if [ -z "$PID" ]; then
-    echo "ERROR: could not find mibee-rec process PID on $HOST" >&2
+    echo "ERROR: could not find mibee-eye process PID on $HOST" >&2
     exit 1
 fi
 echo "  PID: $PID"

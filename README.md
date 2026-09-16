@@ -11,7 +11,7 @@
 
 Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqing85/mibee-eye-rs) · [mibee-eye-go](https://github.com/xiqing85/mibee-eye-go) · [mibee-eye-webui](https://github.com/xiqing85/mibee-eye-webui) (shared frontend + API spec).
 
-> The binary and systemd service keep the historical name `mibee-rec`.
+> The binary and systemd service keep the historical name `mibee-eye`.
 
 ## Features
 
@@ -81,7 +81,7 @@ flowchart TB
 ## Workspace Layout
 
 ```
-mibee-rec/
+mibee-eye/
 ├─ src/                # Binary entry, config, types, error
 ├─ crates/
 │  ├─ protocols/       # RTSP, RTMP, ONVIF, GB28181, RTP, H.264

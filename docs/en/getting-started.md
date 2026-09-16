@@ -1,6 +1,6 @@
 # Getting Started
 
-Quick start guide for mibee-rec (MiBee Rec) — laptop surveillance agent built in Rust.
+Quick start guide for mibee-eye (MiBee Eye) — laptop surveillance agent built in Rust.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ cargo build
 cargo build --release
 ```
 
-The release binary will be available at `target/release/mibee-rec`.
+The release binary will be available at `target/release/mibee-eye`.
 
 Default ports:
 - Web UI: 8443 (HTTPS with self-signed TLS)
@@ -94,7 +94,7 @@ The web UI provides:
 
 ## Product Scope
 
-**mibee-rec is a LOCAL-ONLY capture agent:**
+**mibee-eye is a LOCAL-ONLY capture agent:**
 
 - Captures physically-attached devices (USB webcam, built-in/USB mic) from THIS machine only
 - Does NOT discover or connect to remote network cameras
@@ -119,4 +119,4 @@ For development and testing:
 Happy monitoring!
 
 ---
-*MiBee-Rec (MiBee Rec) — Professional laptop surveillance agent built in Rust.*
+*MiBee Eye (MiBee Eye) — Professional laptop surveillance agent built in Rust.*

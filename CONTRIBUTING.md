@@ -1,4 +1,4 @@
-# Contributing to MiBee-Rec
+# Contributing to MiBee Eye
 
 Thanks for your interest in contributing! 
 
@@ -8,7 +8,7 @@ Thanks for your interest in contributing!
 
 ```bash
 git clone https://github.com/xiqing85/mibee-eye-notebook.git
-cd mibee-rec
+cd mibee-eye
 cargo build
 cargo test
 ```

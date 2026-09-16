@@ -10,8 +10,8 @@ use web::protocol_runtime::ProtocolRuntime;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "mibee-rec",
-    about = "MiBee Rec — Professional laptop surveillance agent"
+    name = "mibee-eye",
+    about = "MiBee Eye — Professional laptop surveillance agent"
 )]
 struct Args {
     /// Path to config file
@@ -19,7 +19,7 @@ struct Args {
     config: PathBuf,
 
     /// Path to SQLite database
-    #[arg(short = 'd', long, default_value = "mibee_rec.db")]
+    #[arg(short = 'd', long, default_value = "mibee_eye.db")]
     db_path: PathBuf,
 
     /// Reset password for a user (prompts for credentials, does not start the server)
@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         return reset_password_cli(&args).await;
     }
 
-    let mut config = mibee_rec::config::AppConfig::load(&args.config)?;
+    let mut config = mibee_eye::config::AppConfig::load(&args.config)?;
     config.validate()?;
 
     // Resolve advertised host: use configured value or auto-detect LAN IP
@@ -544,7 +544,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     println!(
-        "mibee-rec server starting on {}:{}...",
+        "mibee-eye server starting on {}:{}...",
         config.web.host, config.web.port
     );
     // Create StreamManager and run server (blocks until shutdown)

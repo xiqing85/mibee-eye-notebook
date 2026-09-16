@@ -55,7 +55,7 @@ impl Default for RtspServerConfig {
         Self {
             port: 8554,
             auth_required: false,
-            realm: "mibee-rec RTSP Server".to_string(),
+            realm: "mibee-eye RTSP Server".to_string(),
             username: String::new(),
             password: String::new(),
         }
@@ -480,11 +480,11 @@ mod tests {
 
     #[test]
     fn test_build_response_basic() {
-        let resp = build_response(1, 200, "OK", &[("Server", "mibee-rec")], b"");
+        let resp = build_response(1, 200, "OK", &[("Server", "mibee-eye")], b"");
         let s = String::from_utf8(resp).unwrap();
         assert!(s.starts_with("RTSP/1.0 200 OK\r\n"));
         assert!(s.contains("CSeq: 1\r\n"));
-        assert!(s.contains("Server: mibee-rec\r\n"));
+        assert!(s.contains("Server: mibee-eye\r\n"));
         assert!(s.ends_with("\r\n\r\n"));
     }
 
