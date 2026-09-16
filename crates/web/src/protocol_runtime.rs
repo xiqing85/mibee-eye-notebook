@@ -519,6 +519,9 @@ impl ProtocolRuntime {
             manufacturer: Some(config.manufacturer.clone()),
             model: Some(config.model.clone()),
             firmware: Some(config.firmware.clone()),
+            // X-GB-Ver negotiation stays opt-in (None = header omitted);
+            // matches the mibee-eye-rs/go product defaults.
+            protocol_version: None,
         };
 
         // GB35114 A-level (fail closed: enabled-but-unloadable identities
