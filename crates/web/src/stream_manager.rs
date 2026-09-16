@@ -162,6 +162,8 @@ pub struct StreamManager {
     db: Option<SqlitePool>,
     /// Shared local-recording pause gate (platform RecordCmd via GB28181).
     recording_pause_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared IFrameCmd latch consumed by each camera's encode loop.
+    force_idr_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// AI detection engine. When present and active, one detection worker
     /// is spawned per started camera stream (it taps the JPEG preview
     /// broadcast and exits with the stream).
@@ -178,6 +180,7 @@ impl StreamManager {
             advertised_host: "localhost".to_string(),
             db: None,
             recording_pause_flag: None,
+            force_idr_flag: None,
             ai: None,
         }
     }
@@ -191,6 +194,7 @@ impl StreamManager {
             advertised_host: "localhost".to_string(),
             db: None,
             recording_pause_flag: None,
+            force_idr_flag: None,
             ai: None,
         }
     }
@@ -207,6 +211,7 @@ impl StreamManager {
             advertised_host,
             db: None,
             recording_pause_flag: None,
+            force_idr_flag: None,
             ai: None,
         }
     }
@@ -224,6 +229,7 @@ impl StreamManager {
             advertised_host,
             db: Some(db),
             recording_pause_flag: None,
+            force_idr_flag: None,
             ai: None,
         }
     }
@@ -235,6 +241,13 @@ impl StreamManager {
     /// FileOutput attached afterwards reads the same flag.
     pub fn with_recording_pause_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.recording_pause_flag = Some(flag);
+        self
+    }
+
+    /// Share the DeviceControl IFrameCmd latch: set by the GB28181 control
+    /// handler, consumed by the next camera encode loop pass.
+    pub fn with_force_idr_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.force_idr_flag = Some(flag);
         self
     }
 
@@ -318,6 +331,9 @@ impl StreamManager {
                     })?;
                 let mut vcs =
                     streaming::capture_source::VideoCaptureSource::new(device_index as usize);
+                if let Some(flag) = &self.force_idr_flag {
+                    vcs = vcs.with_force_idr_flag(Arc::clone(flag));
+                }
                 // Adapt the encoder to the host: probe once (cached) and pick
                 // the recommended quality preset. A user-set override from the
                 // camera config (`quality_preset`) takes precedence when present.

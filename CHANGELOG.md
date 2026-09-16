@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added — GB28181-2022 device-surface parity with the raspi twins
+
+- **Alarm pipeline**: AI detection rising edges fire the SPEC v1 §6
+  `alarm` SSE event and a GB28181 Alarm NOTIFY (priority 4 / method 5 /
+  type 2, 2022 standard table) through the gb28181-rs notifier seam;
+  per-camera rising-edge cooldown (`alarm_cooldown_secs`, default 30)
+  and runtime gate from the platform's DeviceConfig AlarmReport switches
+  (`alarm_notify_enabled` initial value).
+- **DeviceControl family**: IFrameCmd forces the next OpenH264-encoded
+  frame to an IDR; RecordCmd gates local recording (the current MP4
+  segment closes on pause, the next keyframe reopens); no-actuator
+  commands (PTZ/Guard/TeleBoot/HomePosition/DragZoom) ack as no-ops.
+- **Graceful deregistration**: SIGTERM / protocol stop sends REGISTER
+  `Expires: 0` (library 401 dance, 2s timeouts) before teardown.
+- **MobilePosition**: static coordinates
+  (`position_longitude` / `position_latitude`, empty = off) reported on
+  the subscription cadence.
+
 ### Changed — Unified Web API SPEC v1 + shared web UI
 
 **Breaking** (web API): the REST surface now follows the MiBee camera

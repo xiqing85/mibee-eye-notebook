@@ -194,39 +194,30 @@ Starting → Running → Stopping → Stopped
 
 ### 捕获 → 流媒体管道
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│   Capture   │    │   Streaming  │    │ Protocols   │
-│  (nokhwa/   │──▶│   Pipeline   │──▶│ (RTSP/RTMP/ │
-│  cpal)      │    │ (StreamHub)  │    │ ONVIF/GB28181│
-└─────────────┘    └─────────────┘    └─────────────┘
+```mermaid
+flowchart LR
+    CAP["采集<br/>（nokhwa / cpal）"] -->|"OpenH264 H.264 · G.711/AAC<br/>（进程内，无 ffmpeg）"| PIPE["流管线<br/>（StreamHub 扇出）"] --> OUT["协议<br/>（RTSP / RTMP / ONVIF / GB28181）"]
 ```
 
-**注意**：CaptureSource 适配器（`crates/streaming/src/capture_source.rs`）通过 ffmpeg 编码（视频 H.264、音频 PCM/G.711）将 nokhwa 视频采集和 cpal 音频采集桥接到流媒体管道中。
+**注意**：CaptureSource 适配器（`crates/streaming/src/capture_source.rs`）以**全进程内编码**将 nokhwa 视频采集和 cpal 音频采集桥接到流媒体管道——视频为 OpenH264 H.264（其 `force_keyframe()` 支撑 GB28181 IFrameCmd），音频为 G.711/AAC。运行时不依赖 ffmpeg。
 
 ### HTTP → API → Streaming → Protocol Clients
 
-```
-┌─────────┐    ┌──────────┐    ┌──────────┐    ┌─────────────┐
-│  Web UI │    │  REST    │    │  Stream-  │    │ Protocol    │
-│  (SPA)  │──▶│  API     │──▶│  Hub     │──▶│  Clients    │
-└─────────┘    └──────────┘    └──────────┘    └─────────────┘
-      ↑               │              │              │
-      └─────┘        └───┬─────────┘              │
-          │              │                       │
-          └───────────────┼───────────────────────┘
-                          │
-                  ┌───────┴───────┐
-                  │  Security     │
-                  │  (Auth/TLS)   │
-                  └───────────────┘
+```mermaid
+flowchart LR
+    UI["Web 界面<br/>（SPA）"] --> API["REST API"] --> HUB["Streaming Hub"] --> PC["协议客户端"]
+    SEC["安全<br/>（认证 / TLS）"]
+    API -.-> SEC
+    HUB -.-> SEC
+    PC -.-> SEC
+    UI -.-> SEC
 ```
 
 ## 当前限制
 
 1. **Windows / macOS**：目前无法编译（计划 Tier 2）。阻碍：`libc::getifaddrs` 仅限 POSIX、`#[cfg(unix)]` 无 Windows 回退、硬编码 `/dev/videoN` 路径。
 2. **H.265 Web 预览**：浏览器支持不普遍 — Web 管道仅使用 H.264/MJPEG。
-3. **无运动检测/计算机视觉**：当前版本不在范围内。
+3. ~~无运动检测/计算机视觉~~：端侧 AI 目标检测（NanoDet-Plus，SPEC v1 §4.6）已上线——含 `alarm` SSE 事件与 GB28181 Alarm NOTIFY 管线。
 
 ## 已实现系统（核心管道之外）
 
