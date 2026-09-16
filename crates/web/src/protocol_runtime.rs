@@ -323,7 +323,10 @@ pub struct ProtocolRuntime {
     discovery_handle: Option<JoinHandle<()>>,
     /// GB28181 server handle — kept so stop can deregister (REGISTER
     /// Expires: 0) before tearing the run loop down.
-    gb28181_server: Option<gb28181_rs::server::ServerHandle>,
+    gb28181_server: Option<Arc<tokio::sync::Mutex<gb28181_rs::server::ServerHandle>>>,
+    /// SIP-Date drift observer (§9.10.2): polls the platform clock from
+    /// REGISTER responses and WARNs on drift. Aborted before shutdown.
+    gb_date_observer: Option<JoinHandle<()>>,
     /// Talkback playback stream; held for the server's lifetime so the
     /// local audio output stays open, dropped on stop.
     gb28181_talkback_stream: Option<cpal::Stream>,
@@ -338,6 +341,10 @@ pub struct ProtocolRuntime {
     recording_paused: Arc<AtomicBool>,
     /// DeviceControl IFrameCmd latch shared with the camera encode loops.
     force_idr: Arc<AtomicBool>,
+    /// DeviceConfig FrameMirror runtime flags (A.2.3.2.9) shared with
+    /// every camera's capture loop — XOR-composed with per-camera static
+    /// mount-compensation flips.
+    gb_flips: Arc<streaming::capture_source::Flips>,
     /// Reserved for future use (RTMP currently per-stream, no global task).
     #[allow(dead_code)]
     rtmp_handle: Option<JoinHandle<()>>,
@@ -361,27 +368,33 @@ impl ProtocolRuntime {
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(streaming::capture_source::Flips::default()),
         )
     }
 
     /// Create the runtime sharing caller-owned gates: main.rs hands the
-    /// same notifier slot / alarm gate / recording pause flag to the AI
-    /// alarm bridge and the StreamManager, so one Arc each spans all three.
+    /// same notifier slot / alarm gate / recording pause flag / IDR latch
+    /// / FrameMirror flags to the AI alarm bridge, the StreamManager and
+    /// the GB28181 handlers, so one Arc each spans all of them.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_shares(
         notifier_slot: Arc<Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>>,
         alarm_notify_gate: Arc<AtomicBool>,
         recording_paused: Arc<AtomicBool>,
         force_idr: Arc<AtomicBool>,
+        gb_flips: Arc<streaming::capture_source::Flips>,
     ) -> Self {
         Self {
             onvif_handle: None,
             discovery_handle: None,
             gb28181_server: None,
+            gb_date_observer: None,
             gb28181_talkback_stream: None,
             notifier_slot,
             alarm_notify_gate,
             recording_paused,
             force_idr,
+            gb_flips,
             rtmp_handle: None,
             shutdown_txs: HashMap::new(),
             rtmp_enabled: false,
@@ -655,7 +668,10 @@ impl ProtocolRuntime {
                     ),
                 )))
                 .with_config_handler(Some(Arc::new(
-                    crate::gb28181_control::AlarmReportGate::new(Arc::clone(&alarm_gate)),
+                    crate::gb28181_control::DeviceConfigGlue::new(
+                        Arc::clone(&alarm_gate),
+                        Arc::clone(&self.gb_flips),
+                    ),
                 )))
                 .with_position_source(Some(Arc::new(position_source)));
 
@@ -672,6 +688,11 @@ impl ProtocolRuntime {
         match server_builder.spawn().await {
             Ok(server) => {
                 self.gb28181_talkback_stream = audio_stream;
+                // Shared so the SIP-Date drift observer can poll the
+                // platform clock while the runtime keeps stop control.
+                let server = Arc::new(tokio::sync::Mutex::new(server));
+                self.gb_date_observer =
+                    Some(tokio::spawn(observe_platform_date(Arc::clone(&server))));
                 self.gb28181_server = Some(server);
             }
             Err(e) => {
@@ -695,9 +716,16 @@ impl ProtocolRuntime {
         // Clear the notify slot first — the alarm bridge must not fire
         // into a server that is going away.
         *self.notifier_slot.lock().expect("notifier slot lock") = None;
-        let Some(mut server) = self.gb28181_server.take() else {
+        // Stop the drift observer first and wait for it to release its
+        // handle share before shutting the server down.
+        if let Some(observer) = self.gb_date_observer.take() {
+            observer.abort();
+            let _ = observer.await;
+        }
+        let Some(server) = self.gb28181_server.take() else {
             return;
         };
+        let mut server = server.lock().await;
         match tokio::time::timeout(Duration::from_secs(8), server.shutdown_with_deregister()).await
         {
             Ok(Ok(())) => tracing::info!("GB28181 deregistered and stopped"),
@@ -1043,11 +1071,163 @@ fn get_local_ip_for_server(server_addr: &SocketAddr) -> anyhow::Result<String> {
     Ok(local_addr.ip().to_string())
 }
 
+// ── SIP-Date drift observation (GB/T 28181-2022 §9.10.2) ─────────────────────
+
+/// Poll cadence for the platform-clock observer. REGISTER responses
+/// refresh the platform date inside the library; a minute is far finer
+/// than clock drift moves.
+const DATE_OBSERVER_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Drift threshold (seconds) beyond which the observer WARNs. §9.10.2
+/// makes REGISTER's SIP `Date` header the device-side time source; on a
+/// disciplined host the drift is informational only — the system clock is
+/// never touched here (host decision, library seam contract).
+const DATE_DRIFT_WARN_SECS: u64 = 5;
+
+/// Outcome of evaluating one platform-clock sample against the latch.
+#[derive(Debug, PartialEq, Eq)]
+enum DateDriftOutcome {
+    /// Drift back within the threshold — clear the latch (log once).
+    Recovered,
+    /// Beyond threshold but not moved another threshold since the last
+    /// WARN — stay quiet (keep the latch).
+    Stable,
+    /// Beyond threshold and moved since the last WARN — WARN now with
+    /// the signed drift, latch its magnitude.
+    Warn(i64),
+}
+
+fn evaluate_date_drift(
+    platform_unix: i64,
+    local_unix: i64,
+    last_warned: Option<u64>,
+) -> DateDriftOutcome {
+    let drift = local_unix - platform_unix;
+    let abs = drift.unsigned_abs();
+    if abs <= DATE_DRIFT_WARN_SECS {
+        return if last_warned.is_some() {
+            DateDriftOutcome::Recovered
+        } else {
+            DateDriftOutcome::Stable
+        };
+    }
+    match last_warned {
+        Some(prev) if abs.abs_diff(prev) < DATE_DRIFT_WARN_SECS => DateDriftOutcome::Stable,
+        _ => DateDriftOutcome::Warn(drift),
+    }
+}
+
+/// Background observer: every [`DATE_OBSERVER_INTERVAL`] reads the
+/// platform clock as last carried by a REGISTER response and WARNs on
+/// significant drift. Observation only — disciplining the clock stays a
+/// host/NTP decision.
+async fn observe_platform_date(server: Arc<tokio::sync::Mutex<gb28181_rs::server::ServerHandle>>) {
+    let mut interval = tokio::time::interval(DATE_OBSERVER_INTERVAL);
+    // First tick completes immediately — skip it (a just-started server
+    // has no REGISTER response yet anyway).
+    interval.tick().await;
+    let mut last_warned: Option<u64> = None;
+    loop {
+        interval.tick().await;
+        let platform = {
+            let guard = match server.try_lock() {
+                Ok(g) => g,
+                Err(_) => continue, // stop path holds the lock
+            };
+            guard.platform_date_unix()
+        };
+        let Some(platform) = platform else { continue };
+        let local = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        match evaluate_date_drift(platform, local, last_warned) {
+            DateDriftOutcome::Warn(drift) => {
+                tracing::warn!(
+                    drift_secs = drift,
+                    threshold_secs = DATE_DRIFT_WARN_SECS,
+                    "GB28181 platform clock drifts from local time (SIP Date, §9.10.2); \
+                     observation only — the system clock is not adjusted"
+                );
+                last_warned = Some(drift.unsigned_abs());
+            }
+            DateDriftOutcome::Recovered => {
+                tracing::info!("GB28181 platform clock drift back within threshold");
+                last_warned = None;
+            }
+            DateDriftOutcome::Stable => {}
+        }
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── SIP-Date drift evaluation (§9.10.2) ─────────────────────────────
+
+    #[test]
+    fn date_drift_within_threshold_is_quiet() {
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_000, None),
+            DateDriftOutcome::Stable
+        );
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_005, None),
+            DateDriftOutcome::Stable
+        );
+    }
+
+    #[test]
+    fn date_drift_first_excursion_warns() {
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_007, None),
+            DateDriftOutcome::Warn(7)
+        );
+        // Sign preserved: platform ahead of local.
+        assert_eq!(
+            evaluate_date_drift(1_012, 1_000, None),
+            DateDriftOutcome::Warn(-12)
+        );
+    }
+
+    #[test]
+    fn date_drift_stable_drift_does_not_rewarn() {
+        // Already warned at 7s; the same drift (or a 1s wiggle) stays quiet.
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_007, Some(7)),
+            DateDriftOutcome::Stable
+        );
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_009, Some(7)),
+            DateDriftOutcome::Stable
+        );
+        // Moved another threshold → warn again.
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_013, Some(7)),
+            DateDriftOutcome::Warn(13)
+        );
+    }
+
+    #[test]
+    fn date_drift_recovery_clears_the_latch() {
+        // Was warned; drift back within threshold → Recovered (latch clears,
+        // so the next excursion warns immediately).
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_003, Some(7)),
+            DateDriftOutcome::Recovered
+        );
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_000, None),
+            DateDriftOutcome::Stable
+        );
+        assert_eq!(
+            evaluate_date_drift(1_000, 1_006, None),
+            DateDriftOutcome::Warn(6)
+        );
+    }
 
     /// The gb35114 sub-tree of the DB protocol config flows into the
     /// runtime config (nested object under protocols.gb28181.gb35114).
