@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-mibee-eye-notebook (binary name `mibee-rec`) is in active development. Security fixes are applied to the latest `main` branch.
+mibee-eye-notebook (binary name `mibee-eye`) is in active development. Security fixes are applied to the latest `main` branch.
 
 ## Reporting a Vulnerability
 

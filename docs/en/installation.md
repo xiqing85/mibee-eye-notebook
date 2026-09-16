@@ -1,6 +1,6 @@
 # Installation Guide
 
-This guide covers installation and deployment for mibee-rec (MiBee Rec), a professional laptop surveillance agent built in Rust.
+This guide covers installation and deployment for mibee-eye (MiBee Eye), a professional laptop surveillance agent built in Rust.
 
 ## System Requirements
 
@@ -42,7 +42,7 @@ sudo usermod -aG video $USER
 
 ### Privileged Ports
 
-By default, mibee-rec uses:
+By default, mibee-eye uses:
 
 - Web UI: 8443 (TLS)
 
@@ -57,7 +57,7 @@ By default, mibee-rec uses:
 These ports avoid the privileged range (<1024). If you need to use lower ports, set capability binding:
 
 ```bash
-setcap 'cap_net_bind_service=+ep' ./target/release/mibee-rec
+setcap 'cap_net_bind_service=+ep' ./target/release/mibee-eye
 ```
 
 ## Windows Installation
@@ -101,7 +101,7 @@ rustc --version  # Should be >= 1.85
 ```bash
 # Clone and enter the repository
 git clone https://github.com/xiqing85/mibee-eye-notebook.git
-cd mibee-rec
+cd mibee-eye
 
 # Debug build (development)
 cargo build
@@ -122,8 +122,8 @@ cargo fmt-check
 ### Build Artifacts
 
 The binary will be at:
-- Debug: `target/debug/mibee-rec`
-- Release: `target/release/mibee-rec`
+- Debug: `target/debug/mibee-eye`
+- Release: `target/release/mibee-eye`
 
 ## Running
 
@@ -145,7 +145,7 @@ cargo run -- --reset-password
 ### Command Line Options
 
 - `--config, -c`: Path to config file (default: `config.toml`)
-- `--db-path, -d`: Path to SQLite database (default: `mibee_rec.db`)
+- `--db-path, -d`: Path to SQLite database (default: `mibee_eye.db`)
 - `--reset-password`: Reset password for a user (prompts for credentials)
 
 ## Configuration File
@@ -198,7 +198,7 @@ segment_duration_secs = 900
 max_capacity_mb = 10240
 
 [database]
-path = "~/.local/share/mibee-rec/mibee_rec.db"
+path = "~/.local/share/mibee-eye/mibee_eye.db"
 ```
 
 ### Configuration Options
@@ -251,11 +251,11 @@ log_level = "info"
 
 ### Development Setup
 
-For development, mibee-rec automatically generates self-signed TLS certificates on first run:
+For development, mibee-eye automatically generates self-signed TLS certificates on first run:
 
 ```bash
 # First run generates certificates
-./target/release/mibee-rec --config config.local.toml
+./target/release/mibee-eye --config config.local.toml
 
 # Certificates are saved to:
 # - tls/cert.pem
@@ -266,17 +266,17 @@ The certificates support hot-reload on file mtime change (update cert.pem/key.pe
 
 Development certificates use:
 
-- Subject: CN=mibee-rec
+- Subject: CN=mibee-eye
 
-- SAN: mibee-rec.local
+- SAN: mibee-eye.local
 
 - Validity: ~30 days
 
-For development, mibee-rec automatically generates self-signed TLS certificates on first run:
+For development, mibee-eye automatically generates self-signed TLS certificates on first run:
 
 ```bash
 # First run generates certificates
-./target/release/mibee-rec --config config.local.toml
+./target/release/mibee-eye --config config.local.toml
 
 # Certificates are saved to:
 # - tls/cert.pem
@@ -284,8 +284,8 @@ For development, mibee-rec automatically generates self-signed TLS certificates 
 ```
 
 The certificates use:
-- Subject: CN=mibee-rec
-- SAN: mibee-rec.local
+- Subject: CN=mibee-eye
+- SAN: mibee-eye.local
 - Validity: ~30 days
 
 ### Production Setup
@@ -316,11 +316,11 @@ chmod 600 ./tls/cert.pem ./tls/key.pem
 
 ### Systemd Service
 
-Create a systemd service file at `/etc/systemd/system/mibee-rec.service`:
+Create a systemd service file at `/etc/systemd/system/mibee-eye.service`:
 
 ```ini
 [Unit]
-Description=MiBee Rec Surveillance Agent
+Description=MiBee Eye Surveillance Agent
 After=network.target
 Wants=network.target
 
@@ -328,8 +328,8 @@ Wants=network.target
 Type=simple
 User=mibee
 Group=mibee
-WorkingDirectory=/opt/mibee-rec
-ExecStart=/opt/mibee-rec/target/release/mibee-rec --config /opt/mibee-rec/config.local.toml
+WorkingDirectory=/opt/mibee-eye
+ExecStart=/opt/mibee-eye/target/release/mibee-eye --config /opt/mibee-eye/config.local.toml
 Restart=always
 RestartSec=10
 Environment=RUST_LOG=info
@@ -352,17 +352,17 @@ WantedBy=multi-user.target
 
 ```bash
 # Enable and start the service
-sudo systemctl enable mibee-rec
-sudo systemctl start mibee-rec
+sudo systemctl enable mibee-eye
+sudo systemctl start mibee-eye
 
 # Check status
-sudo systemctl status mibee-rec
+sudo systemctl status mibee-eye
 
 # View logs
-sudo journalctl -u mibee-rec -f
+sudo journalctl -u mibee-eye -f
 
 # Restart service
-sudo systemctl restart mibee-rec
+sudo systemctl restart mibee-eye
 ```
 
 ### User Setup
@@ -371,8 +371,8 @@ Create dedicated user for the service:
 
 ```bash
 sudo useradd -r -s /bin/false mibee
-sudo mkdir -p /opt/mibee-rec
-sudo chown mibee:mibee /opt/mibee-rec
+sudo mkdir -p /opt/mibee-eye
+sudo chown mibee:mibee /opt/mibee-eye
 ```
 
 ### Reverse Proxy Configuration
@@ -399,7 +399,7 @@ server {
     add_header X-XSS-Protection "1; mode=block";
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # Proxy to mibee-rec
+    # Proxy to mibee-eye
     location / {
         proxy_pass https://localhost:8443;
         proxy_set_header Host $host;
@@ -421,23 +421,23 @@ For containerized deployment:
 
 ```bash
 # Build with Podman
-podman build -t mibee-rec .
+podman build -t mibee-eye .
 
 # Run with volume mounts
 podman run -d \
-  --name mibee-rec \
+  --name mibee-eye \
   --restart unless-stopped \
   --cap-add=NET_BIND_SERVICE \
-  -v /opt/mibee-rec/config.local.toml:/config.toml:ro \
-  -v /opt/mibee-rec/tls:/tls:ro \
+  -v /opt/mibee-eye/config.local.toml:/config.toml:ro \
+  -v /opt/mibee-eye/tls:/tls:ro \
   -p 8443:8443 \
   -p 8443:8443 \
   -p 8554:8554 \
-  mibee-rec
+  mibee-eye
 # Note: RTMP push is outbound; no port mapping needed unless you're running an external RTMP ingest server
 ```
   -p 1935:1935 \
-  mibee-rec
+  mibee-eye
 ```
 
 ## Troubleshooting
@@ -502,7 +502,7 @@ sudo fuser -k 8443/tcp
 rm -f tls/cert.pem tls/key.pem
 
 # Restart service to regenerate
-sudo systemctl restart mibee-rec
+sudo systemctl restart mibee-eye
 ```
 
 #### Database Connection Errors
@@ -513,10 +513,10 @@ sudo systemctl restart mibee-rec
 
 ```bash
 # Check database file
-ls -la mibee_rec.db
+ls -la mibee_eye.db
 
 # Check permissions
-chmod 640 mibee_rec.db
+chmod 640 mibee_eye.db
 ```
 
 #### Resource Limits Hit
@@ -527,7 +527,7 @@ chmod 640 mibee_rec.db
 
 ```bash
 # Check current resource usage
-systemctl show mibee-rec --property=MemoryCurrent,LimitNOFILE
+systemctl show mibee-eye --property=MemoryCurrent,LimitNOFILE
 
 # Adjust systemd service limits if needed
 ```
@@ -540,11 +540,11 @@ systemctl show mibee-rec --property=MemoryCurrent,LimitNOFILE
 
 ```bash
 # Monitor resource usage
-top -p $(pidof mibee-rec)
-htop -p $(pidof mibee-rec)
+top -p $(pidof mibee-eye)
+htop -p $(pidof mibee-eye)
 
 # Check streaming logs for errors
-sudo journalctl -u mibee-rec | grep -i error
+sudo journalctl -u mibee-eye | grep -i error
 ```
 
 #### Memory Usage High
@@ -553,7 +553,7 @@ sudo journalctl -u mibee-rec | grep -i error
 
 ```bash
 # Check memory usage
-ps aux | grep mibee-rec
+ps aux | grep mibee-eye
 
 # Check streaming configuration
 grep -i buffer config.local.toml
@@ -565,7 +565,7 @@ Enable debug logging for troubleshooting:
 
 ```bash
 # Set RUST_LOG environment variable
-RUST_LOG=debug ./target/release/mibee-rec --config config.local.toml
+RUST_LOG=debug ./target/release/mibee-eye --config config.local.toml
 
 # Or set in systemd service file
 Environment="RUST_LOG=debug"
@@ -605,4 +605,4 @@ If you continue to have issues:
    - Steps to reproduce
    - Expected vs actual behavior
 
-> **Migration Note (Rebrand)**: The dev TLS certificate's CommonName and SubjectAltName have changed from `notebook-cam`/`notebook-cam.local` to `mibee-rec`/`mibee-rec.local`. Delete the old `tls/cert.pem` and `tls/key.pem` files before starting the server so a new self-signed certificate is generated with the correct identity.
+> **Migration Note (Rebrand)**: The dev TLS certificate's CommonName and SubjectAltName have changed from `notebook-cam`/`notebook-cam.local` to `mibee-eye`/`mibee-eye.local`. Delete the old `tls/cert.pem` and `tls/key.pem` files before starting the server so a new self-signed certificate is generated with the correct identity.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-mibee-rec is a **PC-local webcam & microphone capture agent** built in Rust. It captures video and audio from devices **physically attached to this machine** (USB webcams, built-in/USB microphones) via V4L2/ALSA, and distributes the captured stream through outbound protocols (RTSP server, RTMP push, ONVIF device, GB/T 28181 device) to external NVRs and live platforms. The architecture prioritizes security (TLS-only, authenticated), low resource usage, minimal dependencies, Linux-first development, and local-first (air-gapped) deployment. It does **not** discover or pull from remote network cameras.
+mibee-eye is a **PC-local webcam & microphone capture agent** built in Rust. It captures video and audio from devices **physically attached to this machine** (USB webcams, built-in/USB microphones) via V4L2/ALSA, and distributes the captured stream through outbound protocols (RTSP server, RTMP push, ONVIF device, GB/T 28181 device) to external NVRs and live platforms. The architecture prioritizes security (TLS-only, authenticated), low resource usage, minimal dependencies, Linux-first development, and local-first (air-gapped) deployment. It does **not** discover or pull from remote network cameras.
 
 ### Design Goals
 
@@ -17,7 +17,7 @@ mibee-rec is a **PC-local webcam & microphone capture agent** built in Rust. It 
 The project uses a Rust workspace with 6 specialized crates:
 
 ```
-mibee-rec/
+mibee-eye/
 ├─ src/                # Binary entry (main.rs), config, types
 ├─ crates/
 │  ├─ capture/         # Video (nokhwa) + Audio (cpal) + hot-plug (udev)

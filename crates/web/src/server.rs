@@ -565,7 +565,7 @@ pub async fn run(
         }
     });
 
-    tracing::info!("mibee-rec server starting on https://{}", addr);
+    tracing::info!("mibee-eye server starting on https://{}", addr);
 
     axum_server::bind_rustls(addr, tls_config)
         .serve(app.into_make_service())
@@ -638,7 +638,7 @@ pub async fn run_with_shutdown(
         }
     });
 
-    tracing::info!("mibee-rec server starting on https://{}", addr);
+    tracing::info!("mibee-eye server starting on https://{}", addr);
 
     // Create a handle for graceful shutdown
     let handle = axum_server::Handle::new();
@@ -666,7 +666,7 @@ pub async fn run_with_shutdown(
         ));
         let http_handle = handle.clone();
         tracing::info!(
-            "mibee-rec additional plain-HTTP listener on http://{}",
+            "mibee-eye additional plain-HTTP listener on http://{}",
             http_addr
         );
         http_shutdown = Some(tokio::spawn(async move {

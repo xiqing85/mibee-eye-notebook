@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # scripts/service.sh
 #
-# Manage the mibee-rec user-mode systemd service on a remote device.
+# Manage the mibee-eye user-mode systemd service on a remote device.
 #
 # Usage:
 #   ./scripts/service.sh <host> <command>
 #
 # Commands:
-#   install   Install/update the ~/.config/systemd/user/mibee-rec.service unit
+#   install   Install/update the ~/.config/systemd/user/mibee-eye.service unit
 #   start     Install (if needed) + start (or restart) the service
 #   stop      Stop the service
 #   status    Show service status
@@ -31,26 +31,26 @@ if [ -z "$HOST" ] || [ -z "$CMD" ]; then
     exit 1
 fi
 
-# The systemd user unit, adapted from the repo's system-wide mibee-rec.service.
-# Runs as the SSH login user, reads config.local.toml, working dir ~/mibee-rec.
+# The systemd user unit, adapted from the repo's system-wide mibee-eye.service.
+# Runs as the SSH login user, reads config.local.toml, working dir ~/mibee-eye.
 # NOTE: SupplementaryGroups= is NOT supported in user-mode systemd (it requires
 # root to change group credentials → status=216/GROUP). The user must already be
 # in the video + audio groups (set via `usermod -aG video,audio $USER`).
 read -r -d '' UNIT_BODY <<'EOF' || true
 [Unit]
-Description=MiBee Rec — local surveillance agent
+Description=MiBee Eye — local surveillance agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/mibee-rec
-ExecStart=%h/mibee-rec/mibee-rec --config %h/mibee-rec/config.local.toml
+WorkingDirectory=%h/mibee-eye
+ExecStart=%h/mibee-eye/mibee-eye --config %h/mibee-eye/config.local.toml
 Restart=on-failure
 RestartSec=5
 
 # Minimal sandboxing. Note: ProtectHome=/ProtectSystem= are omitted because
-# the service must write its SQLite DB (mibee_rec.db) + recordings into the
+# the service must write its SQLite DB (mibee_eye.db) + recordings into the
 # user's home directory, and must access /dev/video* + audio devices.
 # NoNewPrivileges= is safe to keep.
 NoNewPrivileges=true
@@ -62,7 +62,7 @@ EOF
 install_unit() {
     echo "→ Installing systemd user unit on $HOST..."
     # Write the unit file via a heredoc over SSH.
-    ssh "$HOST" "mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/mibee-rec.service <<'UNIT_EOF'
+    ssh "$HOST" "mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/mibee-eye.service <<'UNIT_EOF'
 $UNIT_BODY
 UNIT_EOF
 "
@@ -87,29 +87,29 @@ case "$CMD" in
     start)
         install_unit
         echo "→ Starting service on $HOST..."
-        ssh "$HOST" "systemctl --user restart mibee-rec && systemctl --user status mibee-rec --no-pager -l | head -20"
+        ssh "$HOST" "systemctl --user restart mibee-eye && systemctl --user status mibee-eye --no-pager -l | head -20"
         echo ""
         echo "✓ Service started. Use '$0 $HOST logs' to follow."
         ;;
     stop)
         echo "→ Stopping service on $HOST..."
-        ssh "$HOST" "systemctl --user stop mibee-rec 2>/dev/null || true"
+        ssh "$HOST" "systemctl --user stop mibee-eye 2>/dev/null || true"
         echo "✓ Stopped."
         ;;
     restart)
         echo "→ Restarting service on $HOST..."
-        ssh "$HOST" "systemctl --user restart mibee-rec && systemctl --user status mibee-rec --no-pager -l | head -20"
+        ssh "$HOST" "systemctl --user restart mibee-eye && systemctl --user status mibee-eye --no-pager -l | head -20"
         ;;
     status)
-        ssh "$HOST" "systemctl --user status mibee-rec --no-pager -l" || true
+        ssh "$HOST" "systemctl --user status mibee-eye --no-pager -l" || true
         ;;
     logs)
         echo "→ Following journalctl on $HOST (Ctrl-C to exit)..."
-        ssh "$HOST" "journalctl --user -u mibee-rec -f"
+        ssh "$HOST" "journalctl --user -u mibee-eye -f"
         ;;
     disable)
         echo "→ Disabling + removing service on $HOST..."
-        ssh "$HOST" "systemctl --user stop mibee-rec 2>/dev/null || true; systemctl --user disable mibee-rec 2>/dev/null || true; rm -f ~/.config/systemd/user/mibee-rec.service; systemctl --user daemon-reload"
+        ssh "$HOST" "systemctl --user stop mibee-eye 2>/dev/null || true; systemctl --user disable mibee-eye 2>/dev/null || true; rm -f ~/.config/systemd/user/mibee-eye.service; systemctl --user daemon-reload"
         echo "✓ Service disabled. (loginctl linger left as-is.)"
         ;;
     *)

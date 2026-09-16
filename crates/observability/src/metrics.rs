@@ -57,7 +57,7 @@ fn global_metrics() -> &'static Metrics {
 // Public API functions
 // ---------------------------------------------------------------------------
 
-/// Increment the `mibee_rec_bytes_received` counter for a camera.
+/// Increment the `mibee_eye_bytes_received` counter for a camera.
 pub fn increment_bytes_received(camera_id: &str, bytes: u64) {
     global_metrics()
         .bytes_received
@@ -65,7 +65,7 @@ pub fn increment_bytes_received(camera_id: &str, bytes: u64) {
         .inc_by(bytes);
 }
 
-/// Increment the `mibee_rec_capture_errors` counter for a camera.
+/// Increment the `mibee_eye_capture_errors` counter for a camera.
 pub fn increment_capture_errors(camera_id: &str) {
     global_metrics()
         .capture_errors
@@ -75,53 +75,53 @@ pub fn increment_capture_errors(camera_id: &str) {
 
 // ─── Protocol-specific counter helpers ─────────────────────────────────
 
-/// Increment the `mibee_rec_rtsp_sessions_total` counter by status.
+/// Increment the `mibee_eye_rtsp_sessions_total` counter by status.
 pub fn increment_rtsp_sessions(status: &str) {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.rtsp_sessions.with_label_values(&[status]).inc();
     }
 }
 
-/// Increment the `mibee_rec_rtsp_bytes_sent_total` counter.
+/// Increment the `mibee_eye_rtsp_bytes_sent_total` counter.
 pub fn increment_rtsp_bytes_sent(bytes: u64) {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.rtsp_bytes_sent.inc_by(bytes);
     }
 }
 
-/// Increment the `mibee_rec_rtmp_push_bytes_total` counter.
+/// Increment the `mibee_eye_rtmp_push_bytes_total` counter.
 pub fn increment_rtmp_push_bytes(bytes: u64) {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.rtmp_push_bytes.inc_by(bytes);
     }
 }
 
-/// Increment the `mibee_rec_rtmp_push_errors_total` counter.
+/// Increment the `mibee_eye_rtmp_push_errors_total` counter.
 pub fn increment_rtmp_push_errors() {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.rtmp_push_errors.inc();
     }
 }
 
-/// Increment the `mibee_rec_onvif_discovery_requests_total` counter.
+/// Increment the `mibee_eye_onvif_discovery_requests_total` counter.
 pub fn increment_onvif_discovery_requests() {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.onvif_discovery_requests.inc();
     }
 }
 
-/// Increment the `mibee_rec_gb28181_register_status` counter by status.
+/// Increment the `mibee_eye_gb28181_register_status` counter by status.
 pub fn increment_gb28181_register_status(status: &str) {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.gb28181_register_status.with_label_values(&[status]).inc();
     }
 }
 
-/// Set the `mibee_rec_streams_active` gauge to an absolute value.
+/// Set the `mibee_eye_streams_active` gauge to an absolute value.
 pub fn set_active_streams(count: i64) {
     global_metrics().active_streams.set(count);
 }
-/// Set the `mibee_rec_audio_level_db` gauge for a stream.
+/// Set the `mibee_eye_audio_level_db` gauge for a stream.
 ///
 /// Silently returns if metrics have not yet been registered — this allows
 /// audio capture callbacks to fire before `register_metrics()` is called
@@ -159,21 +159,21 @@ pub fn increment_auth_failures(failure_type: &str) {
     }
 }
 
-/// Set the `mibee_recording_active` gauge to an absolute value.
+/// Set the `mibee_eyeording_active` gauge to an absolute value.
 pub fn set_recording_active(count: i64) {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.recording_active.set(count);
     }
 }
 
-/// Increment the `mibee_recording_active` gauge by 1.
+/// Increment the `mibee_eyeording_active` gauge by 1.
 pub fn inc_recording_active() {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.recording_active.inc();
     }
 }
 
-/// Decrement the `mibee_recording_active` gauge by 1.
+/// Decrement the `mibee_eyeording_active` gauge by 1.
 pub fn dec_recording_active() {
     if let Some(m) = GLOBAL_METRICS.get() {
         m.recording_active.dec();
@@ -218,14 +218,14 @@ impl Metrics {
         let registry = Registry::new();
 
         let active_streams = IntGauge::new(
-            "mibee_rec_streams_active",
+            "mibee_eye_streams_active",
             "Number of currently active streams",
         )?;
         registry.register(Box::new(active_streams.clone()))?;
 
         let bytes_received = IntCounterVec::new(
             Opts::new(
-                "mibee_rec_bytes_received",
+                "mibee_eye_bytes_received",
                 "Total bytes received from cameras",
             ),
             &["camera_id"],
@@ -233,7 +233,7 @@ impl Metrics {
         registry.register(Box::new(bytes_received.clone()))?;
 
         let capture_errors = IntCounterVec::new(
-            Opts::new("mibee_rec_capture_errors", "Total capture errors by camera"),
+            Opts::new("mibee_eye_capture_errors", "Total capture errors by camera"),
             &["camera_id"],
         )?;
         registry.register(Box::new(capture_errors.clone()))?;
@@ -241,7 +241,7 @@ impl Metrics {
         // ─── Protocol-specific counters ───────────────────────────
         let rtsp_sessions = IntCounterVec::new(
             Opts::new(
-                "mibee_rec_rtsp_sessions_total",
+                "mibee_eye_rtsp_sessions_total",
                 "Total number of RTSP sessions by status",
             ),
             &["status"],
@@ -249,30 +249,30 @@ impl Metrics {
         registry.register(Box::new(rtsp_sessions.clone()))?;
 
         let rtsp_bytes_sent = IntCounter::new(
-            "mibee_rec_rtsp_bytes_sent_total",
+            "mibee_eye_rtsp_bytes_sent_total",
             "Total RTSP/RTP bytes transmitted",
         )?;
         registry.register(Box::new(rtsp_bytes_sent.clone()))?;
 
         let rtmp_push_bytes = IntCounter::new(
-            "mibee_rec_rtmp_push_bytes_total",
+            "mibee_eye_rtmp_push_bytes_total",
             "Total bytes pushed via RTMP",
         )?;
         registry.register(Box::new(rtmp_push_bytes.clone()))?;
 
         let rtmp_push_errors =
-            IntCounter::new("mibee_rec_rtmp_push_errors_total", "Total RTMP push errors")?;
+            IntCounter::new("mibee_eye_rtmp_push_errors_total", "Total RTMP push errors")?;
         registry.register(Box::new(rtmp_push_errors.clone()))?;
 
         let onvif_discovery_requests = IntCounter::new(
-            "mibee_rec_onvif_discovery_requests_total",
+            "mibee_eye_onvif_discovery_requests_total",
             "Total ONVIF WS-Discovery probe requests received",
         )?;
         registry.register(Box::new(onvif_discovery_requests.clone()))?;
 
         let gb28181_register_status = IntCounterVec::new(
             Opts::new(
-                "mibee_rec_gb28181_register_status",
+                "mibee_eye_gb28181_register_status",
                 "Total GB28181 registration attempts by status",
             ),
             &["status"],
@@ -282,7 +282,7 @@ impl Metrics {
         // ─── Audio level gauge ───────────────────────────────────
         let audio_level_db = GaugeVec::new(
             Opts::new(
-                "mibee_rec_audio_level_db",
+                "mibee_eye_audio_level_db",
                 "Current audio input level in dBFS",
             ),
             &["stream_id"],
@@ -309,7 +309,7 @@ impl Metrics {
         registry.register(Box::new(auth_failures_total.clone()))?;
 
         let recording_active = IntGauge::new(
-            "mibee_recording_active",
+            "mibee_eyeording_active",
             "Number of active recording outputs",
         )?;
         registry.register(Box::new(recording_active.clone()))?;
@@ -397,39 +397,39 @@ mod tests {
         let output = m.render();
         // All metrics should appear in the rendered text
         assert!(
-            output.contains("mibee_rec_streams_active"),
+            output.contains("mibee_eye_streams_active"),
             "output should contain active_streams gauge"
         );
         assert!(
-            output.contains("mibee_rec_bytes_received"),
+            output.contains("mibee_eye_bytes_received"),
             "output should contain bytes_received counter"
         );
         assert!(
-            output.contains("mibee_rec_capture_errors"),
+            output.contains("mibee_eye_capture_errors"),
             "output should contain capture_errors counter"
         );
         assert!(
-            output.contains("mibee_rec_rtsp_sessions_total"),
+            output.contains("mibee_eye_rtsp_sessions_total"),
             "output should contain rtsp_sessions counter"
         );
         assert!(
-            output.contains("mibee_rec_rtsp_bytes_sent_total"),
+            output.contains("mibee_eye_rtsp_bytes_sent_total"),
             "output should contain rtsp_bytes_sent counter"
         );
         assert!(
-            output.contains("mibee_rec_rtmp_push_bytes_total"),
+            output.contains("mibee_eye_rtmp_push_bytes_total"),
             "output should contain rtmp_push_bytes counter"
         );
         assert!(
-            output.contains("mibee_rec_rtmp_push_errors_total"),
+            output.contains("mibee_eye_rtmp_push_errors_total"),
             "output should contain rtmp_push_errors counter"
         );
         assert!(
-            output.contains("mibee_rec_onvif_discovery_requests_total"),
+            output.contains("mibee_eye_onvif_discovery_requests_total"),
             "output should contain onvif_discovery_requests counter"
         );
         assert!(
-            output.contains("mibee_rec_gb28181_register_status"),
+            output.contains("mibee_eye_gb28181_register_status"),
             "output should contain gb28181_register_status counter"
         );
         assert!(
@@ -441,7 +441,7 @@ mod tests {
             "output should contain auth_failures_total counter"
         );
         assert!(
-            output.contains("mibee_recording_active"),
+            output.contains("mibee_eyeording_active"),
             "output should contain recording_active gauge"
         );
         assert!(
@@ -475,42 +475,42 @@ mod tests {
         let output = m.render();
 
         assert!(
-            output.contains("mibee_rec_rtsp_sessions_total{status=\"active\"} 2"),
+            output.contains("mibee_eye_rtsp_sessions_total{status=\"active\"} 2"),
             "active sessions should be 2\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains("mibee_rec_rtsp_sessions_total{status=\"closed\"} 1"),
+            output.contains("mibee_eye_rtsp_sessions_total{status=\"closed\"} 1"),
             "closed sessions should be 1\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains("mibee_rec_rtsp_bytes_sent_total 1500"),
+            output.contains("mibee_eye_rtsp_bytes_sent_total 1500"),
             "rtsp bytes should be 1500\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains("mibee_rec_rtmp_push_bytes_total 4096"),
+            output.contains("mibee_eye_rtmp_push_bytes_total 4096"),
             "rtmp bytes should be 4096\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains("mibee_rec_rtmp_push_errors_total 2"),
+            output.contains("mibee_eye_rtmp_push_errors_total 2"),
             "rtmp errors should be 2\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains("mibee_rec_onvif_discovery_requests_total 1"),
+            output.contains("mibee_eye_onvif_discovery_requests_total 1"),
             "discovery requests should be 1\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains("mibee_rec_gb28181_register_status{status=\"registered\"} 1"),
+            output.contains("mibee_eye_gb28181_register_status{status=\"registered\"} 1"),
             "registered should be 1\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains("mibee_rec_gb28181_register_status{status=\"failed\"} 2"),
+            output.contains("mibee_eye_gb28181_register_status{status=\"failed\"} 2"),
             "failed should be 2\n=== output ===\n{}",
             output
         );
@@ -528,13 +528,13 @@ mod tests {
 
         // Total for cam_1 should be 150
         assert!(
-            output.contains(r#"mibee_rec_bytes_received{camera_id="cam_1"} 150"#),
+            output.contains(r#"mibee_eye_bytes_received{camera_id="cam_1"} 150"#),
             "cam_1 should show 150 bytes\n=== output ===\n{}",
             output
         );
         // Total for cam_2 should be 200
         assert!(
-            output.contains(r#"mibee_rec_bytes_received{camera_id="cam_2"} 200"#),
+            output.contains(r#"mibee_eye_bytes_received{camera_id="cam_2"} 200"#),
             "cam_2 should show 200 bytes\n=== output ===\n{}",
             output
         );
@@ -551,12 +551,12 @@ mod tests {
         let output = m.render();
 
         assert!(
-            output.contains(r#"mibee_rec_capture_errors{camera_id="cam_1"} 2"#),
+            output.contains(r#"mibee_eye_capture_errors{camera_id="cam_1"} 2"#),
             "cam_1 should have 2 errors\n=== output ===\n{}",
             output
         );
         assert!(
-            output.contains(r#"mibee_rec_capture_errors{camera_id="cam_2"} 1"#),
+            output.contains(r#"mibee_eye_capture_errors{camera_id="cam_2"} 1"#),
             "cam_2 should have 1 error\n=== output ===\n{}",
             output
         );
@@ -569,7 +569,7 @@ mod tests {
         m.active_streams.set(3);
         let output = m.render();
         assert!(
-            output.contains("mibee_rec_streams_active 3"),
+            output.contains("mibee_eye_streams_active 3"),
             "active_streams should be 3\n=== output ===\n{}",
             output
         );
@@ -577,7 +577,7 @@ mod tests {
         m.active_streams.set(0);
         let output = m.render();
         assert!(
-            output.contains("mibee_rec_streams_active 0"),
+            output.contains("mibee_eye_streams_active 0"),
             "active_streams should be 0\n=== output ===\n{}",
             output
         );
@@ -597,12 +597,12 @@ mod tests {
         let out2 = m2.render();
 
         assert!(
-            out1.contains("mibee_rec_streams_active 42"),
+            out1.contains("mibee_eye_streams_active 42"),
             "m1 should have 42\n=== out1 ===\n{}",
             out1
         );
         assert!(
-            out2.contains("mibee_rec_streams_active 99"),
+            out2.contains("mibee_eye_streams_active 99"),
             "m2 should have 99\n=== out2 ===\n{}",
             out2
         );
@@ -615,7 +615,7 @@ mod tests {
         m.audio_level_db.with_label_values(&["default"]).set(-12.5);
         let output = m.render();
         assert!(
-            output.contains(r#"mibee_rec_audio_level_db{stream_id="default"} -12.5"#),
+            output.contains(r#"mibee_eye_audio_level_db{stream_id="default"} -12.5"#),
             "audio_level_db should show -12.5\n=== output ===\n{}",
             output
         );
@@ -623,7 +623,7 @@ mod tests {
         m.audio_level_db.with_label_values(&["default"]).set(0.0);
         let output = m.render();
         assert!(
-            output.contains(r#"mibee_rec_audio_level_db{stream_id="default"} 0"#),
+            output.contains(r#"mibee_eye_audio_level_db{stream_id="default"} 0"#),
             "audio_level_db should show 0\n=== output ===\n{}",
             output
         );
@@ -702,7 +702,7 @@ mod tests {
         m.recording_active.set(2);
         let output = m.render();
         assert!(
-            output.contains("mibee_recording_active 2"),
+            output.contains("mibee_eyeording_active 2"),
             "recording_active should be 2\n=== output ===\n{}",
             output
         );
@@ -710,7 +710,7 @@ mod tests {
         m.recording_active.set(0);
         let output = m.render();
         assert!(
-            output.contains("mibee_recording_active 0"),
+            output.contains("mibee_eyeording_active 0"),
             "recording_active should be 0\n=== output ===\n{}",
             output
         );

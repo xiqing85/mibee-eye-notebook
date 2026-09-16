@@ -1,4 +1,4 @@
-# mibee-rec — Build, Deploy & Test Scripts
+# mibee-eye — Build, Deploy & Test Scripts
 
 Cross-compile from Windows (via Docker) and deploy to the two Linux test
 devices over SSH. All scripts are Git-Bash-compatible on Windows and
@@ -11,7 +11,7 @@ in `~/.ssh/config`; the examples below use two generic aliases:
 
 | Alias (`~/.ssh/config`) | OS examples | Role |
 |---|---|---|
-| `device-1` | any Linux with systemd (user services) | Device 1 — runs mibee-rec as a user systemd service |
+| `device-1` | any Linux with systemd (user services) | Device 1 — runs mibee-eye as a user systemd service |
 | `device-2` | any Linux with systemd (user services) | Device 2 — secondary target |
 
 ## Workflow
@@ -41,9 +41,9 @@ in `~/.ssh/config`; the examples below use two generic aliases:
 
 | Script | Purpose |
 |---|---|
-| `docker-build.sh` | Cross-compile via the multi-stage Dockerfile; auto-starts Docker Desktop on Windows. Output: `target/linux-x86_64/{mibee-rec,config.toml,migrations/}`. Accepts `--no-cache`. |
-| `deploy.sh <host>` | scp the built binary + migrations + config to `~/mibee-rec/` on the device. Atomic binary swap (`.new` → rename). Verifies camera device access + group membership. |
-| `service.sh <host> <cmd>` | Manage the **user-mode** systemd service (`~/.config/systemd/user/mibee-rec.service`). Commands: `install`, `start`, `stop`, `status`, `logs`, `restart`, `disable`. Enables `loginctl linger` for boot-time auto-start. |
+| `docker-build.sh` | Cross-compile via the multi-stage Dockerfile; auto-starts Docker Desktop on Windows. Output: `target/linux-x86_64/{mibee-eye,config.toml,migrations/}`. Accepts `--no-cache`. |
+| `deploy.sh <host>` | scp the built binary + migrations + config to `~/mibee-eye/` on the device. Atomic binary swap (`.new` → rename). Verifies camera device access + group membership. |
+| `service.sh <host> <cmd>` | Manage the **user-mode** systemd service (`~/.config/systemd/user/mibee-eye.service`). Commands: `install`, `start`, `stop`, `status`, `logs`, `restart`, `disable`. Enables `loginctl linger` for boot-time auto-start. |
 | `test-smoke.sh <host>` | Service active, `/health` 200, `/metrics` clean, RTSP DESCRIBE returns H.264 SDP, snapshot is JPEG, live-preview multipart works, **zero ffmpeg refs in journal** (removal regression guard). |
 | `test-perf.sh <host>` | 60s benchmark: CPU% avg/peak, RSS avg/peak/growth, encoder counter. Compares against the old ~64 MB/ffmpeg baseline. |
 | `test-features.sh <host>` | Hot-plug (udev trigger), MP4 recording + ffprobe validation, RTMP push, ONVIF WS-Discovery, GB28181 SIP REGISTER, audio path. Skips are non-fatal. |
@@ -55,7 +55,7 @@ in `~/.ssh/config`; the examples below use two generic aliases:
   bookworm, glibc 2.36). The resulting binary runs on Pop!_OS 24.04 (2.39)
   and Arch rolling (≥2.36) — newer glibc is always backward-compatible.
 - **User-mode systemd:** the service runs as your own user (not root), reading
-  `~/mibee-rec/config.local.toml`. `loginctl enable-linger` is needed for
+  `~/mibee-eye/config.local.toml`. `loginctl enable-linger` is needed for
   the service to survive logout / start at boot.
 - **Camera access:** the service user must be in the `video` and `audio` groups.
   Run `sudo usermod -aG video,audio $USER` on the device and re-login if

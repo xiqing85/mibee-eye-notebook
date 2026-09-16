@@ -1,6 +1,6 @@
 #![cfg_attr(test, deny(warnings))]
 
-//! Auth, TLS, encryption, rate limiting for mibee-rec.
+//! Auth, TLS, encryption, rate limiting for mibee-eye.
 
 pub mod auth;
 pub mod encryption;

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The mibee-rec REST API follows the **MiBee Camera Web API unified SPEC v1**
+The mibee-eye REST API follows the **MiBee Camera Web API unified SPEC v1**
 (`mibee-webui/SPEC.md` in the workspace) — the same contract as the Raspberry
 Pi camera projects. All API endpoints use TLS and require session
 authentication unless noted.

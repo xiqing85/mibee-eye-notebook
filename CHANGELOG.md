@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-16
+
+### Changed — Brand rename to `mibee-eye` (family-wide packaging convention)
+
+The product/binary/service name is now **`mibee-eye`**, aligning with the
+MiBee Eye packaging convention (the Raspberry Pi Go twin ships the same
+binary name). The repository stays `mibee-eye-notebook`.
+
+- Cargo package and binary: `mibee-rec` → `mibee-eye`
+- systemd unit: `mibee-rec.service` → `mibee-eye.service` (binary path
+  `/usr/local/bin/mibee-eye`, `User=mibee-eye`, `StateDirectory=mibee-eye`)
+- Default database file: `mibee_rec.db` → `mibee_eye.db` (clap default and
+  the XDG default `~/.local/share/mibee-eye/mibee_eye.db`)
+- Prometheus metric prefix: `mibee_rec_*` → `mibee_eye_*`
+  (**breaking for dashboards** — update your queries)
+- TLS dev certificate identity: `CN=mibee-rec` / `SAN=mibee-rec.local` →
+  `CN=mibee-eye` / `SAN=mibee-eye.local`
+- RTSP realm (`mibee-eye RTSP Server`) and `Server` header; RTSP SDP
+  session name; GB28181 SIP `User-Agent: mibee-eye/<version>`; ONVIF
+  default `device_name`; OpenTelemetry service name; capabilities
+  `device.name`
+- Docker: paths `/usr/local/share/mibee-eye`, `/var/lib/mibee-eye`, image
+  user `mibee-eye`; container migration search path updated accordingly
+
+**Migration steps:**
+1. Rename the database before upgrading (stop the service first, WAL
+   files included): `mv mibee_rec.db* mibee_eye.db*` — or keep the old
+   path by passing `--db-path` explicitly.
+2. Update Prometheus/Grafana queries referencing `mibee_rec_*` metrics.
+3. Delete `tls/cert.pem` and `tls/key.pem` before restarting (new
+   identity is regenerated automatically); old certificates keep working
+   until then.
+4. If using systemd: install `mibee-eye.service` and
+   `systemctl disable --now mibee-rec.service` first.
+5. If using Docker: update container name and volume paths from
+   `mibee-rec` to `mibee-eye`.
+
 ## [0.1.0] - 2026-09-16
 
 First public release (Apache-2.0), open-sourced as
