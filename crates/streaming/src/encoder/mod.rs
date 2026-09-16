@@ -11,9 +11,9 @@
 //! | AAC encode | G.711 (default) / [`fdk_aac`] (`aac` feature) |
 //! | MP4 mux | [`muxide`] (used in `output::file`) |
 //!
-//! All modules are Linux-only — the capture layer is POSIX-only (V4L2/ALSA),
-//! and per AGENTS.md any new platform code must `#[cfg]` all three targets or
-//! emit `compile_error!`.
+//! All modules are Linux-only — the capture layer is POSIX-only (V4L2/ALSA).
+//! Any new platform-specific code must `#[cfg]` all three targets or emit
+//! `compile_error!`.
 //!
 //! [`muxide`]: https://crates.io/crates/muxide
 
@@ -36,5 +36,5 @@ pub use h264::{H264Encoder, H264EncoderConfig, NalUnit};
 compile_error!(
     "mibee-rec's native codec stack currently supports only Linux (V4L2/ALSA capture backends). \
      Adding Windows or macOS support requires implementing the capture layer for those platforms \
-     first — see AGENTS.md \"Cross-platform guard\"."
+     first (cross-platform guard)."
 );

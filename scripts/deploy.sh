@@ -5,13 +5,13 @@
 # Does NOT start/restart the service — run scripts/service.sh after this.
 #
 # Usage:
-#   ./scripts/deploy.sh device-1      # 192.168.1.41 (Pop!_OS, Device 1)
-#   ./scripts/deploy.sh device-2     # 192.168.1.40 (EndeavourOS, Device 2)
+#   ./scripts/deploy.sh device-1
+#   ./scripts/deploy.sh device-2
 #
 # Prerequisites:
 #   - Run scripts/docker-build.sh first (produces target/linux-x86_64/)
-#   - SSH config entries for the host aliases (already in ~/.ssh/config)
-#   - SSH key auth set up for your-user@<host>
+#   - SSH config entries for the host aliases (in ~/.ssh/config)
+#   - SSH key auth set up for <user>@<host>
 
 set -euo pipefail
 
@@ -25,9 +25,9 @@ REMOTE_DIR="~/mibee-rec"
 if [ -z "$HOST" ]; then
     echo "Usage: $0 <ssh-host-alias>"
     echo ""
-    echo "Known target hosts (from ~/.ssh/config):"
-    echo "  device-1   → 192.168.1.41  (Pop!_OS 24.04, i5-1135G7, Device 1)"
-    echo "  device-2  → 192.168.1.40  (EndeavourOS Arch, i5-6200U, Device 2)"
+    echo "Host aliases are read from ~/.ssh/config, e.g.:"
+    echo "  device-1"
+    echo "  device-2"
     exit 1
 fi
 

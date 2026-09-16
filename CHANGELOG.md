@@ -101,7 +101,7 @@ devices over SSH. See `scripts/README.md`.
 
 ### Added — Authoritative product positioning
 - New [`docs/POSITIONING.md`](docs/POSITIONING.md) (bilingual zh/en) — authoritative product scope, target users, deployment model, capture scope, protocol scope, recording scope, security posture, observability, platform roadmap, UX requirements. **Any conflict between POSITIONING.md and other docs → POSITIONING.md wins.**
-- `AGENTS.md` rewritten: added Product Scope, Platform Support, UX Requirements, Observability Stack, Security Posture sections; removed stale Architecture Mismatch Notes (those refactors are already done); accurate Project Status reflecting what is wired vs unwired vs missing.
+- Engineering guidance docs rewritten: added Product Scope, Platform Support, UX Requirements, Observability Stack, Security Posture sections; removed stale Architecture Mismatch Notes (those refactors are already done); accurate Project Status reflecting what is wired vs unwired vs missing.
 - README.md Protocol Support Status table replaced with accurate component-level table: Auth no longer marked as stub (fully implemented); only RTSP is wired into runtime; RTMP/ONVIF/GB28181 marked as code-complete-but-not-wired; browser preview, local recording, i18n, theme, CSRF/CSP, remote log shipping, Windows/macOS all marked missing.
 
 ### Decision log (locked-in by product owner)
