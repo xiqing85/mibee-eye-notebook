@@ -67,6 +67,14 @@ pub enum CameraEvent {
         detections: Vec<streaming::ai::Detection>,
         frame_number: u64,
     },
+    /// An AI alarm fired on a camera (SPEC v1 §6 `alarm`). Produced by
+    /// the alarm bridge in main.rs on a detection rising edge, gated by
+    /// the per-camera cooldown.
+    Alarm {
+        camera_id: String,
+        targets: usize,
+        timestamp_ms: u64,
+    },
 }
 
 /// Type alias for the broadcast sender used to fan out camera events.
@@ -154,6 +162,20 @@ fn event_to_sse(event: CameraEvent) -> Event {
                 "camera_id": camera_id,
                 "detections": detections,
                 "frame_number": frame_number,
+            })
+            .to_string(),
+        ),
+        CameraEvent::Alarm {
+            camera_id,
+            targets,
+            timestamp_ms,
+        } => Event::default().event("alarm").data(
+            serde_json::json!({
+                "camera_id": camera_id,
+                "active": true,
+                "source": "ai",
+                "targets": targets,
+                "timestamp": timestamp_ms,
             })
             .to_string(),
         ),
