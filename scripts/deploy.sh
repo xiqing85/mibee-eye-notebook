@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/deploy.sh
 #
-# Deploy the cross-compiled mibee-rec binary to a target device over SSH.
+# Deploy the cross-compiled mibee-eye binary to a target device over SSH.
 # Does NOT start/restart the service — run scripts/service.sh after this.
 #
 # Usage:
@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 HOST="${1:-}"
 OUT_DIR="target/linux-x86_64"
 # Use ~ (tilde) — both ssh and scp expand it to the remote user's home.
-REMOTE_DIR="~/mibee-rec"
+REMOTE_DIR="~/mibee-eye"
 
 if [ -z "$HOST" ]; then
     echo "Usage: $0 <ssh-host-alias>"
@@ -32,8 +32,8 @@ if [ -z "$HOST" ]; then
 fi
 
 # ── 1. Verify build artifacts exist ───────────────────────────────────────────
-if [ ! -f "$OUT_DIR/mibee-rec" ]; then
-    echo "ERROR: $OUT_DIR/mibee-rec not found." >&2
+if [ ! -f "$OUT_DIR/mibee-eye" ]; then
+    echo "ERROR: $OUT_DIR/mibee-eye not found." >&2
     echo "       Run ./scripts/docker-build.sh first." >&2
     exit 1
 fi
@@ -49,7 +49,7 @@ ssh "$HOST" "mkdir -p $REMOTE_DIR/migrations"
 
 # ── 3. Copy binary + migrations + config ──────────────────────────────────────
 echo "  Copying binary..."
-scp -q "$OUT_DIR/mibee-rec" "$HOST:$REMOTE_DIR/mibee-rec.new"
+scp -q "$OUT_DIR/mibee-eye" "$HOST:$REMOTE_DIR/mibee-eye.new"
 
 echo "  Copying migrations..."
 scp -q -r "$OUT_DIR/migrations/"* "$HOST:$REMOTE_DIR/migrations/"
@@ -60,7 +60,7 @@ scp -q "$OUT_DIR/config.toml" "$HOST:$REMOTE_DIR/config.local.toml"
 # ── 4. Atomic swap of the binary ─────────────────────────────────────────────
 # Move the new binary into place atomically. If the service is running, the
 # old inode stays open until restart; the new file is picked up on next start.
-ssh "$HOST" "chmod +x $REMOTE_DIR/mibee-rec.new && mv -f $REMOTE_DIR/mibee-rec.new $REMOTE_DIR/mibee-rec"
+ssh "$HOST" "chmod +x $REMOTE_DIR/mibee-eye.new && mv -f $REMOTE_DIR/mibee-eye.new $REMOTE_DIR/mibee-eye"
 
 # ── 5. Verify camera device access ───────────────────────────────────────────
 echo "  Verifying camera device access..."
@@ -71,7 +71,7 @@ ssh "$HOST" "id | grep -oE '(video|audio)' | sort -u || echo '  WARNING: user no
 
 echo ""
 echo "✓ Deployed to $HOST."
-echo "  Binary:    \$HOME/mibee-rec/mibee-rec"
-echo "  Config:    \$HOME/mibee-rec/config.local.toml"
+echo "  Binary:    \$HOME/mibee-eye/mibee-eye"
+echo "  Config:    \$HOME/mibee-eye/config.local.toml"
 echo ""
 echo "Next: ./scripts/service.sh $HOST start"

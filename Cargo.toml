@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Professional laptop surveillance agent"
 license = "Apache-2.0"
@@ -76,8 +76,8 @@ fontdue = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [package]
-name = "mibee-rec"
-version = "0.1.0"
+name = "mibee-eye"
+version = "0.2.0"
 edition = "2024"
 license.workspace = true
 description = "Professional laptop surveillance agent"

@@ -1,10 +1,10 @@
 # Configuration Reference
 
-This document provides a complete reference for the mibee-rec configuration system.
+This document provides a complete reference for the mibee-eye configuration system.
 
 ## Overview
 
-Configuration files control all aspects of mibee-rec behavior. The configuration system supports hierarchical precedence, allowing different settings for development, testing, and production environments.
+Configuration files control all aspects of mibee-eye behavior. The configuration system supports hierarchical precedence, allowing different settings for development, testing, and production environments.
 
 ### Configuration File Locations
 
@@ -177,7 +177,7 @@ flush_interval_secs = 5
 
 [observability.logs.labels]
 environment = "production"
-service = "mibee-rec"
+service = "mibee-eye"
 ```
 
 **Field Reference:**
@@ -223,7 +223,7 @@ Configure the ONVIF device endpoint for external NVR discovery via WS-Discovery.
 ```toml
 [onvif]
 enabled = false
-device_name = "mibee-rec"
+device_name = "mibee-eye"
 manufacturer = "MiBee"
 model = "Rec-01"
 serial = "NC00000001"
@@ -236,7 +236,7 @@ port = 3702
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Master enable toggle (default OFF for all outbound protocols) |
-| `device_name` | String | `"mibee-rec"` | ONVIF device name |
+| `device_name` | String | `"mibee-eye"` | ONVIF device name |
 | `manufacturer` | String | `"MiBee"` | Manufacturer name |
 | `model` | String | `"Rec-01"` | Device model |
 | `serial` | String | `"NC00000001"` | Serial number |
@@ -334,19 +334,19 @@ Configure SQLite database path for camera settings, protocol configs, sessions, 
 
 ```toml
 [database]
-path = "~/.local/share/mibee-rec/mibee_rec.db"
+path = "~/.local/share/mibee-eye/mibee_eye.db"
 ```
 
 **Field Reference:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | String | `~/.local/share/mibee-rec/mibee_rec.db` | SQLite database file path (XDG-compliant default) |
+| `path` | String | `~/.local/share/mibee-eye/mibee_eye.db` | SQLite database file path (XDG-compliant default) |
 
 **Notes:**
 
-- Uses XDG data directory for default path: `~/.local/share/mibee-rec/mibee_rec.db`
-- Fallback to `/tmp/mibee-rec/mibee_rec.db` if XDG data dir unavailable
+- Uses XDG data directory for default path: `~/.local/share/mibee-eye/mibee_eye.db`
+- Fallback to `/tmp/mibee-eye/mibee_eye.db` if XDG data dir unavailable
 - Stores camera configs, protocol configs, sessions, users, and stream session data
 
 ## Configuration Validation
@@ -387,7 +387,7 @@ max_reconnect_attempts = 10
 
 [onvif]
 enabled = true
-device_name = "mibee-rec"
+device_name = "mibee-eye"
 manufacturer = "MiBee"
 model = "Rec-01"
 serial = "NC00000001"
@@ -406,12 +406,12 @@ register_interval_secs = 60
 
 [recording]
 enabled = true
-path = "/var/lib/mibee-rec/recordings"
+path = "/var/lib/mibee-eye/recordings"
 segment_duration_secs = 900
 max_capacity_mb = 20480
 
 [database]
-path = "/var/lib/mibee-rec/mibee_rec.db"
+path = "/var/lib/mibee-eye/mibee_eye.db"
 
 [security]
 rate_limit_max = 10
@@ -428,7 +428,7 @@ flush_interval_secs = 5
 
 [observability.logs.labels]
 environment = "production"
-service = "mibee-rec"
+service = "mibee-eye"
 ```
 
 ### Local Development Configuration
@@ -515,7 +515,7 @@ port = 8443
 - Self-signed certificates are auto-generated on first run at `tls/cert.pem` + `tls/key.pem`
 - Certificates support hot-reload on file mtime change
 - Production environments should supply CA-signed certificates
-- CommonName: CN=mibee-rec, SAN: mibee-rec.local
+- CommonName: CN=mibee-eye, SAN: mibee-eye.local
 - Validity: ~30 days for auto-generated dev certificates
 
 ## Configuration Best Practices

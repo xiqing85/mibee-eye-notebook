@@ -34,7 +34,7 @@ pub use h264::{H264Encoder, H264EncoderConfig, NalUnit};
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 compile_error!(
-    "mibee-rec's native codec stack currently supports only Linux (V4L2/ALSA capture backends). \
+    "mibee-eye's native codec stack currently supports only Linux (V4L2/ALSA capture backends). \
      Adding Windows or macOS support requires implementing the capture layer for those platforms \
      first (cross-platform guard)."
 );

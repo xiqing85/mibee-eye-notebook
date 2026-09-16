@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/docker-build.sh
 #
-# Cross-compile mibee-rec for Linux x86_64 from Windows using the project's
+# Cross-compile mibee-eye for Linux x86_64 from Windows using the project's
 # multi-stage Dockerfile, then extract the release binary + config + migrations
 # into ./target/linux-x86_64/ for deployment.
 #
@@ -9,7 +9,7 @@
 #   ./scripts/docker-build.sh [--no-cache]
 #
 # Output:
-#   target/linux-x86_64/mibee-rec          # release binary (glibc 2.36, x86_64)
+#   target/linux-x86_64/mibee-eye          # release binary (glibc 2.36, x86_64)
 #   target/linux-x86_64/config.toml        # default config
 #   target/linux-x86_64/migrations/        # SQL migrations
 #
@@ -20,8 +20,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-EXTRACT_CONTAINER="mibee-rec-extract-$$"
-IMAGE_TAG="mibee-rec:build"
+EXTRACT_CONTAINER="mibee-eye-extract-$$"
+IMAGE_TAG="mibee-eye:build"
 OUT_DIR="target/linux-x86_64"
 
 # ── 1. Ensure Docker Desktop is running (Windows host) ────────────────────────
@@ -75,22 +75,22 @@ docker rm -f "$EXTRACT_CONTAINER" >/dev/null 2>&1 || true
 
 docker create --name "$EXTRACT_CONTAINER" "$IMAGE_TAG" >/dev/null
 
-docker cp "$EXTRACT_CONTAINER:/usr/local/bin/mibee-rec" "$OUT_DIR/mibee-rec"
-docker cp "$EXTRACT_CONTAINER:/usr/local/share/mibee-rec/migrations" "$OUT_DIR/migrations"
-docker cp "$EXTRACT_CONTAINER:/etc/mibee-rec/config.toml" "$OUT_DIR/config.toml"
+docker cp "$EXTRACT_CONTAINER:/usr/local/bin/mibee-eye" "$OUT_DIR/mibee-eye"
+docker cp "$EXTRACT_CONTAINER:/usr/local/share/mibee-eye/migrations" "$OUT_DIR/migrations"
+docker cp "$EXTRACT_CONTAINER:/etc/mibee-eye/config.toml" "$OUT_DIR/config.toml"
 
 docker rm "$EXTRACT_CONTAINER" >/dev/null
 
 # ── 4. Verify ────────────────────────────────────────────────────────────────
-if [ ! -s "$OUT_DIR/mibee-rec" ]; then
+if [ ! -s "$OUT_DIR/mibee-eye" ]; then
     echo "ERROR: extracted binary is empty or missing." >&2
     exit 1
 fi
 
-SIZE=$(du -h "$OUT_DIR/mibee-rec" | cut -f1)
+SIZE=$(du -h "$OUT_DIR/mibee-eye" | cut -f1)
 echo ""
 echo "✓ Build complete."
-echo "  Binary:  $OUT_DIR/mibee-rec ($SIZE)"
+echo "  Binary:  $OUT_DIR/mibee-eye ($SIZE)"
 echo "  Config:  $OUT_DIR/config.toml"
 echo "  Migrations: $OUT_DIR/migrations/"
 echo ""

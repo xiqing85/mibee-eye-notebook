@@ -1,0 +1,18 @@
+[Unit]
+Description=MiBee Eye Notebook Camera Capture Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mibee-eye --config /etc/mibee-eye/config.toml
+Restart=on-failure
+RestartSec=5
+User=mibee-eye
+SupplementaryGroups=video
+LimitNOFILE=65536
+StateDirectory=mibee-eye
+WorkingDirectory=/var/lib/mibee-eye
+
+[Install]
+WantedBy=multi-user.target

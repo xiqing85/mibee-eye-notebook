@@ -1,6 +1,6 @@
 # 安装指南
 
-本指南涵盖 mibee-rec（MiBee Rec）的安装和部署，这是一个用 Rust 构建的专业笔记本监控代理。
+本指南涵盖 mibee-eye（MiBee Eye）的安装和部署，这是一个用 Rust 构建的专业笔记本监控代理。
 
 ## 系统要求
 
@@ -45,7 +45,7 @@ sudo usermod -aG video $USER
 
 ### 特权端口
 
-默认情况下，mibee-rec 使用：
+默认情况下，mibee-eye 使用：
 - Web UI：8443（TLS）
 - RTSP：8554  
 - RTMP：1935
@@ -53,7 +53,7 @@ sudo usermod -aG video $USER
 这些端口避免了特权范围（<1024）。如果需要使用更低的端口，设置功能绑定：
 
 ```bash
-setcap 'cap_net_bind_service=+ep' ./target/release/mibee-rec
+setcap 'cap_net_bind_service=+ep' ./target/release/mibee-eye
 ```
 
 ## Windows 安装
@@ -97,7 +97,7 @@ rustc --version  # 应该 >= 1.85
 ```bash
 # 克隆并进入仓库
 git clone https://github.com/xiqing85/mibee-eye-notebook.git
-cd mibee-rec
+cd mibee-eye
 
 # 调试构建（开发）
 cargo build
@@ -118,8 +118,8 @@ cargo fmt-check
 ### 构建产物
 
 二进制文件位置：
-- 调试版本：`target/debug/mibee-rec`
-- 发布版本：`target/release/mibee-rec`
+- 调试版本：`target/debug/mibee-eye`
+- 发布版本：`target/release/mibee-eye`
 
 ## 运行
 
@@ -141,7 +141,7 @@ cargo run -- --reset-password
 ### 命令行选项
 
 - `--config, -c`：配置文件路径（默认：`config.toml`）
-- `--db-path, -d`：SQLite 数据库路径（默认：`mibee_rec.db`）
+- `--db-path, -d`：SQLite 数据库路径（默认：`mibee_eye.db`）
 - `--reset-password`：重置用户密码（提示输入凭据）
 
 ## 配置文件
@@ -193,7 +193,7 @@ segment_duration_secs = 900
 max_capacity_mb = 10240
 
 [database]
-path = "~/.local/share/mibee-rec/mibee_rec.db"
+path = "~/.local/share/mibee-eye/mibee_eye.db"
 ```
 
 ### 配置选项
@@ -246,11 +246,11 @@ log_level = "info"
 
 ### 开发环境
 
-在开发环境中，mibee-rec 在首次运行时自动生成自签名 TLS 证书：
+在开发环境中，mibee-eye 在首次运行时自动生成自签名 TLS 证书：
 
 ```bash
 # 首次运行生成证书
-./target/release/mibee-rec --config config.local.toml
+./target/release/mibee-eye --config config.local.toml
 
 # 证书保存到：
 # - tls/cert.pem
@@ -258,8 +258,8 @@ log_level = "info"
 ```
 
 证书使用：
-- 主题：CN=mibee-rec
-- SAN：mibee-rec.local
+- 主题：CN=mibee-eye
+- SAN：mibee-eye.local
 - 有效期：约 30 天
 
 ### 生产环境
@@ -290,11 +290,11 @@ chmod 600 ./tls/cert.pem ./tls/key.pem
 
 ### Systemd 服务
 
-在 `/etc/systemd/system/mibee-rec.service` 创建 systemd 服务文件：
+在 `/etc/systemd/system/mibee-eye.service` 创建 systemd 服务文件：
 
 ```ini
 [Unit]
-Description=MiBee Rec 监控代理
+Description=MiBee Eye 监控代理
 After=network.target
 Wants=network.target
 
@@ -302,8 +302,8 @@ Wants=network.target
 Type=simple
 User=mibee
 Group=mibee
-WorkingDirectory=/opt/mibee-rec
-ExecStart=/opt/mibee-rec/target/release/mibee-rec --config /opt/mibee-rec/config.local.toml
+WorkingDirectory=/opt/mibee-eye
+ExecStart=/opt/mibee-eye/target/release/mibee-eye --config /opt/mibee-eye/config.local.toml
 Restart=always
 RestartSec=10
 Environment=RUST_LOG=info
@@ -326,17 +326,17 @@ WantedBy=multi-user.target
 
 ```bash
 # 启用并启动服务
-sudo systemctl enable mibee-rec
-sudo systemctl start mibee-rec
+sudo systemctl enable mibee-eye
+sudo systemctl start mibee-eye
 
 # 检查状态
-sudo systemctl status mibee-rec
+sudo systemctl status mibee-eye
 
 # 查看日志
-sudo journalctl -u mibee-rec -f
+sudo journalctl -u mibee-eye -f
 
 # 重启服务
-sudo systemctl restart mibee-rec
+sudo systemctl restart mibee-eye
 ```
 
 ### 用户设置
@@ -345,8 +345,8 @@ sudo systemctl restart mibee-rec
 
 ```bash
 sudo useradd -r -s /bin/false mibee
-sudo mkdir -p /opt/mibee-rec
-sudo chown mibee:mibee /opt/mibee-rec
+sudo mkdir -p /opt/mibee-eye
+sudo chown mibee:mibee /opt/mibee-eye
 ```
 
 ### 反向代理配置
@@ -373,7 +373,7 @@ server {
     add_header X-XSS-Protection "1; mode=block";
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # 代理到 mibee-rec
+    # 代理到 mibee-eye
     location / {
         proxy_pass https://localhost:8443;
         proxy_set_header Host $host;
@@ -395,23 +395,23 @@ server {
 
 ```bash
 # 使用 Podman 构建
-podman build -t mibee-rec .
+podman build -t mibee-eye .
 
 # 使用卷挂载运行
 podman run -d \
-  --name mibee-rec \
+  --name mibee-eye \
   --restart unless-stopped \
   --cap-add=NET_BIND_SERVICE \
-  -v /opt/mibee-rec/config.local.toml:/config.toml:ro \
-  -v /opt/mibee-rec/tls:/tls:ro \
+  -v /opt/mibee-eye/config.local.toml:/config.toml:ro \
+  -v /opt/mibee-eye/tls:/tls:ro \
   -p 8443:8443 \
   -p 8443:8443 \
   -p 8554:8554 \
-  mibee-rec
+  mibee-eye
 # 注意：RTMP 推送是出站的；除非您正在运行外部 RTMP 推流服务器，否则不需要端口映射
 ```
   -p 1935:1935 \
-  mibee-rec
+  mibee-eye
 ```
 
 ## 故障排除
@@ -476,7 +476,7 @@ sudo fuser -k 8443/tcp
 rm -f tls/cert.pem tls/key.pem
 
 # 重启服务以重新生成
-sudo systemctl restart mibee-rec
+sudo systemctl restart mibee-eye
 ```
 
 #### 数据库连接错误
@@ -487,10 +487,10 @@ sudo systemctl restart mibee-rec
 
 ```bash
 # 检查数据库文件
-ls -la mibee_rec.db
+ls -la mibee_eye.db
 
 # 检查权限
-chmod 640 mibee_rec.db
+chmod 640 mibee_eye.db
 ```
 
 #### 资源限制已达到
@@ -501,7 +501,7 @@ chmod 640 mibee_rec.db
 
 ```bash
 # 检查当前资源使用情况
-systemctl show mibee-rec --property=MemoryCurrent,LimitNOFILE
+systemctl show mibee-eye --property=MemoryCurrent,LimitNOFILE
 
 # 如需要，调整 systemd 服务限制
 ```
@@ -514,11 +514,11 @@ systemctl show mibee-rec --property=MemoryCurrent,LimitNOFILE
 
 ```bash
 # 监控资源使用情况
-top -p $(pidof mibee-rec)
-htop -p $(pidof mibee-rec)
+top -p $(pidof mibee-eye)
+htop -p $(pidof mibee-eye)
 
 # 检查流媒体日志中的错误
-sudo journalctl -u mibee-rec | grep -i error
+sudo journalctl -u mibee-eye | grep -i error
 ```
 
 #### 内存使用率高
@@ -527,7 +527,7 @@ sudo journalctl -u mibee-rec | grep -i error
 
 ```bash
 # 检查内存使用情况
-ps aux | grep mibee-rec
+ps aux | grep mibee-eye
 
 # 检查流媒体配置
 grep -i buffer config.local.toml
@@ -539,7 +539,7 @@ grep -i buffer config.local.toml
 
 ```bash
 # 设置 RUST_LOG 环境变量
-RUST_LOG=debug ./target/release/mibee-rec --config config.local.toml
+RUST_LOG=debug ./target/release/mibee-eye --config config.local.toml
 
 # 或在 systemd 服务文件中设置
 Environment="RUST_LOG=debug"
@@ -579,4 +579,4 @@ ss -tulpn | grep -E "(8443|8554|1935)"
    - 复现步骤
    - 预期与实际行为
 
-> **迁移说明（品牌改名）**：开发用 TLS 证书的 CommonName 和 SubjectAltName 已从 `notebook-cam`/`notebook-cam.local` 改为 `mibee-rec`/`mibee-rec.local`。请在启动服务器前删除旧的 `tls/cert.pem` 和 `tls/key.pem` 文件，以便使用正确的身份重新生成自签名证书。
+> **迁移说明（品牌改名）**：开发用 TLS 证书的 CommonName 和 SubjectAltName 已从 `notebook-cam`/`notebook-cam.local` 改为 `mibee-eye`/`mibee-eye.local`。请在启动服务器前删除旧的 `tls/cert.pem` 和 `tls/key.pem` 文件，以便使用正确的身份重新生成自签名证书。

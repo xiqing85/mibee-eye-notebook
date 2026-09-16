@@ -52,7 +52,7 @@ use streaming::source::Source;
 const SDP_BODY: &str = concat!(
     "v=0\r\n",
     "o=- 0 0 IN IP4 0.0.0.0\r\n",
-    "s=mibee-rec\r\n",
+    "s=mibee-eye\r\n",
     "c=IN IP4 0.0.0.0\r\n",
     "t=0 0\r\n",
     "m=video 0 RTP/AVP 96\r\n",

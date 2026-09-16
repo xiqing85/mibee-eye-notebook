@@ -1,4 +1,4 @@
-# mibee-rec — Product Positioning / 产品定位
+# mibee-eye — Product Positioning / 产品定位
 
 > **Authoritative document.** Any conflict between this file and any other doc (README, inline comments) → **this file wins**.
 >
@@ -12,7 +12,7 @@ Version: 1.0 · Last updated: 2026-06 · Owner: project maintainers
 
 ### 1. What this product IS
 
-**mibee-rec is a PC-local webcam and microphone capture agent.** It runs on a desktop or laptop, captures video and audio from devices physically attached to that machine (USB webcams, built-in or USB microphones), and exposes them through a TLS-gated Web UI as the primary control surface.
+**mibee-eye is a PC-local webcam and microphone capture agent.** It runs on a desktop or laptop, captures video and audio from devices physically attached to that machine (USB webcams, built-in or USB microphones), and exposes them through a TLS-gated Web UI as the primary control surface.
 
 The Web UI is the **default and only** day-to-day interface. Live preview, snapshot, recording controls, and configuration all happen in the browser. The user should never need VLC or any external player for daily use.
 
@@ -87,7 +87,7 @@ The Web UI is the **default and only** day-to-day interface. Live preview, snaps
 | Container format | MP4 (H.264 video + AAC audio when audio captured) | MP4 only for v1; MKV is a future option |
 | Segment duration | 15 minutes | 1–60 minutes configurable |
 | Total capacity | 10 GB | 1 GB – unlimited; 0 = unlimited |
-| Pruning policy | Delete oldest segments when capacity hit | FIFO; never deletes anything not written by mibee-rec |
+| Pruning policy | Delete oldest segments when capacity hit | FIFO; never deletes anything not written by mibee-eye |
 | Path | `./recordings/` | User-configurable absolute path; must be writable |
 | Filename pattern | `{camera_id}_{YYYYmmddHHMMSS}.mp4` | Sortable lexicographically |
 | Audio | Muxed into same MP4 when audio capture is enabled for that stream | Optional per-stream |
@@ -143,7 +143,7 @@ These are the lines that, if crossed, change the product into something else. Th
 
 ### 1. 本产品是什么
 
-**mibee-rec 是部署在 PC 上的本地摄像头与麦克风采集代理。** 运行在桌面机或笔记本上,采集物理连接到该机器的设备(USB 摄像头、内置或 USB 麦克风)的视频和音频,并通过强制 TLS 的 Web UI 作为主控制面暴露给用户。
+**mibee-eye 是部署在 PC 上的本地摄像头与麦克风采集代理。** 运行在桌面机或笔记本上,采集物理连接到该机器的设备(USB 摄像头、内置或 USB 麦克风)的视频和音频,并通过强制 TLS 的 Web UI 作为主控制面暴露给用户。
 
 Web UI 是**默认且唯一**的日常操作界面。实时预览、截图、录像控制、参数配置全部在浏览器中完成。日常使用中,用户不应需要 VLC 或任何外部播放器。
 
@@ -218,7 +218,7 @@ Web UI 是**默认且唯一**的日常操作界面。实时预览、截图、录
 | 容器格式 | MP4(H.264 视频 + 录音时 AAC 音频) | v1 仅 MP4;MKV 为未来选项 |
 | 切片时长 | 15 分钟 | 1–60 分钟可配 |
 | 总容量 | 10 GB | 1 GB – 无限;0 = 无限 |
-| 滚动策略 | 容量达到上限时删除最旧切片 | FIFO;绝不删除非 mibee-rec 写入的文件 |
+| 滚动策略 | 容量达到上限时删除最旧切片 | FIFO;绝不删除非 mibee-eye 写入的文件 |
 | 路径 | `./recordings/` | 用户可配绝对路径;必须可写 |
 | 文件名模式 | `{camera_id}_{YYYYmmddHHMMSS}.mp4` | 字典序可排序 |
 | 音频 | 该路流开启音频采集时合流到同一 MP4 | 每路流可选 |

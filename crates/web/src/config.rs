@@ -33,7 +33,7 @@ pub struct OnvifConfig {
 }
 
 fn default_onvif_device_name() -> String {
-    "mibee-rec".into()
+    "mibee-eye".into()
 }
 fn default_onvif_manufacturer() -> String {
     "MiBee".into()
@@ -55,7 +55,7 @@ impl Default for OnvifConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            device_name: "mibee-rec".into(),
+            device_name: "mibee-eye".into(),
             manufacturer: "MiBee".into(),
             model: "Rec-01".into(),
             serial: "NC00000001".into(),

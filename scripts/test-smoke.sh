@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/test-smoke.sh
 #
-# Functional smoke test for a deployed mibee-rec instance.
+# Functional smoke test for a deployed mibee-eye instance.
 # Runs over SSH against the target device. Exits non-zero on any failure.
 #
 # Usage:
@@ -21,11 +21,11 @@ fail() { echo "  ✗ $1" >&2; FAIL=1; }
 echo "=== Smoke test: $HOST ==="
 
 # ── 1. Service is active ──────────────────────────────────────────────────────
-if ssh "$HOST" "systemctl --user is-active mibee-rec" | grep -q "^active$"; then
+if ssh "$HOST" "systemctl --user is-active mibee-eye" | grep -q "^active$"; then
     pass "systemd service is active"
 else
     fail "systemd service is NOT active"
-    ssh "$HOST" "systemctl --user status mibee-rec --no-pager -l | head -30" >&2 || true
+    ssh "$HOST" "systemctl --user status mibee-eye --no-pager -l | head -30" >&2 || true
     exit 1
 fi
 
@@ -103,7 +103,7 @@ else
 fi
 
 # ── 9. CRITICAL: zero ffmpeg references in journal ────────────────────────────
-FFMPEG_HITS=$(ssh "$HOST" "journalctl --user -u mibee-rec --since '5 min ago' --no-pager 2>/dev/null | grep -ci 'ffmpeg' || echo 0")
+FFMPEG_HITS=$(ssh "$HOST" "journalctl --user -u mibee-eye --since '5 min ago' --no-pager 2>/dev/null | grep -ci 'ffmpeg' || echo 0")
 if [ "$FFMPEG_HITS" = "0" ]; then
     pass "ZERO ffmpeg references in journal (full removal confirmed)"
 else

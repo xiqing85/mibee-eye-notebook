@@ -55,7 +55,7 @@ pub async fn status_handler(
     (
         StatusCode::OK,
         Json(json!({
-            "device_name": "mibee-rec",
+            "device_name": "mibee-eye",
             "model": format!("notebook ({advertised_host})"),
             "vendor": "MiBee Studio",
             "firmware": env!("CARGO_PKG_VERSION"),

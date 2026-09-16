@@ -1,6 +1,6 @@
-# Contributing to mibee-rec
+# Contributing to mibee-eye
 
-Thank you for your interest in contributing to mibee-rec! This guide covers everything you need to know to get started and make meaningful contributions to this Rust-based laptop surveillance agent.
+Thank you for your interest in contributing to mibee-eye! This guide covers everything you need to know to get started and make meaningful contributions to this Rust-based laptop surveillance agent.
 
 ## Getting Started (Development)
 
@@ -23,7 +23,7 @@ sudo usermod -aG video $USER
 ```bash
 # Clone the repository
 git clone https://github.com/xiqing85/mibee-eye-notebook.git
-cd mibee-rec
+cd mibee-eye
 
 # Build the project
 cargo build
@@ -79,7 +79,7 @@ cargo fmt
 ## Project Structure
 
 ```
-mibee-rec/
+mibee-eye/
 ├─ src/                    # Binary entry point, config, types
 │  ├─ main.rs             # Application entry point
 │  ├─ config.rs           # Configuration management with TOML
@@ -412,7 +412,7 @@ Look at existing protocols for reference:
 
 ### CameraType Enum
 
-Camera types are defined in `src/types.rs` and represent the different sources mibee-rec can handle:
+Camera types are defined in `src/types.rs` and represent the different sources mibee-eye can handle:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
