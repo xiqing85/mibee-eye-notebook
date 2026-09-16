@@ -336,6 +336,8 @@ pub struct ProtocolRuntime {
     /// Local-recording pause gate shared with the recording FileOutputs
     /// (platform RecordCmd StopRecord / Record).
     recording_paused: Arc<AtomicBool>,
+    /// DeviceControl IFrameCmd latch shared with the camera encode loops.
+    force_idr: Arc<AtomicBool>,
     /// Reserved for future use (RTMP currently per-stream, no global task).
     #[allow(dead_code)]
     rtmp_handle: Option<JoinHandle<()>>,
@@ -358,6 +360,7 @@ impl ProtocolRuntime {
             Arc::new(Mutex::new(None)),
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
@@ -368,6 +371,7 @@ impl ProtocolRuntime {
         notifier_slot: Arc<Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>>,
         alarm_notify_gate: Arc<AtomicBool>,
         recording_paused: Arc<AtomicBool>,
+        force_idr: Arc<AtomicBool>,
     ) -> Self {
         Self {
             onvif_handle: None,
@@ -377,6 +381,7 @@ impl ProtocolRuntime {
             notifier_slot,
             alarm_notify_gate,
             recording_paused,
+            force_idr,
             rtmp_handle: None,
             shutdown_txs: HashMap::new(),
             rtmp_enabled: false,
@@ -644,9 +649,10 @@ impl ProtocolRuntime {
             gb28181_rs::server::Gb28181Server::with_recording_index(lib_config, source, None)
                 .with_register_authenticator(authenticator)
                 .with_control_handler(Some(Arc::new(
-                    crate::gb28181_control::Gb28181ControlHandler::new(Arc::clone(
-                        &self.recording_paused,
-                    )),
+                    crate::gb28181_control::Gb28181ControlHandler::new(
+                        Arc::clone(&self.recording_paused),
+                        Arc::clone(&self.force_idr),
+                    ),
                 )))
                 .with_config_handler(Some(Arc::new(
                     crate::gb28181_control::AlarmReportGate::new(Arc::clone(&alarm_gate)),
@@ -768,6 +774,11 @@ impl ProtocolRuntime {
     /// Shared DeviceConfig AlarmReport runtime gate for the alarm bridge.
     pub fn alarm_notify_gate(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.alarm_notify_gate)
+    }
+
+    /// Shared IFrameCmd latch handed to the StreamManager's encode loops.
+    pub fn force_idr_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.force_idr)
     }
 
     pub async fn shutdown_all(&mut self) {

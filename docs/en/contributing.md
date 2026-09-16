@@ -85,7 +85,7 @@ mibee-rec/
 │  ├─ config.rs           # Configuration management with TOML
 │  └─ types.rs            # Core domain types (CameraId, StreamId, CameraType)
 ├─ crates/                # Workspace crates
-│  ├─ protocols/         # RTSP server, RTMP push, ONVIF, GB28181, RTP, H.264, RTCP
+│  ├─ protocols/         # Media plane: RTSP server, RTMP push, RTP, H.264, RTCP (signaling lives in the shared protocol libraries)
 │  ├─ streaming/         # StreamHub fan-out, CaptureSource, Output adapters, MiBee client
 │  ├─ web/              # Axum REST API + embedded SPA + TLS + i18n + ProtocolRuntime
 │  ├─ security/         # Auth, TLS, rate limiting, CSRF, password hashing

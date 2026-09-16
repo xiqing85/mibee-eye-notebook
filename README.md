@@ -17,6 +17,7 @@ Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqin
 
 - **Local capture** — webcam via V4L2 (Linux) / MSMF (Windows), microphone via ALSA / WASAPI
 - **Outbound protocols** — RTSP server (clients pull), RTMP push, ONVIF device endpoint, GB/T 28181 device registration (all default-OFF, enabled via Web UI)
+- **GB/T 28181-2022 device surface** — alarm events (SSE `alarm` + Alarm NOTIFY, AI rising-edge with cooldown), DeviceControl (IFrameCmd force-keyframe, RecordCmd recording gate), graceful deregistration (REGISTER Expires: 0), static MobilePosition reporting, Catalog/DeviceInfo/keepalive per the shared gb28181-rs library
 - **H.264 / H.265** — hand-written NAL unit parser, keyframe detection, SPS/PPS extraction
 - **MiBee NVR integration** — REST API client, camera sync, SSE event stream
 - **Web UI** — Axum REST API + embedded SPA, TLS via rustls, session-based auth, bilingual (zh-CN / en-US), day/night theme
@@ -41,31 +42,40 @@ Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqin
 
 ## Architecture
 
-```
-┌──────────────────────────────────┐
-│        Web UI (Axum + SPA)       │
-│  REST API · TLS · Auth Session   │
-│  Bilingual (zh-CN/en-US) · Theme  │
-├──────────────────────────────────┤
-│       Streaming Hub              │
-│  Source → BufferPool → fan-out   │
-│  ResourceController (max 16)     │
-│    ↓ ↓ ↓ ↓ ↓ ↓                  │
-│ Web Preview · File Output       │
-│   RTSP · RTMP · ONVIF · GB28181  │
-├──────────────────────────────────┤
-│        Protocol Layer            │
-│  RTSP · RTMP · ONVIF · GB28181   │
-│  RTP · H.264 NAL Parser          │
-├──────────────────────────────────┤
-│        Capture Layer             │
-│  Video (nokhwa) · Audio (cpal)   │
-│  Hot-plug detection (udev)       │
-├──────────────────────────────────┤
-│   Security · Observability       │
-│  Auth · TLS · CSRF · CSP         │
-│  Tracing · Metrics · Loki logs   │
-└──────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph L1["Web UI (Axum + SPA)"]
+        direction LR
+        L1a["REST API · TLS · Session Auth"]
+        L1b["Bilingual (zh-CN/en-US) · Theme · SSE events"]
+    end
+    subgraph L2["Streaming Hub"]
+        direction LR
+        L2a["Source → BufferPool → fan-out"]
+        L2b["ResourceController (max 16 streams)"]
+    end
+    subgraph L3["Outputs"]
+        direction LR
+        L3a["Web Preview · MP4 Recording"]
+        L3b["RTSP · RTMP Push"]
+        L3c["ONVIF · GB28181 Device"]
+    end
+    subgraph L4["Protocol Layer"]
+        direction LR
+        L4a["RTP/RTSP/RTMP · H.264 NAL (in-repo, media plane)"]
+        L4b["Signaling: onvif-device-rs · gb28181-rs"]
+    end
+    subgraph L5["Capture Layer"]
+        direction LR
+        L5a["Video (nokhwa) · Audio (cpal)"]
+        L5b["OpenH264 encode in-process · udev hot-plug"]
+    end
+    SEC["Security · Observability<br/>Auth · TLS · CSRF · CSP<br/>Tracing · Metrics · Loki logs"]
+    L5 -->|"H.264 AUs + G.711/AAC"| L2
+    L1 -->|"config / control"| L2
+    L2 --> L3
+    L3 --- L4
+    SEC -.->|wraps| L1
 ```
 
 ## Workspace Layout
@@ -94,6 +104,10 @@ mibee-rec/
 | **RTMP Push** | Handshake + connect + publish | Hand-written (`RtmpOutput`, auto-attached via StreamHub when `rtmp_push.enabled=true`) | ✅ Implemented & wired in |
 | **ONVIF Device** | WS-Discovery + SOAP device service | [`onvif-device-rs`](https://github.com/mickeyzzc/onvif-rs) (starts when `onvif.enabled=true`) | ✅ Implemented & wired in |
 | **GB/T 28181 Device** | SIP REGISTER (Digest) + INVITE + RTP push | [`gb28181-rs`](https://github.com/mickeyzzc/gb28181-rs) (incl. GB35114 auth; `Gb28181Output` dynamically attached on INVITE, detached on BYE) | ✅ Implemented & wired in |
+| **GB28181 alarm pipeline** | AI detection rising edge → `alarm` SSE + Alarm NOTIFY | `AlarmBridge` (cooldown-gated) + gb28181-rs `notifier()`; priority 4 / method 5 / type 2 (2022 table) | ✅ Implemented & wired in |
+| **GB28181 DeviceControl** | IFrameCmd / RecordCmd / GuardCmd / TeleBoot / PTZ | gb28181-rs control handler: force-keyframe via OpenH264, RecordCmd gates local recording, no-actuator commands ack-only | ✅ Implemented & wired in |
+| **GB28181 graceful deregistration** | REGISTER `Expires: 0` on SIGTERM / protocol stop | gb28181-rs `shutdown_with_deregister` (401 dance, 2s timeouts, abort guard) | ✅ Implemented & wired in |
+| **GB28181 MobilePosition** | static coordinates on subscription cadence | gb28181-rs `with_position_source` (empty config = no reporting) | ✅ Implemented & wired in |
 | **H.264** | NAL unit parser, SPS/PPS, keyframe detection | Hand-written (`H264Parser`) | ✅ Used by all video outputs |
 | **H.265 decode** | Browser fallback to H.264 | — | ⚠️ Not universal in browsers; H.264 only for v1 |
 | **Browser live preview** | MJPEG multipart stream via `<img>` | `/api/cameras/{id}/live` route (ffmpeg transcode) | ✅ Implemented & wired in |
