@@ -169,6 +169,10 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
             .get("talkback_playback")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        talkback_upstream: db_config
+            .get("talkback_upstream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         device_name: get_str("device_name", "mibee-eye"),
         manufacturer: get_str("manufacturer", "MiBee"),
         model: get_str("model", "Rec-01"),
@@ -227,6 +231,11 @@ pub struct Gb28181RuntimeConfig {
     /// (GB/T 28181-2022 §9.2). Fail-open: off, or no usable output
     /// device, → no sink registered → talkback INVITEs answered 488.
     pub talkback_playback: bool,
+    /// Send microphone audio to the platform during talkback sessions
+    /// (§9.2 send half). Fail-open: off, or no usable input device, → no
+    /// source registered → recvonly offers answered 488. A-law encoded
+    /// (PCMA is the de-facto GB platform codec).
+    pub talkback_upstream: bool,
     /// Catalog/DeviceInfo identity. gb28181-rs 0.6.0 defaults to neutral
     /// placeholders unless the host stamps its product identity here.
     pub device_name: String,
@@ -330,6 +339,9 @@ pub struct ProtocolRuntime {
     /// Talkback playback stream; held for the server's lifetime so the
     /// local audio output stays open, dropped on stop.
     gb28181_talkback_stream: Option<cpal::Stream>,
+    /// Talkback upstream mic capture stream (§9.2 send half); held for
+    /// the server's lifetime so capture stays open, dropped on stop.
+    gb28181_upstream_stream: Option<cpal::Stream>,
     /// Host-side NOTIFY sender (alarm/position/catalog). Filled on GB28181
     /// start, cleared on stop; the AI alarm bridge reads it on fire.
     notifier_slot: Arc<Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>>,
@@ -390,6 +402,7 @@ impl ProtocolRuntime {
             gb28181_server: None,
             gb_date_observer: None,
             gb28181_talkback_stream: None,
+            gb28181_upstream_stream: None,
             notifier_slot,
             alarm_notify_gate,
             recording_paused,
@@ -648,6 +661,21 @@ impl ProtocolRuntime {
             }
         };
 
+        // Talkback send half: mic → G.711 A-law source. Same fail-open
+        // posture — no source registered means recvonly offers get 488.
+        let talkback_upstream = match crate::gb28181_talkback::open_upstream(
+            config.talkback_upstream,
+        ) {
+            Ok(opened) => opened,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "GB28181 talkback upstream unavailable — recvonly offers will be refused 488"
+                );
+                None
+            }
+        };
+
         // Host-side seams: control/config handlers, static position source,
         // and the NOTIFY sender for the alarm bridge.
         let alarm_gate = Arc::clone(&self.alarm_notify_gate);
@@ -684,10 +712,16 @@ impl ProtocolRuntime {
             server_builder = server_builder.with_audio_sink(sink);
             audio_stream = Some(stream);
         }
+        let mut upstream_stream = None;
+        if let Some((source, stream)) = talkback_upstream {
+            server_builder = server_builder.with_talkback_source(source);
+            upstream_stream = Some(stream);
+        }
 
         match server_builder.spawn().await {
             Ok(server) => {
                 self.gb28181_talkback_stream = audio_stream;
+                self.gb28181_upstream_stream = upstream_stream;
                 // Shared so the SIP-Date drift observer can poll the
                 // platform clock while the runtime keeps stop control.
                 let server = Arc::new(tokio::sync::Mutex::new(server));
@@ -698,6 +732,7 @@ impl ProtocolRuntime {
             Err(e) => {
                 *self.notifier_slot.lock().expect("notifier slot lock") = None;
                 self.gb28181_talkback_stream = None;
+                self.gb28181_upstream_stream = None;
                 tracing::error!(error = %e, "GB28181 device server failed to start");
                 return Err(e);
             }
@@ -735,8 +770,10 @@ impl ProtocolRuntime {
                 server.abort();
             }
         }
-        // Dropping the talkback playback stream releases the audio output.
+        // Dropping the talkback playback/upstream streams releases the
+        // audio output and the microphone.
         self.gb28181_talkback_stream = None;
+        self.gb28181_upstream_stream = None;
         tracing::info!("GB28181 protocol stopped");
     }
 

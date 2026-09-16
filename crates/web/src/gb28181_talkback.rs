@@ -237,6 +237,183 @@ pub fn open_sink(enabled: bool) -> Result<Option<(Arc<dyn AudioTalkbackSink>, cp
     Ok(Some((Arc::new(TalkbackDecoder::new(out)), stream)))
 }
 
+// ── Talkback upstream (mic → platform, §9.2 send half) ───────────────────────
+
+/// GB28181 voice is 8 kHz mono; the library expects 20 ms G.711 frames
+/// (160 bytes) pushed at real-time cadence.
+const UPSTREAM_FRAME_BYTES: usize = 160;
+/// Bounded pre-session backlog (~1 s of audio). The library only drains
+/// the channel while a talkback session is up; a longer backlog would
+/// both leak memory and replay stale mic audio on connect.
+const UPSTREAM_BACKLOG_FRAMES: usize = 50;
+
+/// Downmix to mono and linearly resample to 8 kHz.
+#[must_use]
+pub fn resample_to_8k_mono(samples: &[i16], rate: f64, channels: u16) -> Vec<i16> {
+    let mono: Vec<i16> = if channels >= 2 {
+        let ch = channels as usize;
+        samples
+            .chunks(ch)
+            .map(|c| {
+                let sum: i32 = c.iter().map(|&s| i32::from(s)).sum();
+                (sum / ch as i32) as i16
+            })
+            .collect()
+    } else {
+        samples.to_vec()
+    };
+    if (rate - 8000.0).abs() < 0.5 {
+        return mono;
+    }
+    let ratio = rate / 8000.0;
+    let out_len = ((mono.len() as f64) / ratio).floor() as usize;
+    (0..out_len)
+        .map(|i| {
+            let pos = i as f64 * ratio;
+            let i0 = pos.floor() as usize;
+            let i1 = (i0 + 1).min(mono.len() - 1);
+            let frac = pos - i0 as f64;
+            let a = i32::from(mono[i0]);
+            let b = i32::from(mono[i1]);
+            (a as f64 + (b - a) as f64 * frac).round() as i16
+        })
+        .collect()
+}
+
+/// Accumulates A-law bytes and yields only complete 20 ms frames,
+/// retaining the remainder for the next push.
+pub struct G711Chunker {
+    buf: Vec<u8>,
+}
+
+impl G711Chunker {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            buf: Vec::with_capacity(UPSTREAM_FRAME_BYTES * 2),
+        }
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        self.buf.extend_from_slice(bytes);
+        while self.buf.len() >= UPSTREAM_FRAME_BYTES {
+            out.push(self.buf[..UPSTREAM_FRAME_BYTES].to_vec());
+            self.buf.drain(..UPSTREAM_FRAME_BYTES);
+        }
+        out
+    }
+}
+
+impl Default for G711Chunker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn encode_alaw_8k(pcm: &[i16]) -> Vec<u8> {
+    // A-law: the de-facto GB platform codec (PCMA, PT 8).
+    pcm.iter()
+        .map(|&s| protocols::audio_codec::pcm_to_alaw(s))
+        .collect()
+}
+
+/// Callback-side send: never blocks (cpal callbacks must not); a full
+/// backlog drops the frame — session start replays at most ~1 s.
+fn push_frames(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, chunker: &mut G711Chunker, alaw: &[u8]) {
+    for frame in chunker.push(alaw) {
+        let _ = tx.try_send(frame);
+    }
+}
+
+/// Resolve the talkback source per config: `None` when disabled; when
+/// enabled, a cpal input stream (8 kHz mono preferred, resampled
+/// otherwise) feeding A-law 20 ms frames into the channel the library
+/// consumes during recvonly talkback sessions. The caller must hold the
+/// returned stream for the protocol's lifetime (dropping it stops
+/// capture). Errors bubble up so the caller can fail open (no source →
+/// the library answers 488).
+pub fn open_upstream(
+    enabled: bool,
+) -> Result<Option<(std::sync::mpsc::Receiver<Vec<u8>>, cpal::Stream)>> {
+    if !enabled {
+        return Ok(None);
+    }
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .context("no default audio input device available")?;
+
+    // Prefer a native 8 kHz config; fall back to the device default and
+    // resample in-callback.
+    let native_8k = device
+        .supported_input_configs()?
+        .into_iter()
+        .find(|c| {
+            let fmt = c.sample_format();
+            (fmt == cpal::SampleFormat::I16 || fmt == cpal::SampleFormat::F32)
+                && c.min_sample_rate() <= 8000
+                && c.max_sample_rate() >= 8000
+        })
+        .map(|c| c.with_sample_rate(8000));
+    let config = match native_8k {
+        Some(c) => c,
+        None => device.default_input_config()?,
+    };
+    let rate = config.sample_rate() as f64;
+    let channels = config.channels();
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(UPSTREAM_BACKLOG_FRAMES);
+    let chunker = Arc::new(parking_lot::Mutex::new(G711Chunker::new()));
+    let err_fn = |e| tracing::warn!(error = %e, "talkback upstream capture error");
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::I16 => {
+            let tx = tx.clone();
+            let chunker = Arc::clone(&chunker);
+            device.build_input_stream(
+                config.config(),
+                move |data: &[i16], _| {
+                    push_frames(
+                        &tx,
+                        &mut chunker.lock(),
+                        &encode_alaw_8k(&resample_to_8k_mono(data, rate, channels)),
+                    );
+                },
+                err_fn,
+                None,
+            )?
+        }
+        cpal::SampleFormat::F32 => {
+            let tx = tx.clone();
+            let chunker = Arc::clone(&chunker);
+            device.build_input_stream(
+                config.config(),
+                move |data: &[f32], _| {
+                    let pcm: Vec<i16> = data
+                        .iter()
+                        .map(|&f| (f.clamp(-1.0, 1.0) * 32767.0) as i16)
+                        .collect();
+                    push_frames(
+                        &tx,
+                        &mut chunker.lock(),
+                        &encode_alaw_8k(&resample_to_8k_mono(&pcm, rate, channels)),
+                    );
+                },
+                err_fn,
+                None,
+            )?
+        }
+        fmt => anyhow::bail!("unsupported input sample format: {fmt:?}"),
+    };
+    stream
+        .play()
+        .context("failed to start talkback upstream capture")?;
+    Ok(Some((rx, stream)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -249,6 +426,46 @@ mod tests {
         fn push(&self, samples: &[i16]) {
             self.0.lock().unwrap().extend_from_slice(samples);
         }
+    }
+
+    // ── Upstream helpers ───────────────────────────────────────────────
+
+    #[test]
+    fn resample_16k_to_8k_halves_and_interpolates() {
+        // Ramp 0..8 at 16 kHz → 4 samples at 8 kHz, each the average of
+        // the straddled pair.
+        let pcm: Vec<i16> = (0..8).collect();
+        let out = resample_to_8k_mono(&pcm, 16_000.0, 1);
+        assert_eq!(out, vec![0, 2, 4, 6]);
+    }
+
+    #[test]
+    fn resample_native_8k_passthrough_and_stereo_downmix() {
+        let pcm = [100i16, 200, 300, 400];
+        assert_eq!(resample_to_8k_mono(&pcm, 8000.0, 1), pcm.to_vec());
+        // Stereo pairs average to mono.
+        assert_eq!(resample_to_8k_mono(&pcm, 8000.0, 2), vec![150, 350]);
+    }
+
+    #[test]
+    fn chunker_yields_only_complete_20ms_frames() {
+        let mut chunker = G711Chunker::new();
+        // 100 bytes → nothing yet.
+        assert!(chunker.push(&[7u8; 100]).is_empty());
+        // +100 → one complete 160-byte frame, 40 retained.
+        let frames = chunker.push(&[7u8; 100]);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 160);
+        // +120 → another frame (40+120=160), nothing retained.
+        let frames = chunker.push(&[9u8; 120]);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 160);
+        assert!(chunker.buf.is_empty());
+    }
+
+    #[test]
+    fn upstream_disabled_returns_none() {
+        assert!(open_upstream(false).unwrap().is_none());
     }
 
     #[test]
