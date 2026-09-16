@@ -14,6 +14,7 @@ use std::future::Future;
 use std::io::BufWriter;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -56,6 +57,12 @@ pub struct FileOutput {
     segment_start_pts: f64,
     /// Whether the output has been started.
     started: bool,
+    /// Shared pause gate (platform RecordCmd StopRecord via the GB28181
+    /// control handler). `None` = recording always allowed.
+    pause_flag: Option<Arc<AtomicBool>>,
+    /// Tracks the previous pause state so entering pause closes the current
+    /// segment exactly once.
+    was_paused: bool,
     /// Frame counter — used to throttle pruning checks.
     frame_count: u64,
 }
@@ -93,6 +100,8 @@ impl FileOutput {
             active: None,
             segment_start_pts: 0.0,
             started: false,
+            pause_flag: None,
+            was_paused: false,
             frame_count: 0,
         }
     }
@@ -101,6 +110,14 @@ impl FileOutput {
     ///
     /// Should be called before [`start`](Output::start). Used to populate the
     /// muxer's track configuration so the resulting MP4 has correct metadata.
+    /// Share a pause gate: when the flag is `true`, frames are dropped and
+    /// the current segment is closed (clean archive boundary); on `false`
+    /// the next keyframe opens a fresh segment via the normal lazy path.
+    pub fn with_pause_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.pause_flag = Some(flag);
+        self
+    }
+
     pub fn with_dimensions(mut self, width: u32, height: u32, fps: f32) -> Self {
         self.width = width;
         self.height = height;
@@ -220,6 +237,38 @@ impl FileOutput {
     }
 }
 
+/// What [`FileOutput::send_frame`] should do about a paused gate.
+#[derive(Debug, PartialEq, Eq)]
+enum PauseAction {
+    /// Frames flow (or at least the output is unpaused).
+    Pass,
+    /// Entering (or inside) pause: close the segment once, then hold.
+    CloseAndHold,
+}
+
+impl FileOutput {
+    /// Classify this frame against the pause gate and update the
+    /// transition tracker. Kept sync and side-effect-free (besides the
+    /// `was_paused` latch) so it is directly unit-testable.
+    fn pause_transition(&mut self) -> PauseAction {
+        let paused = self
+            .pause_flag
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst));
+        match (paused, self.was_paused) {
+            (true, false) => {
+                self.was_paused = true;
+                PauseAction::CloseAndHold
+            }
+            (true, true) => PauseAction::CloseAndHold,
+            (false, _) => {
+                self.was_paused = false;
+                PauseAction::Pass
+            }
+        }
+    }
+}
+
 impl Output for FileOutput {
     fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move {
@@ -245,6 +294,16 @@ impl Output for FileOutput {
                 keyframe,
                 timestamp,
             } => {
+                match self.pause_transition() {
+                    PauseAction::CloseAndHold => {
+                        if let Err(e) = self.close_current_segment() {
+                            tracing::warn!(error = %e, "FileOutput pause close failed");
+                        }
+                        return Box::pin(async move { Ok(()) });
+                    }
+                    PauseAction::Pass => {}
+                }
+
                 let data = data.clone();
                 let keyframe = *keyframe;
                 let timestamp = *timestamp;
@@ -391,5 +450,40 @@ mod tests {
     fn prune_returns_false_when_unlimited() {
         let out = FileOutput::new("/tmp/mibee-test", "cam", 60, 0);
         assert!(!out.prune_oldest_if_needed().unwrap());
+    }
+
+    #[test]
+    fn no_pause_flag_always_passes() {
+        let mut out = FileOutput::new("/tmp/mibee-test", "cam", 60, 0);
+        assert_eq!(out.pause_transition(), PauseAction::Pass);
+        assert_eq!(out.pause_transition(), PauseAction::Pass);
+    }
+
+    #[test]
+    fn entering_pause_closes_once_then_holds() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut out = FileOutput::new("/tmp/mibee-test", "cam", 60, 0).with_pause_flag(flag);
+        assert_eq!(out.pause_transition(), PauseAction::CloseAndHold);
+        assert_eq!(out.pause_transition(), PauseAction::CloseAndHold);
+        assert_eq!(out.pause_transition(), PauseAction::CloseAndHold);
+    }
+
+    #[test]
+    fn unpause_resets_latch_and_re_pause_closes_again() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut out = FileOutput::new("/tmp/mibee-test", "cam", 60, 0).with_pause_flag(flag);
+        assert_eq!(out.pause_transition(), PauseAction::CloseAndHold);
+
+        out.pause_flag
+            .as_ref()
+            .unwrap()
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(out.pause_transition(), PauseAction::Pass);
+
+        out.pause_flag
+            .as_ref()
+            .unwrap()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(out.pause_transition(), PauseAction::CloseAndHold);
     }
 }
