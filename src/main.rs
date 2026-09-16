@@ -162,19 +162,86 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(reason = %ai_engine.inactive_reason(), "ai: detection disabled");
     }
 
-    // Bridge AI detection events into the SSE event bus (SPEC v1 §6).
+    // Shared gate Arcs: one each spans the AI alarm bridge, the protocol
+    // runtime (GB28181 handlers), and the StreamManager's recording outputs.
+    let notifier_slot: Arc<std::sync::Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let alarm_notify_gate = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let recording_paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Alarm bridge config: cooldown from the gb28181 db subtree (SPEC
+    // appendix A #16); TOML boot default as fallback.
+    let gb_cfg_json = web::db::get_protocol_config(&pool, "gb28181")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| serde_json::to_value(&config.gb28181).unwrap_or_default());
+    let alarm_cooldown_secs = gb_cfg_json
+        .get("alarm_cooldown_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30);
+    if let Some(gate) = gb_cfg_json
+        .get("alarm_notify_enabled")
+        .and_then(|v| v.as_bool())
+    {
+        alarm_notify_gate.store(gate, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    // Bridge AI detection events into the SSE event bus (SPEC v1 §6), and
+    // fire alarms on detection rising edges (SPEC §6 `alarm` + §9.5.2
+    // Alarm NOTIFY when GB28181 is up and the AlarmReport gate allows).
     {
         let mut ai_events = ai_engine.subscribe_events();
         let bridge_tx = event_tx.clone();
+        let mut alarm_bridge =
+            web::alarm::AlarmBridge::new(std::time::Duration::from_secs(alarm_cooldown_secs));
+        let notifier_slot = Arc::clone(&notifier_slot);
+        let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
         tokio::spawn(async move {
             loop {
                 match ai_events.recv().await {
                     Ok(ev) => {
+                        let targets = ev.detections.len();
                         let _ = bridge_tx.send(web::routes::events::CameraEvent::AiDetection {
-                            camera_id: ev.camera_id,
+                            camera_id: ev.camera_id.clone(),
                             detections: ev.detections,
                             frame_number: ev.frame_number,
                         });
+
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        if let Some(sig) = alarm_bridge.observe(
+                            &ev.camera_id,
+                            targets,
+                            std::time::Instant::now(),
+                            now_ms,
+                        ) {
+                            let _ = bridge_tx.send(web::routes::events::CameraEvent::Alarm {
+                                camera_id: sig.camera_id.clone(),
+                                targets: sig.targets,
+                                timestamp_ms: sig.timestamp_ms,
+                            });
+                            if alarm_notify_gate.load(std::sync::atomic::Ordering::SeqCst) {
+                                let notifier =
+                                    notifier_slot.lock().expect("gb notifier slot lock").clone();
+                                if let Some(n) = notifier {
+                                    // 2022 standard table: priority 4, video
+                                    // alarm (method 5), motion target (type 2).
+                                    let sent = n.send_alarm(
+                                        "4",
+                                        "5",
+                                        &gb28181_rs::client::format_gb_time_ms(now_ms),
+                                        "2",
+                                        "motion target detected",
+                                    );
+                                    if !sent {
+                                        tracing::debug!("alarm notify: no active subscription");
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(skipped = n, "ai: SSE bridge lagged");
@@ -193,6 +260,7 @@ async fn main() -> anyhow::Result<()> {
     let streamer_db = pool.clone();
     let stream_manager = Arc::new(
         web::stream_manager::StreamManager::with_host_and_db(advertised_host.clone(), streamer_db)
+            .with_recording_pause_flag(Arc::clone(&recording_paused))
             .with_ai(ai_engine.clone()),
     );
 
@@ -258,7 +326,11 @@ async fn main() -> anyhow::Result<()> {
     //
     // Check DB for enabled protocols and start them. This replaces the old
     // inline ONVIF/GB28181 startup code and enables hot-toggling via Web UI.
-    let mut protocol_runtime = ProtocolRuntime::new();
+    let mut protocol_runtime = ProtocolRuntime::new_with_shares(
+        Arc::clone(&notifier_slot),
+        Arc::clone(&alarm_notify_gate),
+        Arc::clone(&recording_paused),
+    );
 
     // ONVIF
     {

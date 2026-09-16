@@ -2358,6 +2358,7 @@ dependencies = [
  "capture",
  "clap",
  "dirs",
+ "gb28181-rs",
  "libc",
  "observability",
  "protocols",

@@ -160,6 +160,8 @@ pub struct StreamManager {
     /// Optional DB connection for reading protocol configs (RTMP push, etc.).
     /// When None, no protocol-driven outputs are auto-attached.
     db: Option<SqlitePool>,
+    /// Shared local-recording pause gate (platform RecordCmd via GB28181).
+    recording_pause_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// AI detection engine. When present and active, one detection worker
     /// is spawned per started camera stream (it taps the JPEG preview
     /// broadcast and exits with the stream).
@@ -175,6 +177,7 @@ impl StreamManager {
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
             advertised_host: "localhost".to_string(),
             db: None,
+            recording_pause_flag: None,
             ai: None,
         }
     }
@@ -187,6 +190,7 @@ impl StreamManager {
             resource_controller: ResourceController::new(max_streams),
             advertised_host: "localhost".to_string(),
             db: None,
+            recording_pause_flag: None,
             ai: None,
         }
     }
@@ -202,6 +206,7 @@ impl StreamManager {
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
             advertised_host,
             db: None,
+            recording_pause_flag: None,
             ai: None,
         }
     }
@@ -218,6 +223,7 @@ impl StreamManager {
             resource_controller: ResourceController::new(DEFAULT_MAX_STREAMS),
             advertised_host,
             db: Some(db),
+            recording_pause_flag: None,
             ai: None,
         }
     }
@@ -225,6 +231,13 @@ impl StreamManager {
     /// Attach the AI detection engine so started streams get a detection
     /// worker. No-op effect when the engine is inactive.
     #[must_use]
+    /// Share the local-recording pause gate (platform RecordCmd): every
+    /// FileOutput attached afterwards reads the same flag.
+    pub fn with_recording_pause_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.recording_pause_flag = Some(flag);
+        self
+    }
+
     pub fn with_ai(mut self, ai: Arc<streaming::ai::AiEngine>) -> Self {
         self.ai = Some(ai);
         self
@@ -507,6 +520,9 @@ impl StreamManager {
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(10_240);
                             let mut output = FileOutput::new(path, &camera_id, seg, cap);
+                            if let Some(flag) = &self.recording_pause_flag {
+                                output = output.with_pause_flag(Arc::clone(flag));
+                            }
                             // Attach the live dimensions handle so the muxer's
                             // track metadata reflects the real negotiated
                             // resolution instead of the 1280x720 default.
