@@ -17,7 +17,7 @@ Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqin
 
 - **Local capture** — webcam via V4L2 (Linux) / MSMF (Windows), microphone via ALSA / WASAPI
 - **Outbound protocols** — RTSP server (clients pull), RTMP push, ONVIF device endpoint, GB/T 28181 device registration (all default-OFF, enabled via Web UI)
-- **GB/T 28181-2022 device surface** — alarm events (SSE `alarm` + Alarm NOTIFY, AI rising-edge with cooldown), DeviceControl (IFrameCmd force-keyframe, RecordCmd recording gate), graceful deregistration (REGISTER Expires: 0), static MobilePosition reporting, Catalog/DeviceInfo/keepalive per the shared gb28181-rs library
+- **GB/T 28181-2022 device surface** — alarm events (SSE `alarm` + Alarm NOTIFY, AI rising-edge with cooldown), DeviceControl (IFrameCmd force-keyframe, RecordCmd recording gate), graceful deregistration (REGISTER Expires: 0), static MobilePosition reporting, DeviceConfig FrameMirror runtime mirroring, SIP-Date drift observation, Catalog/DeviceInfo/keepalive per the shared gb28181-rs library
 - **H.264 / H.265** — hand-written NAL unit parser, keyframe detection, SPS/PPS extraction
 - **MiBee NVR integration** — REST API client, camera sync, SSE event stream
 - **Web UI** — Axum REST API + embedded SPA, TLS via rustls, session-based auth, bilingual (zh-CN / en-US), day/night theme
@@ -107,6 +107,8 @@ mibee-eye/
 | **GB28181 alarm pipeline** | AI detection rising edge → `alarm` SSE + Alarm NOTIFY | `AlarmBridge` (cooldown-gated) + gb28181-rs `notifier()`; priority 4 / method 5 / type 2 (2022 table) | ✅ Implemented & wired in |
 | **GB28181 DeviceControl** | IFrameCmd / RecordCmd / GuardCmd / TeleBoot / PTZ | gb28181-rs control handler: force-keyframe via OpenH264, RecordCmd gates local recording, no-actuator commands ack-only | ✅ Implemented & wired in |
 | **GB28181 graceful deregistration** | REGISTER `Expires: 0` on SIGTERM / protocol stop | gb28181-rs `shutdown_with_deregister` (401 dance, 2s timeouts, abort guard) | ✅ Implemented & wired in |
+| **GB28181 DeviceConfig FrameMirror** | runtime mirror modes 0-3 (A.2.1.22) | shared atomic flips, XOR-composed with static mount flips, baked into encode/snapshot/AI (BasicParam stays rejected, twin parity) | ✅ Implemented & wired in |
+| **GB28181 SIP-Date observation** | platform clock drift from REGISTER `Date` (§9.10.2) | >5s drift WARNs once per excursion move; clock never adjusted | ✅ Implemented & wired in |
 | **GB28181 MobilePosition** | static coordinates on subscription cadence | gb28181-rs `with_position_source` (empty config = no reporting) | ✅ Implemented & wired in |
 | **H.264** | NAL unit parser, SPS/PPS, keyframe detection | Hand-written (`H264Parser`) | ✅ Used by all video outputs |
 | **H.265 decode** | Browser fallback to H.264 | — | ⚠️ Not universal in browsers; H.264 only for v1 |

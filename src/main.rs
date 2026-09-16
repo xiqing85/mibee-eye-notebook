@@ -169,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
     let alarm_notify_gate = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let recording_paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let force_idr = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gb_flips = Arc::new(streaming::capture_source::Flips::default());
 
     // Alarm bridge config: cooldown from the gb28181 db subtree (SPEC
     // appendix A #16); TOML boot default as fallback.
@@ -263,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
         web::stream_manager::StreamManager::with_host_and_db(advertised_host.clone(), streamer_db)
             .with_recording_pause_flag(Arc::clone(&recording_paused))
             .with_force_idr_flag(Arc::clone(&force_idr))
+            .with_gb_flips(Arc::clone(&gb_flips))
             .with_ai(ai_engine.clone()),
     );
 
@@ -333,6 +335,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&alarm_notify_gate),
         Arc::clone(&recording_paused),
         Arc::clone(&force_idr),
+        Arc::clone(&gb_flips),
     );
 
     // ONVIF

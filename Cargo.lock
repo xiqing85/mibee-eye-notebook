@@ -516,7 +516,7 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
 name = "capture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "mibee-eye"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "capture",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "observability"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "opentelemetry",
@@ -3452,7 +3452,7 @@ dependencies = [
 
 [[package]]
 name = "protocols"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -4077,7 +4077,7 @@ dependencies = [
 
 [[package]]
 name = "security"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4625,7 +4625,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "streaming"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5478,7 +5478,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",

@@ -19,7 +19,7 @@
 
 - **本地采集** — 摄像头通过 V4L2（Linux）/ MSMF（Windows），麦克风通过 ALSA / WASAPI
 - **对外协议** — RTSP 服务端（客户端拉流）、RTMP 推流、ONVIF 设备端点、GB/T 28181 设备注册（全部默认关闭，通过 Web 界面启用）
-- **GB/T 28181-2022 设备面** — 告警事件（SSE `alarm` + Alarm NOTIFY，AI 上升沿 + 冷却）、DeviceControl（IFrameCmd 强制关键帧、RecordCmd 录像门）、优雅注销（REGISTER Expires: 0）、静态 MobilePosition 上报——全部随共享库 gb28181-rs 提供
+- **GB/T 28181-2022 设备面** — 告警事件（SSE `alarm` + Alarm NOTIFY，AI 上升沿 + 冷却）、DeviceControl（IFrameCmd 强制关键帧、RecordCmd 录像门）、优雅注销（REGISTER Expires: 0）、静态 MobilePosition 上报、DeviceConfig FrameMirror 运行时镜像、SIP-Date 校时观察——全部随共享库 gb28181-rs 提供
 - **H.264 / H.265** — 手写 NAL 单元解析器、关键帧检测、SPS/PPS 提取
 - **MiBee NVR 集成** — REST API 客户端、摄像头同步、SSE 事件流
 - **Web 界面** — Axum REST API + 嵌入式 SPA、TLS 通过 rustls、基于会话的身份认证、双语（zh-CN / en-US）、日/夜间主题
@@ -109,6 +109,8 @@ mibee-eye/
 | **GB28181 告警管线** | AI 检测上升沿 → `alarm` SSE + Alarm NOTIFY | `AlarmBridge`（冷却门控）+ gb28181-rs `notifier()`；优先级 4 / 方法 5 / 类型 2（2022 标准表） | ✅ 已实现并连接 |
 | **GB28181 DeviceControl** | IFrameCmd / RecordCmd / GuardCmd / TeleBoot / PTZ | gb28181-rs 控制接缝：OpenH264 强制关键帧、RecordCmd 门控本地录制、无执行器命令 ack-only | ✅ 已实现并连接 |
 | **GB28181 优雅注销** | SIGTERM / 协议停止时发 REGISTER `Expires: 0` | gb28181-rs `shutdown_with_deregister`（401 全套舞步、2s 超时、超时兜底 abort） | ✅ 已实现并连接 |
+| **GB28181 DeviceConfig FrameMirror** | 运行时镜像模式 0-3（A.2.1.22） | 共享原子翻转标志，与静态安装翻转 XOR 复合，烧入编码/快照/AI（BasicParam 维持拒绝，与树莓派版一致） | ✅ 已实现并连接 |
+| **GB28181 SIP-Date 校时观察** | REGISTER `Date` 头的平台时钟漂移（§9.10.2） | 漂移>5s WARN（每次再偏 5s 才重复告警）；绝不改系统时钟 | ✅ 已实现并连接 |
 | **GB28181 MobilePosition** | 订阅周期上报静态坐标 | gb28181-rs `with_position_source`（配置为空则不上报） | ✅ 已实现并连接 |
 | **H.264** | NAL 单元解析器、SPS/PPS、关键帧检测 | 手写（`H264Parser`） | ✅ 用于所有视频输出 |
 | **H.265 解码** | 浏览器回退到 H.264 | — | ⚠️ 浏览器不支持通用；v1 仅 H.264 |

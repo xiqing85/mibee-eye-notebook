@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-16
+
+Late join to the v0.3.0 train (user decision): the version number aligns
+with the raspi twins, whose synchronized v0.3.0 shipped the
+GB/T 28181-2022 device-role full coverage. This release brings the
+notebook to the same device surface and takes one observation seam
+further.
+
+### Added — GB28181 device-surface parity with the raspi twins (v0.3.0 train)
+
+- **FrameMirror (DeviceConfig A.2.3.2.9)**: the platform's runtime mirror
+  mode (0-3 per A.2.1.22) now flips every camera's frames — implemented
+  as device-level atomic flags shared by all capture loops and
+  XOR-composed with each camera's static `hflip`/`vflip` mount
+  compensation (two same-axis mirrors cancel). Baked into everything
+  downstream: encoder (RTSP/MSE/recordings/GB28181), snapshots and the
+  JPEG tap (MJPEG passthrough correctly disabled while mirroring).
+  BasicParam keeps the reject posture, matching the raspi twins.
+- **SIP-Date drift observation (§9.10.2)**: the platform clock from
+  REGISTER response `Date` headers is polled once a minute; drift beyond
+  5s WARNs (first excursion and every further 5s move; recovery logs
+  once). Observation only — the system clock is never adjusted by the
+  app. Ahead of the raspi twins, which expose the library seam but do
+  not observe it yet.
+
 ## [0.2.0] - 2026-09-16
 
 ### Changed — Brand rename to `mibee-eye` (family-wide packaging convention)
