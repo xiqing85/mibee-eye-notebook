@@ -2,7 +2,7 @@
 # scripts/test-features.sh
 #
 # Full feature-matrix test for a deployed mibee-rec instance.
-# Exercises each subsystem end-to-end per the AGENTS.md protocol table.
+# Exercises each subsystem end-to-end per the protocol support table (README).
 #
 # Usage:
 #   ./scripts/test-features.sh <host> [camera_id]

@@ -283,7 +283,7 @@ register_interval_secs = 60
 **注意事项：**
 
 - 出站协议 — 此设备向平台注册，而不是平台角色
-- 手写的 SIP 设备客户端 + RTP 推送器（2033 LOC）
+- GB28181 信令由 `gb28181-rs` 库提供，RTP/PS over UDP 推流
 - 可通过 Web UI 进行协议热切换，无需重启服务器
 
 ### [recording] - 本地录制

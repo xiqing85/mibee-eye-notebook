@@ -13,7 +13,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 description = "Professional laptop surveillance agent"
-license = "NON-COMMERCIAL"
+license = "Apache-2.0"
 rust-version = "1.88"
 
 [workspace.dependencies]
@@ -80,7 +80,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 name = "mibee-rec"
 version = "0.1.0"
 edition = "2024"
-license-file = "LICENSE"
+license.workspace = true
 description = "Professional laptop surveillance agent"
 rust-version = "1.88"
 

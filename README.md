@@ -1,13 +1,17 @@
-# MiBee Rec
+# mibee-eye-notebook
 
-[![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust: 1.85+](https://img.shields.io/badge/Rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform: Linux Tier 1](https://img.shields.io/badge/Platform-Linux%20Tier%201-green.svg)](docs/POSITIONING.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](docs/en/contributing.md)
 
 [中文文档](README.zh-CN.md) · [Documentation](docs/en/) · [**Product Positioning**](docs/POSITIONING.md)
 
-**PC-local webcam & microphone capture agent.** Captures only physically-attached devices (USB webcam, built-in/USB mic) from THIS machine, exposes them through a TLS-gated Web UI as the primary control surface. Outbound streaming to NVRs / live platforms is **available but default-off**, enabled per-protocol via Web UI. Part of the [MiBee](https://https://github.com/xiqing85) ecosystem.
+**PC-local webcam & microphone capture agent.** Captures only physically-attached devices (USB webcam, built-in/USB mic) from THIS machine, exposes them through a TLS-gated Web UI as the primary control surface. Outbound streaming to NVRs / live platforms is **available but default-off**, enabled per-protocol via Web UI.
+
+Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqing85/mibee-eye-rs) · [mibee-eye-go](https://github.com/xiqing85/mibee-eye-go) · [mibee-eye-webui](https://github.com/xiqing85/mibee-eye-webui) (shared frontend + API spec).
+
+> The binary and systemd service keep the historical name `mibee-rec`.
 
 ## Features
 
@@ -28,7 +32,7 @@
 
 | Crate | LOC | Role |
 |-------|-----|------|
-| `protocols` | ~11k | RTSP, RTMP, ONVIF, GB28181, RTP, H.264 — hand-written codec and protocol implementations |
+| `protocols` | ~11k | Media-plane protocol implementations: RTSP, RTMP, RTP, H.264 (signaling protocols come from the shared protocol libraries) |
 | `streaming` | ~4k | StreamHub fan-out orchestrator (to Web Preview, File Output, RTSP, RTMP, ONVIF, GB28181), source/output adapters, MiBee NVR client |
 | `web` | ~2.5k | Axum REST API + embedded SPA + TLS via rustls + i18n + theme |
 | `security` | ~1.9k | Session-based auth, rate limiting, CSRF protection, encryption |
@@ -88,8 +92,8 @@ mibee-rec/
 | **TLS (rustls)** | HTTPS only, no HTTP | Auto self-signed dev cert, hot-reload | ✅ Implemented & wired in |
 | **RTSP Server** | RFC 2326 + Digest auth + RTP interleaved | Hand-written (`RtspServer`) | ✅ Wired into runtime |
 | **RTMP Push** | Handshake + connect + publish | Hand-written (`RtmpOutput`, auto-attached via StreamHub when `rtmp_push.enabled=true`) | ✅ Implemented & wired in |
-| **ONVIF Device** | WS-Discovery + SOAP device service | Hand-written (`WsDiscoveryServer` + SOAP service, starts when `onvif.enabled=true`) | ✅ Implemented & wired in |
-| **GB/T 28181 Device** | SIP REGISTER (Digest) + INVITE + RTP push | Hand-written (`Gb28181Output` dynamically attached on INVITE, detached on BYE) | ✅ Implemented & wired in |
+| **ONVIF Device** | WS-Discovery + SOAP device service | [`onvif-device-rs`](https://github.com/mickeyzzc/onvif-rs) (starts when `onvif.enabled=true`) | ✅ Implemented & wired in |
+| **GB/T 28181 Device** | SIP REGISTER (Digest) + INVITE + RTP push | [`gb28181-rs`](https://github.com/mickeyzzc/gb28181-rs) (incl. GB35114 auth; `Gb28181Output` dynamically attached on INVITE, detached on BYE) | ✅ Implemented & wired in |
 | **H.264** | NAL unit parser, SPS/PPS, keyframe detection | Hand-written (`H264Parser`) | ✅ Used by all video outputs |
 | **H.265 decode** | Browser fallback to H.264 | — | ⚠️ Not universal in browsers; H.264 only for v1 |
 | **Browser live preview** | MJPEG multipart stream via `<img>` | `/api/cameras/{id}/live` route (ffmpeg transcode) | ✅ Implemented & wired in |
@@ -110,7 +114,7 @@ mibee-rec/
 **Legend**: ✅ Working · ⚠️ Limited/fallback · ❌ Missing/Not supported
 
 
-See [`docs/POSITIONING.md`](docs/POSITIONING.md) for the authoritative product scope and [`AGENTS.md`](AGENTS.md) for engineering guidance.
+See [`docs/POSITIONING.md`](docs/POSITIONING.md) for the authoritative product scope.
 
 ## Resource Targets
 
@@ -126,7 +130,7 @@ See [`docs/POSITIONING.md`](docs/POSITIONING.md) for the authoritative product s
 ```bash
 # Clone and enter
 git clone https://github.com/xiqing85/mibee-eye-notebook.git
-cd mibee-rec
+cd mibee-eye-notebook
 
 # Install system dependencies (Linux)
 sudo apt install libv4l-dev libasound2-dev libclang-dev
@@ -205,6 +209,4 @@ Chinese documentation: [README.zh-CN.md](README.zh-CN.md) | [docs/zh/](docs/zh/)
 
 ## License
 
-This project is licensed under a **non-commercial source-available license**.
-
-You may use, study, and modify the code for non-commercial purposes. Commercial use requires explicit written permission. See [LICENSE](LICENSE) for details.
+Licensed under [Apache-2.0](LICENSE).

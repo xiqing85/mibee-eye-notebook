@@ -283,7 +283,7 @@ register_interval_secs = 60
 **Notes:**
 
 - OUTBOUND protocol — this device registers WITH the platform, not the platform role
-- Hand-written SIP device client + RTP pusher (2033 LOC)
+- GB28181 signaling via the `gb28181-rs` library, RTP/PS push over UDP
 - Protocol hot-toggle available via Web UI without server restart
 
 ### [recording] - Local Recording

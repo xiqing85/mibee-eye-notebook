@@ -6,10 +6,13 @@ POSIX-shell-compatible on Linux.
 
 ## Target devices
 
-| Alias (`~/.ssh/config`) | IP | OS | CPU | Role |
-|---|---|---|---|---|
-| `device-1` | `192.168.1.41` | Pop!_OS 24.04 | i5-1135G7 (8C) | Device 1 — already runs mibee-rec as user systemd service |
-| `device-2` | `192.168.1.40` | EndeavourOS (Arch) | i5-6200U (4C) | Device 2 — primary deploy target, weakest CPU |
+The deploy scripts address devices through SSH-config aliases. Define your own
+in `~/.ssh/config`; the examples below use two generic aliases:
+
+| Alias (`~/.ssh/config`) | OS examples | Role |
+|---|---|---|
+| `device-1` | any Linux with systemd (user services) | Device 1 — runs mibee-rec as a user systemd service |
+| `device-2` | any Linux with systemd (user services) | Device 2 — secondary target |
 
 ## Workflow
 
@@ -51,10 +54,10 @@ POSIX-shell-compatible on Linux.
 - **glibc forward-compat:** the builder stage is `rust:1.85-slim` (Debian
   bookworm, glibc 2.36). The resulting binary runs on Pop!_OS 24.04 (2.39)
   and Arch rolling (≥2.36) — newer glibc is always backward-compatible.
-- **User-mode systemd:** the service runs as `your-user` (not root), reading
+- **User-mode systemd:** the service runs as your own user (not root), reading
   `~/mibee-rec/config.local.toml`. `loginctl enable-linger` is needed for
   the service to survive logout / start at boot.
-- **Camera access:** `your-user` must be in the `video` and `audio` groups.
+- **Camera access:** the service user must be in the `video` and `audio` groups.
   Run `sudo usermod -aG video,audio $USER` on the device and re-login if
   not (the deploy script checks and warns).
 - **No more ffmpeg:** none of these scripts or the runtime require ffmpeg.

@@ -1,15 +1,19 @@
-# MiBee Rec
+# mibee-eye-notebook
 
-[![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust: 1.85+](https://img.shields.io/badge/Rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![Platform: Linux Tier 1](https://img.shields.io/badge/Platform-Linux%20Tier%201-green.svg)](#)
+[![Platform: Linux Tier 1](https://img.shields.io/badge/Platform-Linux%20Tier%201-green.svg)](../docs/POSITIONING.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](docs/zh/contributing.md)
 
 [English](README.md) · [文档](docs/zh/)
 
 基于 Rust 构建的专业本地采集代理。
 
-采集本机摄像头和麦克风，编码为 H.264/AAC，通过 RTSP 服务端 / RTMP 推流 / ONVIF 设备端 / GB/T 28181 设备端 向外部 NVR 提供流媒体服务。属于 [MiBee](https://https://github.com/xiqing85) 生态系统的一部分。
+采集本机摄像头和麦克风，编码为 H.264/AAC，通过 RTSP 服务端 / RTMP 推流 / ONVIF 设备端 / GB/T 28181 设备端 向外部 NVR 提供流媒体服务。
+
+**MiBee Eye** 摄像头家族成员：[mibee-eye-rs](https://github.com/xiqing85/mibee-eye-rs) · [mibee-eye-go](https://github.com/xiqing85/mibee-eye-go) · [mibee-eye-webui](https://github.com/xiqing85/mibee-eye-webui)（共享前端 + API 规范）。
+
+> 二进制与 systemd 服务保留历史名称 `mibee-rec`。
 
 ## 功能特性
 
@@ -30,7 +34,7 @@
 
 | Crate | 代码行数 | 作用 |
 |-------|---------|------|
-| `protocols` | ~11k | RTSP、RTMP、ONVIF、GB28181、RTP、H.264 — 手写编解码器和协议实现 |
+| `protocols` | ~11k | 媒体面协议实现：RTSP、RTMP、RTP、H.264（信令协议来自共享协议库） |
 | `streaming` | ~4k | StreamHub 扇出编排器（到 Web 预览、文件输出、RTSP、RTMP、ONVIF、GB28181）、源/输出适配器、MiBee NVR 客户端 |
 | `web` | ~2.5k | Axum REST API + 嵌入式 SPA + 通过 rustls 的 TLS + 国际化 + 主题 |
 | `security` | ~1.9k | 基于会话的身份认证、速率限制、CSRF 保护、加密 |
@@ -90,8 +94,8 @@ mibee-rec/
 | **TLS (rustls)** | 仅 HTTPS，无 HTTP | 自动生成自签名开发证书，热重载 | ✅ 已实现并连接 |
 | **RTSP 服务端** | RFC 2326 + Digest 认证 + RTP 交错 | 手写（`RtspServer`） | ✅ 已实现并连接 |
 | **RTMP 推流** | 握手 + 连接 + 发布 | 手写（`RtmpOutput`，当 `rtmp_push.enabled=true` 时通过 StreamHub 自动连接） | ✅ 已实现并连接 |
-| **ONVIF 设备** | WS-Discovery + SOAP 设备服务 | 手写（`WsDiscoveryServer` + SOAP 服务，当 `onvif.enabled=true` 时启动） | ✅ 已实现并连接 |
-| **GB/T 28181 设备** | SIP REGISTER (Digest) + INVITE + RTP 推送 | 手写（`Gb28181Output` 在 INVITE 时动态连接，BYE 时断开） | ✅ 已实现并连接 |
+| **ONVIF 设备** | WS-Discovery + SOAP 设备服务 | [`onvif-device-rs`](https://github.com/mickeyzzc/onvif-rs)（当 `onvif.enabled=true` 时启动） | ✅ 已实现并连接 |
+| **GB/T 28181 设备** | SIP REGISTER (Digest) + INVITE + RTP 推送 | [`gb28181-rs`](https://github.com/mickeyzzc/gb28181-rs)（含 GB35114 认证；`Gb28181Output` 在 INVITE 时动态连接，BYE 时断开） | ✅ 已实现并连接 |
 | **H.264** | NAL 单元解析器、SPS/PPS、关键帧检测 | 手写（`H264Parser`） | ✅ 用于所有视频输出 |
 | **H.265 解码** | 浏览器回退到 H.264 | — | ⚠️ 浏览器不支持通用；v1 仅 H.264 |
 | **浏览器实时预览** | 通过 `<img>` 的 MJPEG 多部分流 | `/api/cameras/{id}/live` 路由（ffmpeg 转码） | ✅ 已实现并连接 |
@@ -125,7 +129,7 @@ mibee-rec/
 ```bash
 # 克隆并进入
 git clone https://github.com/xiqing85/mibee-eye-notebook.git
-cd mibee-rec
+cd mibee-eye-notebook
 
 # 安装系统依赖（Linux）
 sudo apt install libv4l-dev libasound2-dev libclang-dev
@@ -203,6 +207,4 @@ cp config.toml config.local.toml
 
 ## 许可证
 
-本项目采用 **非商业源代码可用许可证**。
-
-您可以出于非商业目的使用、研究和修改代码。商业使用需要获得明确的书面许可。详见 [LICENSE](LICENSE)。
+基于 [Apache-2.0](LICENSE) 许可证开源。

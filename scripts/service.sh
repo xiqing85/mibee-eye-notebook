@@ -16,8 +16,8 @@
 #   disable   Stop + disable linger + remove unit file
 #
 # Hosts (from ~/.ssh/config):
-#   device-1   192.168.1.41  (Device 1 — already runs as user service)
-#   device-2  192.168.1.40  (Device 2 — first-time install)
+#   device-1   any Linux host with user services (Device 1)
+#   device-2   any Linux host with user services (Device 2)
 
 set -euo pipefail
 
@@ -27,12 +27,12 @@ CMD="${2:-}"
 if [ -z "$HOST" ] || [ -z "$CMD" ]; then
     echo "Usage: $0 <ssh-host-alias> <install|start|stop|status|logs|restart|disable>"
     echo ""
-    echo "Hosts: device-1 (62.41), device-2 (63.40)"
+    echo "Hosts: read from ~/.ssh/config aliases, e.g. device-1, device-2"
     exit 1
 fi
 
 # The systemd user unit, adapted from the repo's system-wide mibee-rec.service.
-# Runs as the SSH user (your-user), reads config.local.toml, working dir ~/mibee-rec.
+# Runs as the SSH login user, reads config.local.toml, working dir ~/mibee-rec.
 # NOTE: SupplementaryGroups= is NOT supported in user-mode systemd (it requires
 # root to change group credentials → status=216/GROUP). The user must already be
 # in the video + audio groups (set via `usermod -aG video,audio $USER`).

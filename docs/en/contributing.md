@@ -401,8 +401,8 @@ Add protocol-specific configuration options to your config structure and update 
 
 Look at existing protocols for reference:
 
-- **ONVIF**: `crates/protocols/src/onvif.rs` - hand-written WS-Discovery + SOAP device service
-- **GB28181**: `crates/protocols/src/gb28181/` - hand-written SIP device client + RTP pusher (module directory)
+- **ONVIF**: `onvif-device-rs` crate (signaling via the shared protocol library; runtime wiring in `crates/web/src/protocol_runtime.rs`)
+- **GB28181**: `gb28181-rs` crate (signaling via the shared protocol library; the `Gb28181Output` adapter in `crates/streaming` bridges it to the StreamHub)
 - **RTSP**: `crates/protocols/src/rtsp_server/` - hand-written RTSP server (RFC 2326, Digest auth, RTP interleaved)
 - **RTMP**: `crates/protocols/src/rtmp/` - hand-written RTMP push client (handshake + connect + publish)
 - **H.264**: `crates/protocols/src/h264.rs` - hand-written NAL unit parser
@@ -694,7 +694,7 @@ fn audio_callback(data: &mut [f32]) {
 
 **Issue**: GB28181 device mode registers WITH the platform via SIP REGISTER; the platform sends INVITE, and this device pushes RTP (encapsulated in MPEG-PS) back to the platform.
 
-**Solution**: The hand-written SIP device client (`crates/protocols/src/gb28181/sip.rs`) handles REGISTER/INVITE/BYE. The RTP pusher (`crates/protocols/src/gb28181/rtp_pusher.rs`) pushes H.264 NAL units encapsulated in MPEG-PS over RTP/UDP. The `Gb28181Output` adapter is dynamically attached to the camera's `StreamHub` on INVITE and detached on BYE.
+**Solution**: The `gb28181-rs` protocol library handles REGISTER/INVITE/BYE signaling and pushes H.264 NAL units encapsulated in MPEG-PS over RTP/UDP. The `Gb28181Output` adapter is dynamically attached to the camera's `StreamHub` on INVITE and detached on BYE.
 
 **Browser compatibility**: H.265 is not universally supported in browsers - always fallback to H.264.
 
@@ -705,7 +705,7 @@ fn audio_callback(data: &mut [f32]) {
 **Requirements**:
 ```bash
 # May need CAP_NET_RAW capability or root access
-# The hand-written WS-Discovery server in crates/protocols/src/onvif.rs
+# The WS-Discovery server from the onvif-device-rs library
 # handles this automatically
 ```
 
