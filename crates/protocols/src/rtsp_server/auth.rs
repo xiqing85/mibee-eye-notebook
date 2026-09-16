@@ -127,10 +127,8 @@ impl Md5 {
         ];
 
         let mut x = [0u32; 16];
-        for (i, chunk) in block.chunks_exact(4).enumerate() {
-            if let Ok(arr) = chunk.try_into() {
-                x[i] = u32::from_le_bytes(arr);
-            }
+        for (i, chunk) in block.as_chunks::<4>().0.iter().enumerate() {
+            x[i] = u32::from_le_bytes(*chunk);
         }
 
         let [mut a, mut b, mut c, mut d] = *state;
