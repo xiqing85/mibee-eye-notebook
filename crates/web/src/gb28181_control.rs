@@ -5,13 +5,17 @@
 //! notebook has no pan-tilt hardware — PTZ / HomePosition / DragZoom and
 //! the guard / teleboot family stay ack-only via the trait defaults.
 //! RecordCmd gates local recording through a shared pause flag; IFrameCmd
-//! is honestly unsupported (H.264 comes from the camera's native stream —
-//! there is no encoder to force a keyframe on), logged once.
+//! forces the next OpenH264-encoded frame to an IDR.
+//!
+//! The DeviceConfig glue toggles the alarm-NOTIFY gate and the runtime
+//! FrameMirror flags (A.2.3.2.9); BasicParam stays unimplemented and is
+//! therefore rejected — same posture as the raspi twins.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gb28181_rs::server::{DeviceConfigHandler, DeviceControlHandler};
+use streaming::capture_source::Flips;
 
 /// DeviceControl family handler (A.2.3.1).
 pub struct Gb28181ControlHandler {
@@ -58,34 +62,64 @@ impl DeviceControlHandler for Gb28181ControlHandler {
     // these as documented no-ops.
 }
 
-/// DeviceConfig AlarmReport gate (A.2.3.2.10): the platform's dual
-/// switches toggle whether AI alarms go out as GB28181 Alarm NOTIFY.
-/// SSE `alarm` events are unaffected. The initial value comes from the
-/// `alarm_notify_enabled` config key; the platform flips it at runtime
-/// via DeviceConfig.
+/// DeviceConfig glue (A.2.3.2): the platform's AlarmReport dual switches
+/// toggle whether AI alarms go out as GB28181 Alarm NOTIFY (SSE `alarm`
+/// events are unaffected; the initial value comes from the
+/// `alarm_notify_enabled` config key), and FrameMirror flips the runtime
+/// mirror flags shared with every capture loop (A.2.1.22 mode semantics
+/// via [`mirror_mode_to_flips`]). Runtime-only state — the per-camera
+/// `hflip`/`vflip` config still governs boot. BasicParam is left to the
+/// trait default (reject), matching the raspi twins.
 #[derive(Debug)]
-pub struct AlarmReportGate(pub Arc<AtomicBool>);
+pub struct DeviceConfigGlue {
+    pub alarm: Arc<AtomicBool>,
+    pub gb_flips: Arc<Flips>,
+}
 
-impl AlarmReportGate {
-    pub fn new(initial: Arc<AtomicBool>) -> Self {
-        Self(initial)
+impl DeviceConfigGlue {
+    pub fn new(alarm: Arc<AtomicBool>, gb_flips: Arc<Flips>) -> Self {
+        Self { alarm, gb_flips }
     }
 
-    pub fn enabled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+    pub fn alarm_enabled(&self) -> bool {
+        self.alarm.load(Ordering::SeqCst)
     }
 }
 
-impl DeviceConfigHandler for AlarmReportGate {
+impl DeviceConfigHandler for DeviceConfigGlue {
     fn on_alarm_report(&self, motion_detection: u32, field_detection: u32) {
         let enabled = motion_detection > 0 || field_detection > 0;
-        let prev = self.0.swap(enabled, Ordering::SeqCst);
+        let prev = self.alarm.swap(enabled, Ordering::SeqCst);
         if prev != enabled {
             tracing::info!(
                 enabled,
                 "DeviceConfig AlarmReport: alarm notify gate updated"
             );
         }
+    }
+
+    fn on_frame_mirror(&self, mode: u32) {
+        let (hflip, vflip) = mirror_mode_to_flips(mode);
+        self.gb_flips.set(hflip, vflip);
+        tracing::info!(
+            mode,
+            hflip,
+            vflip,
+            "DeviceConfig FrameMirror: runtime mirror flags updated"
+        );
+    }
+}
+
+/// A.2.1.22 frameMirrorCfgType: 0 不启用, 1 水平镜像, 2 上下镜像, 3 中心
+/// (both). Anything else leaves the frames untouched (defensive — the
+/// library only decodes 0-3).
+#[must_use]
+pub fn mirror_mode_to_flips(mode: u32) -> (bool, bool) {
+    match mode {
+        1 => (true, false),
+        2 => (false, true),
+        3 => (true, true),
+        _ => (false, false),
     }
 }
 
@@ -111,17 +145,43 @@ mod tests {
 
     #[test]
     fn alarm_report_gate_follows_dual_switches() {
-        let gate = AlarmReportGate::new(Arc::new(AtomicBool::new(true)));
-        assert!(gate.enabled());
+        let gate =
+            DeviceConfigGlue::new(Arc::new(AtomicBool::new(true)), Arc::new(Flips::default()));
+        assert!(gate.alarm_enabled());
 
         gate.on_alarm_report(0, 0);
-        assert!(!gate.enabled());
+        assert!(!gate.alarm_enabled());
 
         gate.on_alarm_report(1, 0);
-        assert!(gate.enabled());
+        assert!(gate.alarm_enabled());
 
         gate.on_alarm_report(0, 1);
-        assert!(gate.enabled());
+        assert!(gate.alarm_enabled());
+    }
+
+    #[test]
+    fn frame_mirror_updates_shared_runtime_flags() {
+        let flips = Arc::new(Flips::default());
+        let glue = DeviceConfigGlue::new(Arc::new(AtomicBool::new(true)), Arc::clone(&flips));
+
+        glue.on_frame_mirror(1);
+        assert_eq!(flips.load(), (true, false));
+
+        glue.on_frame_mirror(3);
+        assert_eq!(flips.load(), (true, true));
+
+        glue.on_frame_mirror(0);
+        assert_eq!(flips.load(), (false, false));
+    }
+
+    #[test]
+    fn mirror_mode_table_matches_a_2_1_22() {
+        assert_eq!(mirror_mode_to_flips(0), (false, false));
+        assert_eq!(mirror_mode_to_flips(1), (true, false));
+        assert_eq!(mirror_mode_to_flips(2), (false, true));
+        assert_eq!(mirror_mode_to_flips(3), (true, true));
+        // Defensive: unknown modes leave frames untouched.
+        assert_eq!(mirror_mode_to_flips(4), (false, false));
     }
 
     #[test]
