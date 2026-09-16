@@ -13,7 +13,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use serde::Serialize;
@@ -172,6 +173,16 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
         manufacturer: get_str("manufacturer", "MiBee"),
         model: get_str("model", "Rec-01"),
         firmware: get_str("firmware", env!("CARGO_PKG_VERSION")),
+        alarm_notify_enabled: db_config
+            .get("alarm_notify_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        alarm_cooldown_secs: db_config
+            .get("alarm_cooldown_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30),
+        position_longitude: get_str("position_longitude", ""),
+        position_latitude: get_str("position_latitude", ""),
     }
 }
 
@@ -222,6 +233,14 @@ pub struct Gb28181RuntimeConfig {
     pub manufacturer: String,
     pub model: String,
     pub firmware: String,
+    /// Initial DeviceConfig AlarmReport gate for AI alarm NOTIFY (SPEC
+    /// appendix A #16). The platform can flip it at runtime.
+    pub alarm_notify_enabled: bool,
+    /// Rising-edge alarm cooldown in seconds (SPEC appendix A #16).
+    pub alarm_cooldown_secs: u64,
+    /// Static MobilePosition coordinates; empty (default) = no reporting.
+    pub position_longitude: String,
+    pub position_latitude: String,
 }
 
 /// GB35114 A-level sub-config (nested under protocols.gb28181.gb35114).
@@ -263,6 +282,34 @@ pub fn build_gb35114_authenticator(
     Ok(Some(Arc::new(auth)))
 }
 
+/// Static MobilePosition source (SPEC appendix A #16): reports the
+/// configured coordinates on the subscription cadence. Empty longitude or
+/// latitude → `None`, which makes the library skip that report.
+struct StaticPositionSource {
+    longitude: String,
+    latitude: String,
+}
+
+impl gb28181_rs::subscribe::MobilePositionSource for StaticPositionSource {
+    fn current_position(&self) -> Option<gb28181_rs::subscribe::PositionReport> {
+        if self.longitude.is_empty() || self.latitude.is_empty() {
+            return None;
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis() as u64;
+        Some(gb28181_rs::subscribe::PositionReport {
+            time: gb28181_rs::client::format_gb_time_ms(now_ms),
+            longitude: self.longitude.clone(),
+            latitude: self.latitude.clone(),
+            speed: "0".to_string(),
+            direction: String::new(),
+            altitude: "0".to_string(),
+        })
+    }
+}
+
 // ── ProtocolRuntime ──────────────────────────────────────────────────────────
 
 /// Manages hot-toggle lifecycle for ONVIF, GB28181, and RTMP protocols.
@@ -274,7 +321,21 @@ pub struct ProtocolRuntime {
     onvif_handle: Option<JoinHandle<()>>,
     /// WS-Discovery task (stopped together with the SOAP server).
     discovery_handle: Option<JoinHandle<()>>,
-    gb28181_handle: Option<JoinHandle<()>>,
+    /// GB28181 server handle — kept so stop can deregister (REGISTER
+    /// Expires: 0) before tearing the run loop down.
+    gb28181_server: Option<gb28181_rs::server::ServerHandle>,
+    /// Talkback playback stream; held for the server's lifetime so the
+    /// local audio output stays open, dropped on stop.
+    gb28181_talkback_stream: Option<cpal::Stream>,
+    /// Host-side NOTIFY sender (alarm/position/catalog). Filled on GB28181
+    /// start, cleared on stop; the AI alarm bridge reads it on fire.
+    notifier_slot: Arc<Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>>,
+    /// DeviceConfig AlarmReport runtime gate (A.2.3.2.10) — platform
+    /// switches override the config key while the protocol is up.
+    alarm_notify_gate: Arc<AtomicBool>,
+    /// Local-recording pause gate shared with the recording FileOutputs
+    /// (platform RecordCmd StopRecord / Record).
+    recording_paused: Arc<AtomicBool>,
     /// Reserved for future use (RTMP currently per-stream, no global task).
     #[allow(dead_code)]
     rtmp_handle: Option<JoinHandle<()>>,
@@ -293,10 +354,29 @@ impl Default for ProtocolRuntime {
 impl ProtocolRuntime {
     /// Create a new empty runtime with all protocols stopped.
     pub fn new() -> Self {
+        Self::new_with_shares(
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    /// Create the runtime sharing caller-owned gates: main.rs hands the
+    /// same notifier slot / alarm gate / recording pause flag to the AI
+    /// alarm bridge and the StreamManager, so one Arc each spans all three.
+    pub fn new_with_shares(
+        notifier_slot: Arc<Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>>,
+        alarm_notify_gate: Arc<AtomicBool>,
+        recording_paused: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             onvif_handle: None,
             discovery_handle: None,
-            gb28181_handle: None,
+            gb28181_server: None,
+            gb28181_talkback_stream: None,
+            notifier_slot,
+            alarm_notify_gate,
+            recording_paused,
             rtmp_handle: None,
             shutdown_txs: HashMap::new(),
             rtmp_enabled: false,
@@ -528,11 +608,6 @@ impl ProtocolRuntime {
         // abort the protocol start instead of falling back to Digest).
         let authenticator = build_gb35114_authenticator(&config.gb35114, &config.device_id)?;
 
-        // The watch channel stays for stop-gb28181 symmetry; the library
-        // server exits via task abort in graceful_shutdown.
-        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
-        self.shutdown_txs.insert("gb28181".into(), shutdown_tx);
-
         let source = Arc::new(StreamManagerFrameSource::new(stream_manager));
         tracing::info!(
             device_id = %config.device_id,
@@ -555,44 +630,79 @@ impl ProtocolRuntime {
             }
         };
 
+        // Host-side seams: control/config handlers, static position source,
+        // and the NOTIFY sender for the alarm bridge.
+        let alarm_gate = Arc::clone(&self.alarm_notify_gate);
+        alarm_gate.store(config.alarm_notify_enabled, Ordering::SeqCst);
+
+        let position_source = StaticPositionSource {
+            longitude: config.position_longitude.clone(),
+            latitude: config.position_latitude.clone(),
+        };
+
         let mut server_builder =
             gb28181_rs::server::Gb28181Server::with_recording_index(lib_config, source, None)
-                .with_register_authenticator(authenticator);
+                .with_register_authenticator(authenticator)
+                .with_control_handler(Some(Arc::new(
+                    crate::gb28181_control::Gb28181ControlHandler::new(Arc::clone(
+                        &self.recording_paused,
+                    )),
+                )))
+                .with_config_handler(Some(Arc::new(
+                    crate::gb28181_control::AlarmReportGate::new(Arc::clone(&alarm_gate)),
+                )))
+                .with_position_source(Some(Arc::new(position_source)));
+
+        // Taken before spawn(): after the move the builder is gone.
+        let notifier = server_builder.notifier();
+        *self.notifier_slot.lock().expect("notifier slot lock") = Some(notifier);
+
         let mut audio_stream = None;
         if let Some((sink, stream)) = talkback {
             server_builder = server_builder.with_audio_sink(sink);
             audio_stream = Some(stream);
         }
 
-        let handle = tokio::spawn(async move {
-            // Keep the output stream alive for the server task's lifetime;
-            // dropping it (task stop) stops talkback playback too.
-            let _audio_stream = audio_stream;
-            match server_builder.spawn().await {
-                Ok(server) => {
-                    let _ = server.await;
-                    tracing::info!("GB28181 device server task exited");
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "GB28181 device server failed to start");
-                }
+        match server_builder.spawn().await {
+            Ok(server) => {
+                self.gb28181_talkback_stream = audio_stream;
+                self.gb28181_server = Some(server);
             }
-        });
-
-        self.gb28181_handle = Some(handle);
+            Err(e) => {
+                *self.notifier_slot.lock().expect("notifier slot lock") = None;
+                self.gb28181_talkback_stream = None;
+                tracing::error!(error = %e, "GB28181 device server failed to start");
+                return Err(e);
+            }
+        }
         tracing::info!("GB28181 protocol started");
         Ok(())
     }
 
-    /// Stop GB28181 SIP registration with graceful 5s timeout.
+    /// Stop GB28181: de-register first (REGISTER `Expires: 0` — the same
+    /// 401 Digest dance as registration, 2s response timeouts inside the
+    /// library), then join the run loop. Every deregistration failure is
+    /// logged and ignored: shutdown itself must always succeed. On timeout
+    /// the server task is force-aborted.
     #[tracing::instrument(skip(self))]
     pub async fn stop_gb28181(&mut self) {
-        let tx = self.shutdown_txs.remove("gb28181");
-        let handle = self.gb28181_handle.take();
-        if tx.is_none() && handle.is_none() {
+        // Clear the notify slot first — the alarm bridge must not fire
+        // into a server that is going away.
+        *self.notifier_slot.lock().expect("notifier slot lock") = None;
+        let Some(mut server) = self.gb28181_server.take() else {
             return;
+        };
+        match tokio::time::timeout(Duration::from_secs(8), server.shutdown_with_deregister()).await
+        {
+            Ok(Ok(())) => tracing::info!("GB28181 deregistered and stopped"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "GB28181 shutdown error"),
+            Err(_) => {
+                tracing::warn!("GB28181 graceful shutdown timed out; aborting server task");
+                server.abort();
+            }
         }
-        graceful_shutdown("gb28181", tx, handle).await;
+        // Dropping the talkback playback stream releases the audio output.
+        self.gb28181_talkback_stream = None;
         tracing::info!("GB28181 protocol stopped");
     }
 
@@ -631,7 +741,7 @@ impl ProtocolRuntime {
                 running: self.onvif_handle.is_some(),
             },
             gb28181: ProtocolState {
-                running: self.gb28181_handle.is_some(),
+                running: self.gb28181_server.is_some(),
             },
             rtmp: ProtocolState {
                 running: self.rtmp_enabled,
@@ -641,6 +751,25 @@ impl ProtocolRuntime {
 
     /// Stop all protocols (for server shutdown).
     #[tracing::instrument(skip(self))]
+    /// Shared NOTIFY-sender slot for the AI alarm bridge: `Some` while
+    /// GB28181 is running, `None` otherwise.
+    pub fn gb_notifier_slot(
+        &self,
+    ) -> Arc<Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>> {
+        Arc::clone(&self.notifier_slot)
+    }
+
+    /// Shared local-recording pause gate (platform RecordCmd). Hand to the
+    /// StreamManager so recording FileOutputs attach with the same flag.
+    pub fn recording_paused_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.recording_paused)
+    }
+
+    /// Shared DeviceConfig AlarmReport runtime gate for the alarm bridge.
+    pub fn alarm_notify_gate(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.alarm_notify_gate)
+    }
+
     pub async fn shutdown_all(&mut self) {
         self.stop_onvif().await;
         self.stop_gb28181().await;

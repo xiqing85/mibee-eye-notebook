@@ -14,6 +14,9 @@ use std::sync::Arc;
 use security::middleware::AuthenticatedUser;
 use streaming::ai::AiEngine;
 use streaming::capability::{EncoderProfile, SystemCapabilities, probe, recommended_profiles};
+use tokio::sync::Mutex;
+
+use crate::protocol_runtime::ProtocolRuntime;
 
 // ---------------------------------------------------------------------------
 // Response model
@@ -40,6 +43,7 @@ pub struct CapabilitiesResponse {
 #[tracing::instrument(skip_all)]
 pub async fn get_capabilities(
     Extension(ai): Extension<Arc<AiEngine>>,
+    Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
     static CACHE: std::sync::OnceLock<CapabilitiesResponse> = std::sync::OnceLock::new();
@@ -58,6 +62,11 @@ pub async fn get_capabilities(
     }
     if ai_hot_swap {
         events.push("ai_model_changed");
+    }
+    // The alarm bridge fires on AI rising edges; GB28181 being up is what
+    // arms the Alarm NOTIFY path (the SSE event itself needs only AI).
+    if ai.is_active() && protocol_runtime.lock().await.status().gb28181.running {
+        events.push("alarm");
     }
     let superset = serde_json::json!({
         "spec_version": "1",
@@ -130,6 +139,9 @@ mod tests {
         ));
         let res = get_capabilities(
             Extension(ai),
+            Extension(Arc::new(tokio::sync::Mutex::new(
+                crate::protocol_runtime::ProtocolRuntime::new(),
+            ))),
             Extension(security::middleware::AuthenticatedUser("admin".to_string())),
         )
         .await

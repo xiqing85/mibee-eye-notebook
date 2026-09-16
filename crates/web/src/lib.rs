@@ -1,5 +1,6 @@
 #![cfg_attr(test, deny(warnings))]
 
+pub mod alarm;
 pub mod assets;
 pub mod config;
 pub mod db;
@@ -7,6 +8,7 @@ pub mod db;
 pub mod envelope;
 pub mod errors;
 /// GB28181 voice-talkback receive: G.711 decode → cpal output.
+pub mod gb28181_control;
 pub mod gb28181_talkback;
 pub mod observe;
 pub mod protocol_runtime;
