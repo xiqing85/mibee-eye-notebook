@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tagged release must carry the newest shared web UI: the embedded
+      # copy has to match mibee-eye-webui@main byte-for-byte, otherwise the
+      # release fails and the frontend is re-synced first (make sync-notebook
+      # in the mibee-eye-webui repo).
+      - name: Verify the embedded web UI matches mibee-eye-webui@main
+        run: |
+          git clone --depth 1 https://github.com/xiqing85/mibee-eye-webui.git /tmp/mibee-eye-webui
+          diff -r /tmp/mibee-eye-webui/static crates/web/static
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libv4l-dev libasound2-dev libclang-dev
+
+      # Default features include `ai`; ONNX Runtime is load-dynamic, so the
+      # binary runs (AI fail-open disabled) without libonnxruntime present.
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          DIR="mibee-eye-notebook-${GITHUB_REF_NAME}.linux-amd64"
+          mkdir -p "${DIR}"
+          cp target/release/mibee-rec "${DIR}/"
+          cp config.toml "${DIR}/config.example.toml"
+          cp mibee-rec.service "${DIR}/"
+          cp LICENSE NOTICE README.md README.zh-CN.md "${DIR}/"
+          tar czf "${DIR}.tar.gz" "${DIR}"
+          sha256sum "${DIR}.tar.gz" > checksums.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            mibee-eye-notebook-*.tar.gz \
+            checksums.txt \
+            --title "MiBee Eye Notebook ${GITHUB_REF_NAME}" \
+            --notes "MiBee Eye Notebook (mibee-eye-notebook) release / 版本发布。Full notes below. 完整发布说明见下文。"
