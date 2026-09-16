@@ -154,7 +154,7 @@ pub fn postprocess(output: &[f32], confidence_threshold: f32) -> Result<Vec<Dete
 
     let mut candidates: Vec<Candidate> = Vec::new();
 
-    for (point_idx, point) in output.chunks_exact(NUM_CHANNELS).enumerate() {
+    for (point_idx, point) in output.as_chunks::<NUM_CHANNELS>().0.iter().enumerate() {
         let (_level, stride, grid_x, grid_y) = grid_coords(point_idx);
 
         // Classification: argmax over the class channels.

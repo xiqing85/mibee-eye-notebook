@@ -131,7 +131,7 @@ mod tests {
         // Pure red pixel: B and G channels land below their means, R above.
         let src = vec![0u8; 2 * 2 * 3];
         let mut src = src;
-        for px in src.chunks_exact_mut(3) {
+        for px in src.as_chunks_mut::<3>().0 {
             px[0] = 255; // R
         }
         let out = preprocess_rgb8(&src, 2, 2, 2, 2).expect("preprocess");
@@ -150,7 +150,7 @@ mod tests {
     fn test_nearest_neighbor_picks_top_left_on_downsample() {
         // 2×2 checkerboard → 1×1 must sample the (0,0) pixel (white).
         let mut src = vec![0u8; 2 * 2 * 3];
-        for (i, px) in src.chunks_exact_mut(3).enumerate() {
+        for (i, px) in src.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let v = if i == 0 { 255 } else { 0 };
             px.copy_from_slice(&[v, v, v]);
         }
