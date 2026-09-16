@@ -277,6 +277,10 @@ async fn handle_get(db: &Db, protocol: &str) -> axum::response::Response {
  * Returns the merged config JSON on success so the caller can check
  * the `enabled` flag and act on the ProtocolRuntime.
  */
+// Targeted exemption: axum's Response<Body> exceeds clippy 1.98's
+// result_large_err threshold; this helper is cold-path config mutation,
+// boxing the Err would ripple through every route handler for no gain.
+#[allow(clippy::result_large_err)]
 async fn handle_put_and_get(
     db: &Db,
     protocol: &str,
