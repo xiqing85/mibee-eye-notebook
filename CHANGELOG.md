@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-09-16
+
+First public release (Apache-2.0), open-sourced as
+[mibee-eye-notebook](https://github.com/xiqing85/mibee-eye-notebook) — the
+notebook/desktop member of the MiBee Eye camera family. The sections below
+cover the final stretch of the pre-open-source line, most recently the
+unified SPEC v1 web API with the shared web UI and the GB28181-2022
+device-surface parity batch.
+
 ### Added — GB28181-2022 device-surface parity with the raspi twins
 
 - **Alarm pipeline**: AI detection rising edges fire the SPEC v1 §6
