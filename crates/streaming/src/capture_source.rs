@@ -256,7 +256,7 @@ impl Source for VideoCaptureSource {
         let latest_jpeg = Arc::clone(&self.latest_jpeg);
 
         Box::pin(async move {
-            let device_path = format!("/dev/video{}", device_index);
+            let device_path = format!("/dev/video{}", device_index); // hardcode-ok: V4L2 设备枚举惯例（逐 index 探测），非固定部署路径
             if !std::path::Path::new(&device_path).exists() {
                 bail!("Video device {} not found", device_path);
             }

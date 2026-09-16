@@ -78,7 +78,7 @@ pub fn build_onvif_config_from_json(
     OnvifRuntimeConfig {
         device: onvif_device_rs::DeviceConfig {
             manufacturer: get_str("manufacturer", "MiBee"),
-            firmware: get_str("firmware_version", "1.0.0"),
+            firmware: get_str("firmware_version", "1.0.0"), // hardcode-ok: SQLite 配置 get_str 兜底默认值（本仓配置默认层），非应用版本横幅
             serial_number: get_str("serial", "NC00000001"),
             hardware_id: model.clone(),
             name: model.clone(),
@@ -124,7 +124,7 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
             .get("enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
-        device_id: get_str("device_id", "34020000002000000001"),
+        device_id: get_str("device_id", "34020000002000000001"), // hardcode-ok: SQLite 配置 get_str 兜底默认值（本仓配置默认层），标准示例编码
         sip_addr: get_str("platform_sip_address", "127.0.0.1"),
         sip_port: get_u16("platform_sip_port", 5060),
         password: get_str("password", ""),
@@ -162,7 +162,7 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
             .unwrap_or(3),
-        channel_id: get_str("channel_id", "34020000001320000001"),
+        channel_id: get_str("channel_id", "34020000001320000001"), // hardcode-ok: SQLite 配置 get_str 兜底默认值（本仓配置默认层），标准示例编码
         local_sip_port: get_u16("local_sip_port", 5060),
         talkback_playback: db_config
             .get("talkback_playback")

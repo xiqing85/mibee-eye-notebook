@@ -1,8 +1,8 @@
 # mibee-rec — Product Positioning / 产品定位
 
-> **Authoritative document.** Any conflict between this file and any other doc (README, AGENTS.md, inline comments) → **this file wins**.
+> **Authoritative document.** Any conflict between this file and any other doc (README, inline comments) → **this file wins**.
 >
-> **权威文档。** 本文件与其他任何文档(README、AGENTS.md、代码注释)冲突时,**以本文件为准**。
+> **权威文档。** 本文件与其他任何文档(README、代码注释)冲突时,**以本文件为准**。
 
 Version: 1.0 · Last updated: 2026-06 · Owner: project maintainers
 

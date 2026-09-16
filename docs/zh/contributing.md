@@ -401,8 +401,8 @@ pub fn all_routes() -> Router<AppState> {
 
 查看现有协议作为参考：
 
-- **ONVIF**: `crates/protocols/src/onvif.rs` - 手写 WS-Discovery + SOAP 设备服务
-- **GB28181**: `crates/protocols/src/gb28181/` - 手写 SIP 设备客户端 + RTP 推送器（模块目录）
+- **ONVIF**: `onvif-device-rs` crate（信令走共享协议库；运行时接线在 `crates/web/src/protocol_runtime.rs`）
+- **GB28181**: `gb28181-rs` crate（信令走共享协议库；`crates/streaming` 中的 `Gb28181Output` 适配器桥接 StreamHub）
 - **RTSP**: `crates/protocols/src/rtsp_server/` - 手写 RTSP 服务端 (RFC 2326, Digest 认证, RTP 交错)
 - **RTMP**: `crates/protocols/src/rtmp/` - 手写 RTMP 推流客户端 (握手 + 连接 + 发布)
 - **H.264**: `crates/protocols/src/h264.rs` - 手写 NAL 单元解析器
@@ -694,7 +694,7 @@ fn audio_callback(data: &mut [f32]) {
 
 **问题**: GB28181 设备模式通过 SIP REGISTER 向平台注册；平台发送 INVITE，本设备将 RTP（封装在 MPEG-PS 中）推送回平台。
 
-**解决方案**: 手写 SIP 设备客户端（`crates/protocols/src/gb28181/sip.rs`）处理 REGISTER/INVITE/BYE。RTP 推送器（`crates/protocols/src/gb28181/rtp_pusher.rs`）通过 RTP/UDP 推送封装在 MPEG-PS 中的 H.264 NAL 单元。`Gb28181Output` 适配器在收到 INVITE 时动态附加到摄像头的 `StreamHub`，在收到 BYE 时分离。
+**解决方案**: `gb28181-rs` 协议库处理 REGISTER/INVITE/BYE 信令，并通过 RTP/UDP 推送封装在 MPEG-PS 中的 H.264 NAL 单元。`Gb28181Output` 适配器在收到 INVITE 时动态附加到摄像头的 `StreamHub`，在收到 BYE 时分离。
 
 **浏览器兼容性**: H.265 在浏览器中并非普遍支持 - 总是回退到 H.264。
 
@@ -705,7 +705,7 @@ fn audio_callback(data: &mut [f32]) {
 **要求**:
 ```bash
 # 可能需要 CAP_NET_RAW 能力或 root 访问权限
-# crates/protocols/src/onvif.rs 中的手写 WS-Discovery 服务端
+# onvif-device-rs 库提供的 WS-Discovery 服务端
 # 会自动处理
 ```
 
