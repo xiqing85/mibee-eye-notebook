@@ -10,6 +10,7 @@ import { AuthState, detectAuthState, setAuthMode, initAuth, handleLogout } from 
 import { connectEvents, disconnectEvents } from './sse.js';
 import { initLive, startLive, stopLive, refreshCameraSelect, renderDetections } from './live.js';
 import { initAi, handleModelChanged } from './ai.js';
+import { handleAlarmEvent } from './alarm.js';
 import { initPtz, fetchPtz, updatePtzVisibility, handlePtzEvent } from './ptz.js';
 import { initImaging, handleParamChanged } from './imaging.js';
 import { refreshCameras, renderCameras, initCameras, stopCameras, announceRecording } from './cameras.js';
@@ -73,6 +74,7 @@ async function enterApp() {
   connectEvents({
     ai_detection: (p) => renderDetections(p.detections || []),
     ai_model_changed: handleModelChanged,
+    alarm: handleAlarmEvent,
     param_changed: handleParamChanged,
     recording: (p) => {
       if (p) announceRecording(!!p.active, 'info');
