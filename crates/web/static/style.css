@@ -1564,8 +1564,12 @@ input[type="range"]::-moz-range-thumb {
     padding-bottom: 90px;
   }
   /* Column direction re-orients flex-basis to height — give the children
-     explicit widths instead of the row-oriented 100% bases. */
-  .live-toolbar { flex: 0 0 auto; width: 100%; }
+     explicit widths instead of the row-oriented 100% bases. The toolbar
+     wraps: two 190px selects + labels cannot fit one 390px row, and the
+     overflow would widen the mobile layout viewport, pushing the fixed
+     bottom nav off-screen (#6). */
+  .live-toolbar { flex: 0 0 auto; width: 100%; flex-wrap: wrap; gap: 8px; }
+  .live-toolbar .field { flex-wrap: wrap; min-width: 0; }
   .stream-wrapper { flex: 0 0 auto; width: 100%; min-height: 230px; }
   .imaging-section { flex: 0 0 auto; width: 100%; }
   .ptz-panel { width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; }
