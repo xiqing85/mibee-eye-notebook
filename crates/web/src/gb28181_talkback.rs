@@ -15,6 +15,8 @@ use gb28181_rs::AudioCodec;
 use gb28181_rs::server::AudioTalkbackSink;
 use parking_lot::Mutex;
 use protocols::audio_codec::{alaw_to_pcm, mulaw_to_pcm};
+#[cfg(test)]
+use protocols::audio_codec::{pcm_to_alaw, pcm_to_mulaw};
 
 /// Decoded-PCM destination: a cpal ring buffer in production, a collector
 /// in tests.
@@ -311,31 +313,65 @@ impl Default for G711Chunker {
     }
 }
 
-fn encode_alaw_8k(pcm: &[i16]) -> Vec<u8> {
-    // A-law: the de-facto GB platform codec (PCMA, PT 8).
-    pcm.iter()
-        .map(|&s| protocols::audio_codec::pcm_to_alaw(s))
-        .collect()
+/// Encode PCM to the negotiated G.711 variant. A-law is the de-facto GB
+/// platform codec (PCMA, PT 8); a PCMU offer flips the law for that
+/// session and the encoder follows.
+fn encode_g711(pcm: &[i16], law: gb28181_rs::client::AudioCodec) -> Vec<u8> {
+    match law {
+        gb28181_rs::client::AudioCodec::Pcma => pcm
+            .iter()
+            .map(|&s| protocols::audio_codec::pcm_to_alaw(s))
+            .collect(),
+        gb28181_rs::client::AudioCodec::Pcmu => pcm
+            .iter()
+            .map(|&s| protocols::audio_codec::pcm_to_mulaw(s))
+            .collect(),
+    }
+}
+
+/// The live law the cpal callback encodes with: the library's source
+/// handle once the runtime has installed the channel (late-bound — the
+/// mic opens before the builder exists), PCMA until then, matching the
+/// library default.
+#[must_use]
+pub fn current_law(
+    slot: &std::sync::OnceLock<Arc<gb28181_rs::server::TalkbackSource>>,
+) -> gb28181_rs::client::AudioCodec {
+    slot.get()
+        .map_or(gb28181_rs::client::AudioCodec::Pcma, |s| s.law())
 }
 
 /// Callback-side send: never blocks (cpal callbacks must not); a full
 /// backlog drops the frame — session start replays at most ~1 s.
-fn push_frames(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, chunker: &mut G711Chunker, alaw: &[u8]) {
-    for frame in chunker.push(alaw) {
+fn push_frames(tx: &std::sync::mpsc::SyncSender<Vec<u8>>, chunker: &mut G711Chunker, g711: &[u8]) {
+    for frame in chunker.push(g711) {
         let _ = tx.try_send(frame);
     }
 }
 
+/// Late-bound negotiated-law handle: the runtime installs the library's
+/// live source after handing the channel to the builder.
+pub type UpstreamLawSlot = std::sync::OnceLock<Arc<gb28181_rs::server::TalkbackSource>>;
+
+/// Everything the runtime needs to wire the upstream half: the frame
+/// channel for the builder, the live capture stream to hold for the
+/// protocol's lifetime, and the late-bound law slot to bind after the
+/// builder installs the channel.
+pub struct UpstreamHandle {
+    pub frames: std::sync::mpsc::Receiver<Vec<u8>>,
+    pub stream: cpal::Stream,
+    pub law_slot: Arc<UpstreamLawSlot>,
+}
+
 /// Resolve the talkback source per config: `None` when disabled; when
 /// enabled, a cpal input stream (8 kHz mono preferred, resampled
-/// otherwise) feeding A-law 20 ms frames into the channel the library
-/// consumes during recvonly talkback sessions. The caller must hold the
-/// returned stream for the protocol's lifetime (dropping it stops
-/// capture). Errors bubble up so the caller can fail open (no source →
-/// the library answers 488).
-pub fn open_upstream(
-    enabled: bool,
-) -> Result<Option<(std::sync::mpsc::Receiver<Vec<u8>>, cpal::Stream)>> {
+/// otherwise) feeding G.711 20 ms frames into the channel the library
+/// consumes during recvonly talkback sessions. The law follows the
+/// session's negotiated offer via the late-bound slot (PCMA default;
+/// the runtime installs the library's live handle after the builder
+/// takes the channel). Errors bubble up so the caller can fail open
+/// (no source → the library answers 488).
+pub fn open_upstream(enabled: bool) -> anyhow::Result<Option<UpstreamHandle>> {
     if !enabled {
         return Ok(None);
     }
@@ -367,19 +403,27 @@ pub fn open_upstream(
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(UPSTREAM_BACKLOG_FRAMES);
     let chunker = Arc::new(parking_lot::Mutex::new(G711Chunker::new()));
+    // Late-bound law slot: the runtime installs the library's live
+    // TalkbackSource handle after handing the channel to the builder;
+    // until then (and per default) the encoder uses PCMA.
+    let law_slot = Arc::new(std::sync::OnceLock::new());
     let err_fn = |e| tracing::warn!(error = %e, "talkback upstream capture error");
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::I16 => {
             let tx = tx.clone();
             let chunker = Arc::clone(&chunker);
+            let law_slot = Arc::clone(&law_slot);
             device.build_input_stream(
                 config.config(),
                 move |data: &[i16], _| {
                     push_frames(
                         &tx,
                         &mut chunker.lock(),
-                        &encode_alaw_8k(&resample_to_8k_mono(data, rate, channels)),
+                        &encode_g711(
+                            &resample_to_8k_mono(data, rate, channels),
+                            current_law(&law_slot),
+                        ),
                     );
                 },
                 err_fn,
@@ -389,6 +433,7 @@ pub fn open_upstream(
         cpal::SampleFormat::F32 => {
             let tx = tx.clone();
             let chunker = Arc::clone(&chunker);
+            let law_slot = Arc::clone(&law_slot);
             device.build_input_stream(
                 config.config(),
                 move |data: &[f32], _| {
@@ -399,7 +444,10 @@ pub fn open_upstream(
                     push_frames(
                         &tx,
                         &mut chunker.lock(),
-                        &encode_alaw_8k(&resample_to_8k_mono(&pcm, rate, channels)),
+                        &encode_g711(
+                            &resample_to_8k_mono(&pcm, rate, channels),
+                            current_law(&law_slot),
+                        ),
                     );
                 },
                 err_fn,
@@ -411,7 +459,11 @@ pub fn open_upstream(
     stream
         .play()
         .context("failed to start talkback upstream capture")?;
-    Ok(Some((rx, stream)))
+    Ok(Some(UpstreamHandle {
+        frames: rx,
+        stream,
+        law_slot,
+    }))
 }
 
 #[cfg(test)]
@@ -466,6 +518,33 @@ mod tests {
     #[test]
     fn upstream_disabled_returns_none() {
         assert!(open_upstream(false).unwrap().is_none());
+    }
+
+    #[test]
+    fn encode_g711_follows_the_negotiated_law() {
+        let pcm = [0i16, 1000, -1000, i16::MAX, i16::MIN];
+        let alaw = encode_g711(&pcm, AudioCodec::Pcma);
+        let mulaw = encode_g711(&pcm, AudioCodec::Pcmu);
+        assert_eq!(
+            alaw,
+            pcm.iter().map(|&s| pcm_to_alaw(s)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            mulaw,
+            pcm.iter().map(|&s| pcm_to_mulaw(s)).collect::<Vec<_>>()
+        );
+        // Distinct companding laws produce distinct bytes for the same PCM.
+        assert_ne!(alaw, mulaw);
+    }
+
+    #[test]
+    fn current_law_defaults_to_pcma_until_bound() {
+        use gb28181_rs::server::TalkbackSource;
+        let slot = std::sync::OnceLock::new();
+        assert_eq!(current_law(&slot), AudioCodec::Pcma);
+        let (_tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let _ = slot.set(Arc::new(TalkbackSource::new(rx)));
+        assert_eq!(slot.get().unwrap().law(), AudioCodec::Pcma);
     }
 
     #[test]
