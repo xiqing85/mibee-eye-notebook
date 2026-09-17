@@ -713,9 +713,15 @@ impl ProtocolRuntime {
             audio_stream = Some(stream);
         }
         let mut upstream_stream = None;
-        if let Some((source, stream)) = talkback_upstream {
-            server_builder = server_builder.with_talkback_source(source);
-            upstream_stream = Some(stream);
+        if let Some(upstream) = talkback_upstream {
+            server_builder = server_builder.with_talkback_source(upstream.frames);
+            // Late-bind the negotiated-law handle the cpal encoder polls:
+            // PCMA until the channel is installed, then whatever the
+            // accepted offer negotiated (library seam, gb28181-rs #78).
+            if let Some(handle) = server_builder.talkback_upstream_source() {
+                let _ = upstream.law_slot.set(handle);
+            }
+            upstream_stream = Some(upstream.stream);
         }
 
         match server_builder.spawn().await {
