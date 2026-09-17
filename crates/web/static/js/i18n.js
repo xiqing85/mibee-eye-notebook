@@ -43,6 +43,8 @@ const DICT = {
     streamStarted: '采集已启动', streamStopped: '采集已停止',
     recordingStart: '开始录像', recordingStop: '停止录像',
     recordingStarted: '录像已开始', recordingStopped: '录像已停止',
+    // Alarm (SPEC §6 rising-edge events)
+    alarmTriggered: '告警：检测到 {n} 个目标',
     // PTZ
     ptzControl: '云台控制', ptzEnableDesc: '在实时画面显示方向控制按钮',
     pan: '水平', tilt: '俯仰', zoom: '变焦',
@@ -182,6 +184,8 @@ const DICT = {
     streamStarted: 'Capture started', streamStopped: 'Capture stopped',
     recordingStart: 'Start recording', recordingStop: 'Stop recording',
     recordingStarted: 'Recording started', recordingStopped: 'Recording stopped',
+    // Alarm (SPEC §6 rising-edge events)
+    alarmTriggered: 'Alarm: {n} target(s) detected',
     // PTZ
     ptzControl: 'PTZ Control', ptzEnableDesc: 'Show direction controls on the Live view',
     pan: 'Pan', tilt: 'Tilt', zoom: 'Zoom',
