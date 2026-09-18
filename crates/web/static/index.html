@@ -25,11 +25,12 @@
           <h1>MiBee Cam</h1>
           <p class="login-subtitle" data-i18n="loginSubtitle">Unified device management</p>
         </div>
-        <!-- SPEC §2: session auth. The username and confirm fields only
-             appear in first-boot setup mode (503 setup_required). -->
+        <!-- SPEC §2: session auth. The username input is always rendered
+             (empty resolves to "admin" server-side); the confirm field only
+             appears in first-boot setup mode (503 setup_required). -->
         <p id="setup-hint" class="setup-hint hidden" data-i18n="setupHint"></p>
         <form id="login-form" autocomplete="on">
-          <div class="field hidden" id="auth-username-field">
+          <div class="field" id="auth-username-field">
             <label for="login-username" data-i18n="newUsername">Admin username</label>
             <input type="text" id="login-username" name="username" autocomplete="username">
           </div>
