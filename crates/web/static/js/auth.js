@@ -12,6 +12,12 @@ import { t } from './i18n.js';
 
 export const AuthState = { SIGNED_IN: 'in', LOGIN: 'login', SETUP: 'setup' };
 
+// Current auth form mode. setAuthMode is the single mutator; the submit
+// handler reads this instead of sniffing field visibility — the username
+// input is rendered in both modes (SPEC §2: empty username resolves to
+// "admin" server-side).
+let currentMode = AuthState.LOGIN;
+
 export async function detectAuthState() {
   const r = await api.get('/api/auth/me');
   if (r.ok) {
@@ -23,8 +29,8 @@ export async function detectAuthState() {
 }
 
 export function setAuthMode(mode) {
+  currentMode = mode;
   const setup = mode === AuthState.SETUP;
-  $('auth-username-field').classList.toggle('hidden', !setup);
   $('login-password2-field').classList.toggle('hidden', !setup);
   const hint = $('setup-hint');
   if (hint) hint.classList.toggle('hidden', !setup);
@@ -32,6 +38,8 @@ export function setAuthMode(mode) {
   if (btn) btn.textContent = setup ? t('setupBtn') : t('loginBtn');
   const pwLabel = document.querySelector('label[for=login-password]');
   if (pwLabel) pwLabel.textContent = setup ? t('newPassword') : t('password');
+  const unLabel = document.querySelector('label[for=login-username]');
+  if (unLabel) unLabel.textContent = setup ? t('newUsername') : t('username');
   const err = $('login-error');
   if (err) err.classList.add('hidden');
 }
@@ -45,7 +53,7 @@ export function initAuth(onAuthenticated) {
     errEl.classList.add('hidden');
     const btn = document.querySelector('#login-form button[type=submit]');
 
-    const isSetup = !$('auth-username-field').classList.contains('hidden');
+    const isSetup = currentMode === AuthState.SETUP;
     if (isSetup) {
       const confirm2 = $('login-password2') ? $('login-password2').value : password;
       if (!username || password.length < 8) {
