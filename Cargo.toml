@@ -17,7 +17,9 @@ license = "Apache-2.0"
 rust-version = "1.88"
 
 [workspace.dependencies]
-onvif-device-rs = "0.6.0"
+# git pin tracking onvif-rs main (same rev the mibee-eye-rs product
+# consumes); switch to a crates.io version when the library next publishes.
+onvif-device-rs = { git = "https://github.com/mickeyzzc/onvif-rs.git", rev = "9c1473c" }
 # git pin tracking gb28181-rs main (same rev the mibee-eye-rs product
 # consumes); switch to a crates.io version when the library next publishes.
 gb28181-rs = { git = "https://github.com/mickeyzzc/gb28181-rs.git", rev = "fcdb5fa", features = ["gb35114"] }
