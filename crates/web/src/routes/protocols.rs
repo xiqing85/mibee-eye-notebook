@@ -752,6 +752,7 @@ mod tests {
         assert!(props.contains_key("model"));
         assert!(props.contains_key("serial"));
         assert!(props.contains_key("firmware_version"));
+        assert!(props.contains_key("events_enabled"));
     }
 
     #[test]
