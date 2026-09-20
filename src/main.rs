@@ -164,6 +164,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Shared gate Arcs: one each spans the AI alarm bridge, the protocol
     // runtime (GB28181 handlers), and the StreamManager's recording outputs.
+    let onvif_events_slot: Arc<
+        std::sync::Mutex<Option<Arc<onvif_device_rs::events::EventsService>>>,
+    > = Arc::new(std::sync::Mutex::new(None));
     let notifier_slot: Arc<std::sync::Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>> =
         Arc::new(std::sync::Mutex::new(None));
     let alarm_notify_gate = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -199,6 +202,7 @@ async fn main() -> anyhow::Result<()> {
             web::alarm::AlarmBridge::new(std::time::Duration::from_secs(alarm_cooldown_secs));
         let notifier_slot = Arc::clone(&notifier_slot);
         let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
+        let onvif_events_slot = Arc::clone(&onvif_events_slot);
         tokio::spawn(async move {
             loop {
                 match ai_events.recv().await {
@@ -225,6 +229,18 @@ async fn main() -> anyhow::Result<()> {
                                 targets: sig.targets,
                                 timestamp_ms: sig.timestamp_ms,
                             });
+                            // ONVIF MotionAlarm rides the same accepted
+                            // edge (no NVR subscribed = no-op).
+                            if let Some(events) = onvif_events_slot
+                                .lock()
+                                .expect("onvif events slot lock")
+                                .clone()
+                            {
+                                events.publish_event(web::onvif_alarm::motion_alarm_event(
+                                    &sig.camera_id,
+                                    sig.targets,
+                                ));
+                            }
                             if alarm_notify_gate.load(std::sync::atomic::Ordering::SeqCst) {
                                 let notifier =
                                     notifier_slot.lock().expect("gb notifier slot lock").clone();
@@ -336,6 +352,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&recording_paused),
         Arc::clone(&force_idr),
         Arc::clone(&gb_flips),
+        Arc::clone(&onvif_events_slot),
     );
 
     // ONVIF

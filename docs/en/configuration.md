@@ -229,6 +229,7 @@ model = "Rec-01"
 serial = "NC00000001"
 firmware_version = "1.0.0"
 port = 3702
+events_enabled = true
 ```
 
 **Field Reference:**
@@ -242,6 +243,7 @@ port = 3702
 | `serial` | String | `"NC00000001"` | Serial number |
 | `firmware_version` | String | `"1.0.0"` | Firmware version |
 | `port` | u16 | `3702` | WS-Discovery UDP port (hardcoded) |
+| `events_enabled` | bool | `true` | Pull-Point events service: AI motion alarms publish as `tns1:VideoSource/MotionAlarm` while an NVR holds a subscription |
 
 **Notes:**
 

@@ -11,6 +11,7 @@ pub mod errors;
 pub mod gb28181_control;
 pub mod gb28181_talkback;
 pub mod observe;
+pub mod onvif_alarm;
 pub mod protocol_runtime;
 pub mod routes;
 pub mod server;

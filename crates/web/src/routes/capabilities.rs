@@ -43,7 +43,7 @@ pub struct CapabilitiesResponse {
 #[tracing::instrument(skip_all)]
 pub async fn get_capabilities(
     Extension(ai): Extension<Arc<AiEngine>>,
-    Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
+    Extension(_protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
     static CACHE: std::sync::OnceLock<CapabilitiesResponse> = std::sync::OnceLock::new();
@@ -63,9 +63,11 @@ pub async fn get_capabilities(
     if ai_hot_swap {
         events.push("ai_model_changed");
     }
-    // The alarm bridge fires on AI rising edges; GB28181 being up is what
-    // arms the Alarm NOTIFY path (the SSE event itself needs only AI).
-    if ai.is_active() && protocol_runtime.lock().await.status().gb28181.running {
+    // The alarm bridge fires on AI rising edges and fans out to the SSE
+    // hub, the GB Alarm NOTIFY and the ONVIF MotionAlarm — each channel
+    // no-ops until its consumer is up/subscribed, so the event itself
+    // only requires AI.
+    if ai.is_active() {
         events.push("alarm");
     }
     let superset = serde_json::json!({
