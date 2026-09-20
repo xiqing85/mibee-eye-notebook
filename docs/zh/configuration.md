@@ -229,6 +229,7 @@ model = "Rec-01"
 serial = "NC00000001"
 firmware_version = "1.0.0"
 port = 3702
+events_enabled = true
 ```
 
 **字段参考：**
@@ -242,6 +243,7 @@ port = 3702
 | `serial` | String | `"NC00000001"` | 序列号 |
 | `firmware_version` | String | `"1.0.0"` | 固件版本 |
 | `port` | u16 | `3702` | WS-Discovery UDP 端口（硬编码） |
+| `events_enabled` | bool | `true` | Pull-Point 事件服务：AI 运动告警以 `tns1:VideoSource/MotionAlarm` 推送给持有订阅的 NVR |
 
 **注意事项：**
 
