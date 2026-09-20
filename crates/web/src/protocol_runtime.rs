@@ -498,11 +498,16 @@ impl ProtocolRuntime {
         // onvif-device-rs 0.6 fail-closes on placeholder identity (its
         // issue #20); the DB-backed defaults are real values, so an error
         // here aborts the protocol start with the library's reason.
-        let device_svc = Arc::new(onvif_device_rs::device::DeviceServiceHandlers::new(
-            config.device.clone(),
-            config.onvif_port,
-            device_ip.clone(),
-        )?);
+        let device_svc = Arc::new(
+            // Advertise the events service exactly when its routes are
+            // served (enable_events above) — the pair must not disagree.
+            onvif_device_rs::device::DeviceServiceHandlers::new(
+                config.device.clone(),
+                config.onvif_port,
+                device_ip.clone(),
+            )?
+            .with_events_support(config.events_enabled),
+        );
         for action in [
             "GetSystemDateAndTime",
             "GetDeviceInformation",
