@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **ONVIF Pull-Point events service** (onvif-device-rs 0.7): AI motion
+  alarms now also publish as `tns1:VideoSource/MotionAlarm` (Source =
+  the camera UUID) while an NVR holds a pull-point subscription — the
+  same accepted rising edge that feeds the GB alarm NOTIFY and the
+  SPEC v1 §6 `alarm` SSE event. New `protocols.onvif.events_enabled`
+  key (default `true`, absent DB rows parse as enabled; protocol
+  re-toggle applies). The `alarm` SSE event is now advertised with AI
+  active instead of requiring a running GB28181 protocol — each alarm
+  channel no-ops independently until its consumer is up/subscribed.
+
 ## [0.3.0] - 2026-09-16
 
 Late join to the v0.3.0 train (user decision): the version number aligns

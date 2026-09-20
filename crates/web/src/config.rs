@@ -30,6 +30,14 @@ pub struct OnvifConfig {
     pub firmware_version: String,
     #[serde(default = "default_onvif_port")]
     pub port: u16,
+    /// Expose the Pull-Point events service: AI motion alarms publish as
+    /// `tns1:VideoSource/MotionAlarm` while an NVR holds a subscription.
+    #[serde(default = "default_onvif_events_enabled")]
+    pub events_enabled: bool,
+}
+
+fn default_onvif_events_enabled() -> bool {
+    true
 }
 
 fn default_onvif_device_name() -> String {
@@ -61,6 +69,7 @@ impl Default for OnvifConfig {
             serial: "NC00000001".into(),
             firmware_version: "1.0.0".into(),
             port: 3702,
+            events_enabled: true,
         }
     }
 }

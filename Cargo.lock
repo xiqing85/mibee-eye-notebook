@@ -2371,6 +2371,7 @@ dependencies = [
  "gb28181-rs",
  "libc",
  "observability",
+ "onvif-device-rs",
  "protocols",
  "rustls",
  "security",

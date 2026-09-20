@@ -73,6 +73,12 @@ pub fn build_onvif_config_from_json(
             .map(|v| v as u32)
             .unwrap_or(default)
     };
+    let get_bool = |key: &str, default: bool| {
+        db_config
+            .get(key)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(default)
+    };
 
     let model = get_str("model", "Rec-01");
 
@@ -86,6 +92,7 @@ pub fn build_onvif_config_from_json(
             model,
         },
         onvif_port: ONVIF_HTTP_PORT,
+        events_enabled: get_bool("events_enabled", true),
         username: get_str("username", ""),
         password: get_str("password", ""),
         host: advertised_host.to_string(),
@@ -198,6 +205,9 @@ pub fn extract_gb28181_config(db_config: &serde_json::Value) -> Gb28181RuntimeCo
 pub struct OnvifRuntimeConfig {
     pub device: onvif_device_rs::DeviceConfig,
     pub onvif_port: u16,
+    /// Expose the Pull-Point events service (AI MotionAlarm) while the
+    /// ONVIF protocol runs (onvif-device-rs 0.7 events service).
+    pub events_enabled: bool,
     pub username: String,
     pub password: String,
     /// Advertised host for XAddrs / stream URIs.
@@ -345,6 +355,10 @@ pub struct ProtocolRuntime {
     /// Host-side NOTIFY sender (alarm/position/catalog). Filled on GB28181
     /// start, cleared on stop; the AI alarm bridge reads it on fire.
     notifier_slot: Arc<Mutex<Option<Arc<gb28181_rs::subscribe::DeviceNotifier>>>>,
+    /// ONVIF events service handle: filled on ONVIF start (when
+    /// `events_enabled`), cleared on stop; the AI alarm bridge
+    /// publishes MotionAlarms through it while the protocol is up.
+    onvif_events_slot: Arc<Mutex<Option<Arc<onvif_device_rs::events::EventsService>>>>,
     /// DeviceConfig AlarmReport runtime gate (A.2.3.2.10) — platform
     /// switches override the config key while the protocol is up.
     alarm_notify_gate: Arc<AtomicBool>,
@@ -381,6 +395,7 @@ impl ProtocolRuntime {
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(streaming::capture_source::Flips::default()),
+            Arc::new(Mutex::new(None)),
         )
     }
 
@@ -395,6 +410,7 @@ impl ProtocolRuntime {
         recording_paused: Arc<AtomicBool>,
         force_idr: Arc<AtomicBool>,
         gb_flips: Arc<streaming::capture_source::Flips>,
+        onvif_events_slot: Arc<Mutex<Option<Arc<onvif_device_rs::events::EventsService>>>>,
     ) -> Self {
         Self {
             onvif_handle: None,
@@ -404,6 +420,7 @@ impl ProtocolRuntime {
             gb28181_talkback_stream: None,
             gb28181_upstream_stream: None,
             notifier_slot,
+            onvif_events_slot,
             alarm_notify_gate,
             recording_paused,
             force_idr,
@@ -467,6 +484,16 @@ impl ProtocolRuntime {
             allow_no_auth: config.password.is_empty(),
             ..Default::default()
         });
+
+        // Pull-Point events (onvif-device-rs 0.7): the publish seam must
+        // be taken before start. The shared slot lets the AI alarm
+        // bridge publish MotionAlarms while the protocol is up; None
+        // while disabled by config or stopped.
+        let events = config.events_enabled.then(|| soap.enable_events());
+        *self
+            .onvif_events_slot
+            .lock()
+            .expect("onvif events slot lock") = events;
 
         // onvif-device-rs 0.6 fail-closes on placeholder identity (its
         // issue #20); the DB-backed defaults are real values, so an error
@@ -576,6 +603,10 @@ impl ProtocolRuntime {
     /// Stop ONVIF WS-Discovery server with graceful 5s timeout.
     #[tracing::instrument(skip(self))]
     pub async fn stop_onvif(&mut self) {
+        *self
+            .onvif_events_slot
+            .lock()
+            .expect("onvif events slot lock") = None;
         let tx = self.shutdown_txs.remove("onvif");
         let handle = self.onvif_handle.take();
         if let Some(dh) = self.discovery_handle.take() {
@@ -1472,6 +1503,19 @@ mod tests {
         // Media profile defaults (720p) until DB keys override them.
         assert_eq!(config.camera_width, 1280);
         assert_eq!(config.camera_height, 720);
+    }
+
+    #[test]
+    fn test_build_onvif_config_from_json_events_enabled() {
+        // Absent key (existing DB rows) defaults to true; explicit false
+        // parses through.
+        let config = build_onvif_config_from_json(&serde_json::json!({}), "192.0.2.10");
+        assert!(config.events_enabled);
+        let config = build_onvif_config_from_json(
+            &serde_json::json!({"events_enabled": false}),
+            "192.0.2.10",
+        );
+        assert!(!config.events_enabled);
     }
 
     #[test]
