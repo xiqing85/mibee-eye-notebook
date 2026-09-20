@@ -55,6 +55,56 @@ pub struct ProtocolState {
 
 /// Extract an ONVIF device config from the DB JSON value, filling in
 /// runtime-dependent fields (rtsp_url, xaddrs) from known parameters.
+/// Extract the Raspberry Pi `Serial` line from /proc/cpuinfo contents.
+fn serial_from_cpuinfo(data: &str) -> String {
+    for line in data.lines() {
+        if let Some((key, value)) = line.split_once(':')
+            && key.trim() == "Serial"
+            && !value.trim().is_empty()
+        {
+            return value.trim().to_string();
+        }
+    }
+    String::new()
+}
+
+/// Validate/normalize a /etc/machine-id read: a long-enough token.
+fn normalize_machine_id(data: &str) -> String {
+    let id = data.lines().next().unwrap_or("").trim();
+    if id.len() < 8 {
+        String::new()
+    } else {
+        id.to_string()
+    }
+}
+
+/// Device-level serial probe (issue #18): cpuinfo Serial → Linux
+/// machine-id. NOT the MAC — dual-homed hosts flip identity on
+/// interface change. Cached for the process lifetime (the value must
+/// not drift between protocol toggles).
+fn detect_device_serial() -> String {
+    static DETECTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DETECTED
+        .get_or_init(|| {
+            if let Ok(data) = std::fs::read_to_string("/proc/cpuinfo") {
+                let serial = serial_from_cpuinfo(&data);
+                if !serial.is_empty() {
+                    return serial;
+                }
+            }
+            for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+                if let Ok(data) = std::fs::read_to_string(path) {
+                    let id = normalize_machine_id(&data);
+                    if !id.is_empty() {
+                        return id;
+                    }
+                }
+            }
+            String::new()
+        })
+        .clone()
+}
+
 pub fn build_onvif_config_from_json(
     db_config: &serde_json::Value,
     advertised_host: &str,
@@ -82,11 +132,37 @@ pub fn build_onvif_config_from_json(
 
     let model = get_str("model", "Rec-01");
 
+    // Serial chain (issue #18): explicit config wins; unset probes the
+    // device identity (cpuinfo Serial / machine-id); the historical
+    // shared default is the LAST resort so NVR stable_id dedup never
+    // silently collapses distinct installs.
+    // The legacy constant value counts as unset — DB rows persisted by
+    // older builds carry the baked default, not a human choice.
+    let serial_configured = match get_str("serial", "").as_str() {
+        "" | "NC00000001" => String::new(),
+        explicit => explicit.to_string(),
+    };
+    let serial = if !serial_configured.is_empty() {
+        serial_configured
+    } else {
+        let detected = detect_device_serial();
+        if detected.is_empty() {
+            tracing::warn!(
+                "onvif serial not configured and no device-level serial probeable — \
+                 falling back to the shared default NC00000001; set protocols.onvif.serial"
+            );
+            "NC00000001".to_string()
+        } else {
+            tracing::info!(serial = %detected, "onvif serial auto-detected");
+            detected
+        }
+    };
+
     OnvifRuntimeConfig {
         device: onvif_device_rs::DeviceConfig {
             manufacturer: get_str("manufacturer", "MiBee"),
             firmware: get_str("firmware_version", "1.0.0"), // hardcode-ok: SQLite 配置 get_str 兜底默认值（本仓配置默认层），非应用版本横幅
-            serial_number: get_str("serial", "NC00000001"),
+            serial_number: serial,
             hardware_id: model.clone(),
             name: model.clone(),
             model,
@@ -1508,6 +1584,50 @@ mod tests {
         // Media profile defaults (720p) until DB keys override them.
         assert_eq!(config.camera_width, 1280);
         assert_eq!(config.camera_height, 720);
+    }
+
+    #[test]
+    fn serial_from_cpuinfo_parses_pi_serial() {
+        assert_eq!(
+            serial_from_cpuinfo("Hardware\t: BCM2835\nSerial\t\t: 10000000a1b2c3d4\n"),
+            "10000000a1b2c3d4"
+        );
+        assert_eq!(serial_from_cpuinfo("no serial here"), "");
+        assert_eq!(serial_from_cpuinfo("Serial\t: \n"), "");
+    }
+
+    #[test]
+    fn normalize_machine_id_takes_first_long_token() {
+        assert_eq!(
+            normalize_machine_id("3f2b1c0d9e8a7b6c5d4e3f2a1b0c9d8e\n"),
+            "3f2b1c0d9e8a7b6c5d4e3f2a1b0c9d8e"
+        );
+        assert_eq!(normalize_machine_id("\n"), "");
+        assert_eq!(normalize_machine_id("short\n"), "");
+    }
+
+    #[test]
+    fn test_build_onvif_config_serial_chain() {
+        // Explicit serial wins untouched.
+        let config = build_onvif_config_from_json(
+            &serde_json::json!({"serial": "SN-EXPLICIT-1"}),
+            "192.0.2.10",
+        );
+        assert_eq!(config.device.serial_number, "SN-EXPLICIT-1");
+
+        // Unset — and the legacy baked default persisted by older
+        // builds — probes the device identity; on this host the probe
+        // chain succeeds, so the shared NC00000001 must NOT survive
+        // (issue #18).
+        for json in [
+            serde_json::json!({}),
+            serde_json::json!({"serial": "NC00000001"}),
+        ] {
+            let config = build_onvif_config_from_json(&json, "192.0.2.10");
+            assert_eq!(config.device.serial_number, detect_device_serial());
+            assert_ne!(config.device.serial_number, "NC00000001");
+            assert!(!config.device.serial_number.is_empty());
+        }
     }
 
     #[test]

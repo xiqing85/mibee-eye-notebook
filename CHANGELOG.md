@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Device serial identity** (issue #18): an unset
+  `protocols.onvif.serial` no longer reports the shared `NC00000001`
+  default — explicit config wins, otherwise the device identity is
+  probed (cpuinfo `Serial` / Linux machine-id, cached for the process
+  lifetime); the shared default is the last resort with a warning. Two
+  distinct installs can no longer collapse into one NVR stable_id.
 - **ONVIF Pull-Point events service** (onvif-device-rs 0.7): AI motion
   alarms now also publish as `tns1:VideoSource/MotionAlarm` (Source =
   the camera UUID) while an NVR holds a pull-point subscription — the
