@@ -17,12 +17,12 @@ license = "Apache-2.0"
 rust-version = "1.88"
 
 [workspace.dependencies]
-# git pin tracking onvif-rs main (same rev the mibee-eye-rs product
-# consumes); switch to a crates.io version when the library next publishes.
-onvif-device-rs = { git = "https://github.com/mickeyzzc/onvif-rs.git", rev = "9c1473c" }
-# git pin tracking gb28181-rs main (same rev the mibee-eye-rs product
-# consumes); switch to a crates.io version when the library next publishes.
-gb28181-rs = { git = "https://github.com/mickeyzzc/gb28181-rs.git", rev = "fcdb5fa", features = ["gb35114"] }
+# ONVIF Device stack — v0.7.0: quick-xml 0.41 security fix + the parity
+# batch the git pin tracked.
+onvif-device-rs = "0.7.0"
+# GB/T 28181 device stack — v0.12.0: the 2022 device-side closure
+# package; contains everything the git pin tracked.
+gb28181-rs = { version = "0.12.0", features = ["gb35114"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
