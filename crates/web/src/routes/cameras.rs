@@ -188,6 +188,20 @@ pub async fn update_camera(
         }
     };
 
+    // SPEC v1 appendix A #19: reject an invalid rotation value at the API
+    // boundary — the stream would refuse to start otherwise (the error
+    // surfaces at create_stream, far from the PUT that caused it).
+    if let Some(cfg) = &body.config
+        && let Some(rotation) = cfg.get("rotation")
+        && !rotation
+            .as_u64()
+            .is_some_and(|v| matches!(v, 0 | 90 | 180 | 270))
+    {
+        return Err(ApiError::bad_request(
+            "config.rotation must be 0, 90, 180 or 270 (degrees clockwise)",
+        ));
+    }
+
     let now = crate::routes::chrono_now();
     let updated = CameraRow {
         id: existing.id,
@@ -365,6 +379,78 @@ mod tests {
         assert_eq!(body["data"]["camera_type"], "rtsp");
         assert_eq!(body["data"]["status"], "stopped");
         assert!(!body["data"]["id"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_camera_rejects_invalid_rotation() {
+        // SPEC v1 appendix A #19: rotation must be a quarter turn; the PUT
+        // boundary rejects anything else with 400 instead of letting the
+        // stream fail at start.
+        let (state, token) = test_app_with_token().await;
+        let app = crate::server::build_app_with_state(state);
+
+        // Create a camera to update.
+        let req = Request::builder()
+            .uri("/api/cameras")
+            .method("POST")
+            .header("content-type", "application/json")
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "name": "Rot", "camera_type": "usb", "config": {}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 1024 * 16)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let id = body["data"]["id"].as_str().unwrap().to_string();
+
+        let bad_values = [
+            serde_json::json!(45),
+            serde_json::json!(-90),
+            serde_json::json!("90"),
+            serde_json::json!(true),
+        ];
+        for bad in bad_values {
+            let req = Request::builder()
+                .uri(format!("/api/cameras/{id}"))
+                .method("PUT")
+                .header("content-type", "application/json")
+                .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+                .header("x-csrf-token", "test-csrf")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "config": { "rotation": bad } }))
+                        .unwrap(),
+                ))
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "rotation {bad:?}");
+        }
+
+        // Quarter turns (and absent key) are accepted.
+        for good in [0, 90, 180, 270] {
+            let req = Request::builder()
+                .uri(format!("/api/cameras/{id}"))
+                .method("PUT")
+                .header("content-type", "application/json")
+                .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+                .header("x-csrf-token", "test-csrf")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "config": { "rotation": good } }))
+                        .unwrap(),
+                ))
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "rotation {good}");
+        }
     }
 
     #[tokio::test]

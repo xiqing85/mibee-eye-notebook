@@ -111,6 +111,61 @@ impl Yuv420p {
             flip_plane(vp, cw, ch, hflip, vflip, &mut scratch[..cw]);
         }
     }
+
+    /// Rotate the frame a quarter turn (device-level rotation, SPEC v1
+    /// appendix A #19), returning a new frame with swapped dimensions —
+    /// rotation is not an in-place transform. `clockwise` selects 90°
+    /// clockwise vs 270° (counter-clockwise). Chroma planes follow the
+    /// same floor-division layout as [`Yuv420p::new`]/[`Yuv420p::flip`].
+    /// Malformed (too short) buffers yield a zero-filled output.
+    #[must_use]
+    pub fn rotated(&self, clockwise: bool) -> Yuv420p {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let cw = w / 2;
+        let ch = h / 2;
+        let y_len = w * h;
+        let uv_len = cw * ch;
+        let mut out = Yuv420p::new(self.height, self.width);
+        if w == 0 || h == 0 || self.data.len() < y_len + 2 * uv_len {
+            return out;
+        }
+        transpose_plane(self.y_plane(), out.y_plane_mut(), w, h, clockwise);
+        if cw > 0 && ch > 0 {
+            transpose_plane(self.u_plane(), out.u_plane_mut(), cw, ch, clockwise);
+            transpose_plane(self.v_plane(), out.v_plane_mut(), cw, ch, clockwise);
+        }
+        out
+    }
+}
+
+/// Effective dimensions after baking static `rotation` (SPEC v1 appendix
+/// A #19): 90°/270° swap width/height. Values outside 0|90|180|270 are
+/// treated as 0 — validation rejects them upstream.
+#[must_use]
+pub fn rotated_dims(width: u32, height: u32, rotation: u32) -> (u32, u32) {
+    match rotation {
+        90 | 270 => (height, width),
+        _ => (width, height),
+    }
+}
+
+/// Transpose one tightly packed plane (dims `pw`×`ph`) into `dst` laid
+/// out as `ph`×`pw`. Clockwise maps src(sx, sy) → dst(ph-1-sy, sx);
+/// counter-clockwise maps src(sx, sy) → dst(sy, pw-1-sx).
+fn transpose_plane(src: &[u8], dst: &mut [u8], pw: usize, ph: usize, clockwise: bool) {
+    for sy in 0..ph {
+        let row = &src[sy * pw..(sy + 1) * pw];
+        if clockwise {
+            for (sx, &v) in row.iter().enumerate() {
+                dst[sx * ph + (ph - 1 - sy)] = v;
+            }
+        } else {
+            for (sx, &v) in row.iter().enumerate() {
+                dst[(pw - 1 - sx) * ph + sy] = v;
+            }
+        }
+    }
 }
 
 /// Flip one tightly packed plane in place; `scratch` is one row wide.
@@ -556,6 +611,68 @@ mod tests {
         assert_eq!(&frame.y_plane()[8..12], &[3, 2, 1, 0]);
         // single chroma row (c_h = 1): mirrored only
         assert_eq!(frame.u_plane(), &[13, 12]);
+    }
+
+    #[test]
+    fn rotated_dims_swap_only_for_90_270() {
+        assert_eq!(super::rotated_dims(640, 480, 0), (640, 480));
+        assert_eq!(super::rotated_dims(640, 480, 180), (640, 480));
+        assert_eq!(super::rotated_dims(640, 480, 90), (480, 640));
+        assert_eq!(super::rotated_dims(640, 480, 270), (480, 640));
+        assert_eq!(super::rotated_dims(640, 480, 45), (640, 480));
+    }
+
+    /// 4x2 frame: Y = 1..8, U = 7..11 (2x1), V = 9..13 (2x1).
+    /// Floor chroma: cw = 2, ch = 1 → y=8, u=8..10, v=10..12.
+    fn frame_4x2() -> Yuv420p {
+        Yuv420p {
+            width: 4,
+            height: 2,
+            data: vec![1, 2, 3, 4, 5, 6, 7, 8, 7, 8, 9, 10],
+        }
+    }
+
+    #[test]
+    fn rotated90_cw_transposes_planes() {
+        // Y [[1,2,3,4],[5,6,7,8]] --cw--> [[5,1],[6,2],[7,3],[8,4]]
+        // U row [7,8] --> column [7;8]; V row [9,10] --> column [9;10].
+        let out = frame_4x2().rotated(true);
+        assert_eq!((out.width, out.height), (2, 4));
+        assert_eq!(out.y_plane(), &[5, 1, 6, 2, 7, 3, 8, 4]);
+        assert_eq!(out.u_plane(), &[7, 8]);
+        assert_eq!(out.v_plane(), &[9, 10]);
+    }
+
+    #[test]
+    fn rotated270_ccw_transposes_planes() {
+        // Y [[1,2,3,4],[5,6,7,8]] --ccw--> [[4,8],[3,7],[2,6],[1,5]]
+        // U row [7,8] --> column [8;7]; V row [9,10] --> column [10;9].
+        let out = frame_4x2().rotated(false);
+        assert_eq!((out.width, out.height), (2, 4));
+        assert_eq!(out.y_plane(), &[4, 8, 3, 7, 2, 6, 1, 5]);
+        assert_eq!(out.u_plane(), &[8, 7]);
+        assert_eq!(out.v_plane(), &[10, 9]);
+    }
+
+    #[test]
+    fn rotated270_is_inverse_of_rotated90() {
+        let original = frame_4x2();
+        let once = original.rotated(true);
+        let back = once.rotated(false);
+        assert_eq!((back.width, back.height), (4, 2));
+        assert_eq!(back.data, original.data);
+    }
+
+    #[test]
+    fn rotated_short_buffer_yields_zero_filled() {
+        let broken = Yuv420p {
+            width: 4,
+            height: 2,
+            data: vec![1, 2, 3],
+        };
+        let out = broken.rotated(true);
+        assert_eq!((out.width, out.height), (2, 4));
+        assert!(out.data.iter().all(|&b| b == 0));
     }
 
     #[test]

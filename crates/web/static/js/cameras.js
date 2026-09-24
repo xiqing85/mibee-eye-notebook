@@ -88,6 +88,16 @@ function renderTile(cam) {
       html: icon('flip-v', 14),
       onclick: () => toggleDeviceFlip(cam, 'vflip'),
     }));
+    // Device-level rotation (SPEC appendix A #19): cycles 0→90→180→270,
+    // baked into the encoded stream on (re)start — every viewer sees it.
+    const rot = Number(cfg.rotation) || 0;
+    actions.push(el('button', {
+      className: 'btn-small btn-flip',
+      'aria-pressed': String(rot !== 0),
+      title: t('rotateBtn') + ' · ' + rot + '°', 'aria-label': t('rotateBtn'),
+      html: icon('rotate', 14),
+      onclick: () => toggleDeviceRotate(cam),
+    }));
     actions.push(iconBtn('trash', t('deleteCamera'), () => deleteCamera(cam), 'btn-danger'));
   }
 
@@ -198,6 +208,28 @@ async function toggleDeviceFlip(cam, axis) {
   await refreshCameras();
   renderCameras();
   toast(t('flipApplied'), 'success');
+}
+
+/// Cycle device-level rotation 0→90→180→270 (clockwise) in the camera
+/// config. Like flips, baked into the stream on (re)start — stop→start
+/// when the camera is live (a 90/270 change swaps the stream resolution).
+async function toggleDeviceRotate(cam) {
+  const cfg = { ...(cam.config || {}) };
+  const next = ((Number(cfg.rotation) || 0) + 90) % 360;
+  cfg.rotation = next;
+  const r = await api.put(`/api/cameras/${cam.id}`, { config: cfg });
+  if (!r.ok) {
+    toast(r.message || t('fetchError'), 'error');
+    return;
+  }
+  const wasActive = isActive(cam);
+  if (wasActive && hasCap('camera_control')) {
+    await api.post(`/api/cameras/${cam.id}/stop`);
+    await api.post(`/api/cameras/${cam.id}/start`);
+  }
+  await refreshCameras();
+  renderCameras();
+  toast(t('rotateApplied', { deg: next }), 'success');
 }
 
 async function deleteCamera(cam) {

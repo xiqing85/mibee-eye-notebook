@@ -94,13 +94,9 @@ export function refreshCameraSelect() {
 
 export async function startLive() {
   stopLive();
-  // camera.rotation lives in the config doc; fetch it once per session so
-  // the live view honors it without visiting Settings first.
-  if (!store.config) {
-    const cfg = await api.get('/api/config').catch(() => null);
-    if (cfg && cfg.ok) store.config = cfg.data;
-    applyTransform();
-  }
+  // Device-level rotation is baked into the stream (SPEC appendix A #19);
+  // no CSS rotation here — only the display-only client flips remain.
+  applyTransform();
   $('stream-error').classList.add('hidden');
   $('stream-loading').classList.remove('hidden');
   setLoadingLabel(false);
@@ -421,10 +417,7 @@ export function showStreamError(msgKey) {
 export function applyTransform() {
   const video = $('stream-video');
   if (!video) return;
-  const cam = (store.config && store.config.camera) || {};
-  const rot = parseInt(cam.rotation, 10) || 0;
   const parts = [];
-  if (rot) parts.push('rotate(' + rot + 'deg)');
   if (store.hflip) parts.push('scaleX(-1)');
   if (store.vflip) parts.push('scaleY(-1)');
   video.style.transform = parts.length ? parts.join(' ') : '';
@@ -445,14 +438,10 @@ function captureSnapshot() {
   }
   const w = source ? source.videoWidth : img.naturalWidth;
   const h = source ? source.videoHeight : img.naturalHeight;
-  const cam = (store.config && store.config.camera) || {};
-  const rot = parseInt(cam.rotation, 10) || 0;
   const canvas = document.createElement('canvas');
-  if (rot === 90 || rot === 270) { canvas.width = h; canvas.height = w; }
-  else { canvas.width = w; canvas.height = h; }
+  canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d');
   ctx.translate(canvas.width / 2, canvas.height / 2);
-  ctx.rotate(rot * Math.PI / 180);
   if (store.hflip) ctx.scale(-1, 1);
   if (store.vflip) ctx.scale(1, -1);
   ctx.drawImage(source || img, -w / 2, -h / 2);

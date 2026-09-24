@@ -36,7 +36,7 @@ use tracing::{debug, info, warn};
 
 use crate::capability::QualityPreset;
 use crate::encoder::audio::{AudioEncoder, G711Encoder};
-use crate::encoder::convert::{Yuv420p, mjpeg_to_yuv420p, yuyv_to_yuv420p};
+use crate::encoder::convert::{Yuv420p, mjpeg_to_yuv420p, rotated_dims, yuyv_to_yuv420p};
 use crate::encoder::h264::{H264Encoder, H264EncoderConfig, NalUnit};
 use crate::source::{MediaFrame, Source};
 use capture::audio::{AudioCapture, AudioFrame};
@@ -109,6 +109,11 @@ pub struct VideoCaptureSource {
     hflip: bool,
     /// Device-level vertical flip (upside-down mount compensation).
     vflip: bool,
+    /// Device-level rotation in degrees clockwise (0|90|180|270, SPEC v1
+    /// appendix A #19), baked into each frame before the flips — 90/270
+    /// swap the effective stream dimensions. Boot-static per stream (the
+    /// frontend cycles stop→start to apply a change, like flips).
+    rotation: u32,
     /// Runtime mirror flags from the GB28181 DeviceConfig FrameMirror
     /// control (A.2.3.2.9), composed with the static `hflip`/`vflip`
     /// above — see [`effective_flips`].
@@ -216,6 +221,7 @@ impl VideoCaptureSource {
             frame_count: 0,
             hflip: false,
             vflip: false,
+            rotation: 0,
             gb_flips: None,
             watermark: None,
         }
@@ -303,6 +309,19 @@ impl VideoCaptureSource {
         self
     }
 
+    /// Set the device-level rotation in degrees clockwise (0|90|180|270,
+    /// SPEC v1 appendix A #19); other values normalize to 0 (validation
+    /// rejects them upstream). Applied before the flips; 90/270 swap the
+    /// encoder/dimensions geometry. Boot-static: a change requires a
+    /// stream (re)start, like flips.
+    pub fn with_rotation(mut self, degrees: u32) -> Self {
+        self.rotation = match degrees {
+            90 | 180 | 270 => degrees,
+            _ => 0,
+        };
+        self
+    }
+
     /// Share the GB/T 28181 DeviceConfig FrameMirror flags (A.2.3.2.9).
     /// One set spans all cameras of this process; the platform flips it
     /// at runtime and every capture loop composes it with its static
@@ -322,11 +341,18 @@ impl VideoCaptureSource {
 }
 
 /// Whether the JPEG tap may pass the camera's native MJPEG bytes through
-/// untouched. Any pre-encode pixel modification (flips, watermark) means
-/// the raw MJPEG would no longer match the encoded orientation/content, so
-/// the tap must re-encode from the modified YUV instead.
-fn mjpeg_passthrough(mjpeg_native: bool, hflip: bool, vflip: bool, watermark: bool) -> bool {
-    mjpeg_native && !hflip && !vflip && !watermark
+/// untouched. Any pre-encode pixel modification (rotation, flips,
+/// watermark) means the raw MJPEG would no longer match the encoded
+/// orientation/content, so the tap must re-encode from the modified YUV
+/// instead.
+fn mjpeg_passthrough(
+    mjpeg_native: bool,
+    rotation: u32,
+    hflip: bool,
+    vflip: bool,
+    watermark: bool,
+) -> bool {
+    mjpeg_native && rotation == 0 && !hflip && !vflip && !watermark
 }
 
 impl Source for VideoCaptureSource {
@@ -418,24 +444,29 @@ impl Source for VideoCaptureSource {
                     } else {
                         30.0
                     };
+                    // Post-rotation effective geometry (SPEC v1 appendix A
+                    // #19): the encoder consumes rotated frames, so 90/270
+                    // swap its configured dims and the published stream
+                    // dimensions downstream outputs (FileOutput muxer) read.
+                    let (eff_w, eff_h) = rotated_dims(self.width, self.height, self.rotation);
                     let config = H264EncoderConfig {
-                        width: self.width,
-                        height: self.height,
+                        width: eff_w,
+                        height: eff_h,
                         fps: self.fps,
-                        bitrate_bps: bitrate_for_dimensions(self.width, self.height),
+                        bitrate_bps: bitrate_for_dimensions(eff_w, eff_h),
                         quality_preset: self.quality_preset,
                     };
                     self.encoder = Some(H264Encoder::new(config).context("encoder init failed")?);
                     // Publish the negotiated dimensions so downstream outputs
                     // (e.g. FileOutput) can build correct muxer track metadata.
                     *self.dimensions.lock() = Some(StreamDimensions {
-                        width: self.width,
-                        height: self.height,
+                        width: eff_w,
+                        height: eff_h,
                         fps: self.fps,
                     });
                     info!(
-                        width = self.width,
-                        height = self.height,
+                        width = eff_w,
+                        height = eff_h,
                         fps = self.fps,
                         preset = ?self.quality_preset,
                         format = %video_frame.format,
@@ -464,12 +495,23 @@ impl Source for VideoCaptureSource {
                     mjpeg_to_yuv420p(&video_frame.data).context("MJPEG → YUV420p decode failed")?
                 };
 
-                // Device-level flip: baked into everything downstream —
-                // the encoder (RTSP/MSE/recordings) and the JPEG tap
-                // alike. Static mount compensation XOR the platform's
-                // runtime FrameMirror flags.
+                // Device-level transform (SPEC v1 appendix A #9/#19):
+                // rotation first, then flips — baked into everything
+                // downstream (the encoder → RTSP/MSE/recordings, and the
+                // JPEG tap alike). Static mount compensation XOR the
+                // platform's runtime FrameMirror flags; 180° rotation
+                // folds into the flip flags (same group element as
+                // hflip+vflip), 90°/270° transpose the frame.
                 let (hflip, vflip) =
                     effective_flips(self.hflip, self.vflip, self.gb_flips.as_deref());
+                let (hflip, vflip) = if self.rotation == 180 {
+                    (!hflip, !vflip)
+                } else {
+                    (hflip, vflip)
+                };
+                if self.rotation == 90 || self.rotation == 270 {
+                    yuv = yuv.rotated(self.rotation == 90);
+                }
                 if hflip || vflip {
                     yuv.flip(hflip, vflip);
                 }
@@ -485,17 +527,22 @@ impl Source for VideoCaptureSource {
                 //    so re-encode from the modified YUV (throttled) instead.
                 self.frame_count += 1;
                 let mjpeg_native = video_frame.format.contains("MJPEG");
-                let jpeg_bytes: Option<Arc<[u8]>> =
-                    if mjpeg_passthrough(mjpeg_native, hflip, vflip, self.watermark.is_some()) {
-                        Some(Arc::from(video_frame.data.as_slice()))
-                    } else if self
-                        .frame_count
-                        .is_multiple_of(JPEG_REENCODE_EVERY_N_FRAMES)
-                    {
-                        jpeg_encode_yuv(&yuv).map(Arc::from)
-                    } else {
-                        None
-                    };
+                let jpeg_bytes: Option<Arc<[u8]>> = if mjpeg_passthrough(
+                    mjpeg_native,
+                    self.rotation,
+                    hflip,
+                    vflip,
+                    self.watermark.is_some(),
+                ) {
+                    Some(Arc::from(video_frame.data.as_slice()))
+                } else if self
+                    .frame_count
+                    .is_multiple_of(JPEG_REENCODE_EVERY_N_FRAMES)
+                {
+                    jpeg_encode_yuv(&yuv).map(Arc::from)
+                } else {
+                    None
+                };
                 if let Some(jpeg) = jpeg_bytes {
                     *self.latest_jpeg.lock() = Some(Arc::clone(&jpeg));
                     if let Some(tx) = &self.jpeg_tx {
@@ -820,15 +867,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mjpeg_passthrough_requires_pristine_pipeline() {
+    fn mjpeg_passthrough_requires_pristine_pipeline_including_rotation() {
         // Native MJPEG with no pre-encode pixel edits passes through untouched.
-        assert!(mjpeg_passthrough(true, false, false, false));
-        // Any flip or an active watermark forces the re-encode path.
-        assert!(!mjpeg_passthrough(true, true, false, false));
-        assert!(!mjpeg_passthrough(true, false, true, false));
-        assert!(!mjpeg_passthrough(true, false, false, true));
+        assert!(mjpeg_passthrough(true, 0, false, false, false));
+        // Rotation, any flip or an active watermark forces the re-encode path.
+        assert!(!mjpeg_passthrough(true, 90, false, false, false));
+        assert!(!mjpeg_passthrough(true, 270, false, false, false));
+        assert!(!mjpeg_passthrough(true, 0, true, false, false));
+        assert!(!mjpeg_passthrough(true, 0, false, true, false));
+        assert!(!mjpeg_passthrough(true, 0, false, false, true));
         // Non-MJPEG cameras always re-encode.
-        assert!(!mjpeg_passthrough(false, false, false, false));
+        assert!(!mjpeg_passthrough(false, 0, false, false, false));
+    }
+
+    #[test]
+    fn with_rotation_normalizes_and_publishes_effective_dims() {
+        // Out-of-enum values normalize to 0 (validation rejects upstream).
+        let src = VideoCaptureSource::new(0).with_rotation(45);
+        assert_eq!(src.rotation, 0);
+        let src = VideoCaptureSource::new(0).with_rotation(90);
+        assert_eq!(src.rotation, 90);
+        assert_eq!(rotated_dims(1280, 720, src.rotation), (720, 1280));
     }
 
     // ── GB FrameMirror runtime flags ───────────────────────────────────────
