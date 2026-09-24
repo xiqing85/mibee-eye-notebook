@@ -17,6 +17,19 @@ const ENUMS = {
   'watermark.position': ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
   'protocols.watermark.position': ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
 };
+// Numeric enum fields render as a <select> too (SPEC appendix A #19: the
+// valid rotation values are exactly these quarter turns). collectConfig
+// feeds select values through maybeNum, so they go back as numbers.
+const NUM_ENUMS = {
+  'camera.rotation': [0, 90, 180, 270],
+};
+/// Human label for one rotation option (degrees · direction).
+function rotationOptionLabel(o) {
+  if (o === 0) return '0° · ' + t('rotationOff');
+  if (o === 90) return '90° · ' + t('rotationCW');
+  if (o === 180) return '180°';
+  return '270° · ' + t('rotationCCW');
+}
 const CONSTRAINTS = {
   'camera.width': { min: 64, max: 4608, required: true },
   'camera.height': { min: 64, max: 2592, required: true },
@@ -124,9 +137,18 @@ function buildForm(obj, parent, prefix) {
     if (typ === 'boolean') {
       row.innerHTML = '<div class="field-row"><input type="checkbox" id="cf-' + p + '" ' + (val ? 'checked' : '') + ' data-cfg="' + p + '"><label for="cf-' + p + '">' + cfgLabel(p, key) + '</label></div>';
     } else if (typ === 'number') {
-      const c = CONSTRAINTS[p] || {};
-      const attrs = (c.min !== undefined ? ' min="' + c.min + '"' : '') + (c.max !== undefined ? ' max="' + c.max + '"' : '');
-      row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><input type="number" id="cf-' + p + '" value="' + val + '" step="any"' + attrs + ' data-cfg="' + p + '">';
+      const en = NUM_ENUMS[p];
+      if (en) {
+        const optLabels = p === 'camera.rotation' ? rotationOptionLabel : null;
+        row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><select id="cf-' + p + '" data-cfg="' + p + '">'
+          + en.map((o) => '<option value="' + o + '" ' + (o === val ? 'selected' : '') + '>'
+            + esc(optLabels ? optLabels(o) : String(o)) + '</option>').join('')
+          + '</select>';
+      } else {
+        const c = CONSTRAINTS[p] || {};
+        const attrs = (c.min !== undefined ? ' min="' + c.min + '"' : '') + (c.max !== undefined ? ' max="' + c.max + '"' : '');
+        row.innerHTML = '<label for="cf-' + p + '">' + cfgLabel(p, key) + '</label><input type="number" id="cf-' + p + '" value="' + val + '" step="any"' + attrs + ' data-cfg="' + p + '">';
+      }
     } else {
       stringFields.add(p);
       const en = ENUMS[p];
