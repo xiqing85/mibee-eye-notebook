@@ -22,6 +22,7 @@ const PATHS = {
   compress: '<path d="M9.5 4v4A1.5 1.5 0 0 1 8 9.5h-4M20 9.5h-4A1.5 1.5 0 0 1 14.5 8V4M14.5 20v-4a1.5 1.5 0 0 1 1.5-1.5h4M4 14.5h4A1.5 1.5 0 0 1 9.5 16v4"/>',
   'flip-h': '<path d="M12 3.5v17M8.5 8 4.5 12l4 4M15.5 8l4 4-4 4"/>',
   'flip-v': '<path d="M3.5 12h17M8 8.5 12 4.5l4 4M8 15.5l4 4 4-4"/>',
+  rotate: '<rect x="8" y="7.5" width="8" height="12" rx="1.8" transform="rotate(-10 12 13.5)"/><path d="M4.5 9A8.6 8.6 0 0 1 12 3.9c2.6 0 4.9 1.1 6.5 2.9"/><path d="M19 2.8v4h-4"/>',
   refresh: '<path d="M4.5 12a7.5 7.5 0 0 1 12.9-5.2L20 9.2"/><path d="M20 4.2v5h-5"/><path d="M19.5 12a7.5 7.5 0 0 1-12.9 5.2L4 14.8"/><path d="M4 19.8v-5h5"/>',
   play: '<path d="M8 5.5v13l10-6.5z" fill="currentColor" stroke="none"/>',
   stop: '<rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/>',
