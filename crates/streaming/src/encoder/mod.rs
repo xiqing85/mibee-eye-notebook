@@ -29,7 +29,7 @@ pub mod h264;
 pub use audio::AacEncoder;
 pub use audio::{AudioCodec, AudioEncoder, G711Encoder};
 pub use backend::{BackendConfig, EncoderBackend, SoftwareBackend, select_best};
-pub use convert::Yuv420p;
+pub use convert::{Yuv420p, rotated_dims};
 pub use h264::{H264Encoder, H264EncoderConfig, NalUnit};
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]

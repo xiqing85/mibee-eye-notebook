@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Device-level rotation baked into the stream** (SPEC v1 appendix A
+  #19): per-camera `config.rotation` (0 | 90 | 180 | 270, clockwise
+  degrees) rotates the frames before encoding — every consumer (RTSP,
+  MSE, recordings, snapshots, AI) sees it, and 90/270 swap the stream
+  geometry (encoder config + published `StreamDimensions`, so the MP4
+  muxer matches). Applied before `hflip`/`vflip`; 180° folds into the
+  flip pass. Takes effect on stream (re)start like the flips — the web
+  UI camera card gains a rotation button that cycles 0→90→180→270 with
+  the same stop→start cycle (webui PR #11). `PUT /api/cameras/{id}`
+  rejects invalid values with 400; the MJPEG passthrough tap is disabled
+  while rotated (re-encodes from the rotated YUV).
 - **Device serial identity** (issue #18): an unset
   `protocols.onvif.serial` no longer reports the shared `NC00000001`
   default — explicit config wins, otherwise the device identity is

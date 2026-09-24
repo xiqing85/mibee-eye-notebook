@@ -380,6 +380,18 @@ impl StreamManager {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 vcs = vcs.with_flips(hflip, vflip);
+                // Device-level rotation (SPEC v1 appendix A #19), same
+                // bake-in semantics; 90/270 swap the stream geometry —
+                // applied on this (re)start like the flips.
+                let rotation = config.get("rotation").and_then(|v| v.as_u64());
+                if let Some(rotation) = rotation
+                    && !matches!(rotation, 0 | 90 | 180 | 270)
+                {
+                    anyhow::bail!(
+                        "camera config rotation must be 0, 90, 180 or 270, got {rotation}"
+                    );
+                }
+                vcs = vcs.with_rotation(rotation.unwrap_or(0) as u32);
                 // Watermark (SPEC v1 §5.2): device-global `protocols.watermark`,
                 // read at use time like `protocols.recording` — a config change
                 // applies on the next stream (re)start. Burned pre-encode into
