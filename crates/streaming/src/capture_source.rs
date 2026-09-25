@@ -1008,3 +1008,78 @@ mod tests {
         assert!(!source.running);
     }
 }
+
+#[cfg(test)]
+mod fold_repro_tests {
+    use super::*;
+    use crate::encoder::convert::Yuv420p;
+
+    // Replicates the capture-loop transform sequence verbatim (lines ~505-517)
+    // so the 180° fold is pinned by a direct frame-level test.
+    fn loop_transform(
+        yuv: &mut Yuv420p,
+        rotation: u32,
+        hflip: bool,
+        vflip: bool,
+        gb: Option<&Flips>,
+    ) {
+        let (hflip, vflip) = effective_flips(hflip, vflip, gb);
+        let (hflip, vflip) = if rotation == 180 {
+            (!hflip, !vflip)
+        } else {
+            (hflip, vflip)
+        };
+        if rotation == 90 || rotation == 270 {
+            *yuv = yuv.rotated(rotation == 90);
+        }
+        if hflip || vflip {
+            yuv.flip(hflip, vflip);
+        }
+    }
+
+    fn gradient_frame() -> Yuv420p {
+        let w = 8u32;
+        let h = 6u32;
+        let mut f = Yuv420p::new(w, h);
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                f.data[y * w as usize + x] = (x * 30 + y * 4) as u8;
+            }
+        }
+        let (cw, ch) = ((w / 2) as usize, (h / 2) as usize);
+        for i in 0..cw * ch {
+            f.data[(w * h) as usize + i] = (i * 7 % 256) as u8;
+            f.data[(w * h) as usize + cw * ch + i] = (i * 13 % 256) as u8;
+        }
+        f
+    }
+
+    #[test]
+    fn rotation_180_fold_reverses_each_plane() {
+        let src = gradient_frame();
+        let mut f = gradient_frame();
+        loop_transform(&mut f, 180, false, false, None);
+        let (w, h) = (8usize, 6usize);
+        let (cw, ch) = (w / 2, h / 2);
+        // Per-plane 2D 180° reversal: out[y][x] = src[h-1-y][w-1-x].
+        for (off, pw, ph) in [(0, w, h), (w * h, cw, ch), (w * h + cw * ch, cw, ch)] {
+            for y in 0..ph {
+                for x in 0..pw {
+                    assert_eq!(
+                        f.data[off + y * pw + x],
+                        src.data[off + (ph - 1 - y) * pw + (pw - 1 - x)],
+                        "plane at offset {off} pixel ({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rotation_0_no_transform() {
+        let f = gradient_frame();
+        let mut g = gradient_frame();
+        loop_transform(&mut g, 0, false, false, None);
+        assert_eq!(f.data, g.data);
+    }
+}
