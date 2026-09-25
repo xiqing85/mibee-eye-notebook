@@ -295,8 +295,12 @@ export async function handleSave() {
     // Capabilities may have flipped (e.g. recording enabled) — refresh.
     await refreshCapabilities();
     initImaging();
-    // Point the user at the restart entry when edited sections need it.
-    const changedRestart = [...dirtySections].filter((s) => sectionApply(s) === 'restart');
+    // Point the user at the restart entry when edited sections need it —
+    // unless the device applied the camera section via an in-place camera
+    // restart (Go dialect, applied:"camera_restart"): that section is
+    // live already and a restart pointer would be misleading.
+    const inPlace = r.data && r.data.applied === 'camera_restart';
+    const changedRestart = [...dirtySections].filter((s) => sectionApply(s) === 'restart' && !(inPlace && s === 'camera'));
     renderApplyBanner(changedRestart);
     dirtySections.clear();
   } else {
