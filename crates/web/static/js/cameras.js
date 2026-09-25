@@ -150,6 +150,16 @@ function attachThumb(img, id) {
   tileTimers.set(id, setInterval(tick, 5000));
 }
 
+/// Tear down tile thumbnails before a stop→start cycle: each thumb holds
+/// a long MJPEG connection (browser caps ~6 per origin), which can starve
+/// the cycle's own POSTs — and the streams die with the camera anyway.
+/// Tiles re-attach on the next renderCameras.
+function stopThumbs() {
+  for (const timer of tileTimers.values()) clearInterval(timer);
+  tileTimers.clear();
+  document.querySelectorAll('#cameras-grid .tile-thumb').forEach((img) => { img.src = ''; });
+}
+
 async function toggleStream(cam) {
   const running = isActive(cam);
   const r = await api.post(`/api/cameras/${cam.id}/${running ? 'stop' : 'start'}`);
@@ -202,7 +212,11 @@ async function toggleDeviceFlip(cam, axis) {
   }
   const wasActive = isActive(cam);
   if (wasActive && hasCap('camera_control')) {
+    stopThumbs();
     await api.post(`/api/cameras/${cam.id}/stop`);
+    // Let V4L2 release the device before reopening (USB cameras lag;
+    // an immediate start can lose the race and die silently).
+    await new Promise((r) => setTimeout(r, 1500));
     await api.post(`/api/cameras/${cam.id}/start`);
   }
   await refreshCameras();
@@ -224,7 +238,11 @@ async function toggleDeviceRotate(cam) {
   }
   const wasActive = isActive(cam);
   if (wasActive && hasCap('camera_control')) {
+    stopThumbs();
     await api.post(`/api/cameras/${cam.id}/stop`);
+    // Let V4L2 release the device before reopening (USB cameras lag;
+    // an immediate start can lose the race and die silently).
+    await new Promise((r) => setTimeout(r, 1500));
     await api.post(`/api/cameras/${cam.id}/start`);
   }
   await refreshCameras();

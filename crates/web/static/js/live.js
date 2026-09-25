@@ -135,8 +135,15 @@ async function rotateDeviceFromLive() {
     const r = await api.put(`/api/cameras/${cam.id}`, { config: cfg });
     if (!r.ok) { toast(r.message || t('fetchError'), 'error'); return; }
     // Rotation applies on stream (re)start — same cycle as the card
-    // button, plus re-establish this live view.
+    // button, plus re-establish this live view. Drop the live engine
+    // first (its MJPEG/MSE connections hog the browser's per-origin
+    // slots and die with the camera anyway), then give V4L2 a moment to
+    // actually release the device (USB cameras lag; an immediate start
+    // can lose the race and leave the source dead while the status
+    // still says running).
+    stopLive();
     await api.post(`/api/cameras/${cam.id}/stop`);
+    await new Promise((r) => setTimeout(r, 1500));
     await api.post(`/api/cameras/${cam.id}/start`);
     cam.config = cfg;
     updateRotateButton();
