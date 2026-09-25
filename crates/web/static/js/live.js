@@ -153,6 +153,19 @@ async function rotateDeviceFromLive() {
   }
   const r = await api.put('/api/config', { camera: { rotation: next } });
   if (!r.ok) { toast(r.message || r.error || t('fetchError'), 'error'); return; }
+  if (r.data && r.data.applied === 'camera_restart') {
+    // Go dialect, geometry-preserving angle (0↔180, 90↔270): the device
+    // rebuilt the camera pipeline in place — the process (and this page's
+    // session) is alive. Re-establish this live view so the MSE feed picks
+    // up the fresh stream instead of waiting on a restart that isn't
+    // coming (SPEC 附录A #19).
+    stopLive();
+    await new Promise((res) => setTimeout(res, 1500));
+    await startLive();
+    updateRotateButton();
+    toast(t('rotateApplied', { deg: next }), 'success');
+    return;
+  }
   const apply = (store.caps && store.caps.config_apply) || {};
   if (apply.auto) {
     // Go dialect: the PUT already SIGTERMed the service — ride the shared
