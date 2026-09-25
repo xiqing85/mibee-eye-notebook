@@ -9,6 +9,7 @@ import { api } from './api.js';
 import { store, cameraId, hasCap } from './store.js';
 import { $, toast } from './ui.js';
 import { t } from './i18n.js';
+import { beginDeviceRestart } from './restart.js';
 
 const MAX_BACKOFF_MS = 8000;
 const STALL_TIMEOUT_MS = 10000;
@@ -51,6 +52,8 @@ export function initLive() {
     localStorage.setItem('mibee_vflip', store.vflip ? '1' : '0');
     applyTransform();
   });
+  const rotateBtn = $('btn-rotate');
+  if (rotateBtn) rotateBtn.addEventListener('click', rotateDeviceFromLive);
   $('stream-retry').addEventListener('click', startLive);
   const sel = $('live-camera-select');
   if (sel) sel.addEventListener('change', () => {
@@ -92,10 +95,93 @@ export function refreshCameraSelect() {
   store.currentCameraId = sel.value || store.currentCameraId;
 }
 
+// ── Device-level rotation from the live toolbar (SPEC appendix A #19) ──────
+// Unlike the display-only flip buttons this one bakes the rotation into
+// the encoded stream for every viewer. Dialect split:
+//   notebook (camera_management): per-camera config + stream stop→start;
+//   Pi dialects: camera.rotation via /api/config — go (config_apply.auto)
+//   SIGTERMs itself, rs needs the explicit §5.1 restart.
+
+/// Current device/camera rotation in degrees (0 when unknown).
+function currentDeviceRotation() {
+  if (hasCap('camera_management')) {
+    const cam = (store.cameras || []).find((c) => c.id === cameraId());
+    return Number((cam && cam.config && cam.config.rotation)) || 0;
+  }
+  const camera = (store.config && store.config.camera) || {};
+  return Number(camera.rotation) || 0;
+}
+
+/// Show/hide the live-page rotate button and reflect the current angle.
+function updateRotateButton() {
+  const btn = $('btn-rotate');
+  if (!btn) return;
+  const piDialect = !!(store.config && store.config.camera
+    && 'rotation' in store.config.camera);
+  const show = hasCap('camera_management') || piDialect;
+  btn.classList.toggle('hidden', !show);
+  const deg = currentDeviceRotation();
+  btn.setAttribute('aria-pressed', String(deg !== 0));
+  btn.title = t('rotateBtn') + ' · ' + deg + '°';
+  btn.setAttribute('aria-label', btn.title);
+}
+
+async function rotateDeviceFromLive() {
+  const next = (currentDeviceRotation() + 90) % 360;
+  if (hasCap('camera_management')) {
+    const cam = (store.cameras || []).find((c) => c.id === cameraId());
+    if (!cam) { toast(t('fetchError'), 'error'); return; }
+    const cfg = { ...(cam.config || {}), rotation: next };
+    const r = await api.put(`/api/cameras/${cam.id}`, { config: cfg });
+    if (!r.ok) { toast(r.message || t('fetchError'), 'error'); return; }
+    // Rotation applies on stream (re)start — same cycle as the card
+    // button, plus re-establish this live view.
+    await api.post(`/api/cameras/${cam.id}/stop`);
+    await api.post(`/api/cameras/${cam.id}/start`);
+    cam.config = cfg;
+    updateRotateButton();
+    await startLive();
+    toast(t('rotateApplied', { deg: next }), 'success');
+    return;
+  }
+  const r = await api.put('/api/config', { camera: { rotation: next } });
+  if (!r.ok) { toast(r.message || r.error || t('fetchError'), 'error'); return; }
+  const apply = (store.caps && store.caps.config_apply) || {};
+  if (apply.auto) {
+    // Go dialect: the PUT already SIGTERMed the service — ride the shared
+    // restart flow (toast + health poll + single reload).
+    beginDeviceRestart();
+    return;
+  }
+  if (hasCap('restart')) {
+    // rs dialect: saving only persists — apply via the explicit §5.1
+    // restart so the rotation takes effect immediately.
+    try { await api.post('/api/system/restart'); } catch (_) { /* dies mid-exit */ }
+    beginDeviceRestart();
+    return;
+  }
+  updateRotateButton();
+  toast(t('rotateApplied', { deg: next }), 'success');
+}
+
 export async function startLive() {
   stopLive();
   // Device-level rotation is baked into the stream (SPEC appendix A #19);
-  // no CSS rotation here — only the display-only client flips remain.
+  // no CSS rotation here — the config doc is fetched once per session only
+  // to state the live-page rotate button (Pi dialects expose
+  // camera.rotation via /api/config; notebook keeps it per camera).
+  if (!store.config) {
+    const cfg = await api.get('/api/config').catch(() => null);
+    if (cfg && cfg.ok) store.config = cfg.data;
+  }
+  // The rotate button reads per-camera rotation on multi-camera devices;
+  // the cameras list may not be loaded yet when the live view is the
+  // landing page.
+  if (hasCap('camera_management') && !store.cameras) {
+    const cams = await api.get('/api/cameras').catch(() => null);
+    if (cams && cams.ok) store.cameras = cams.data;
+  }
+  updateRotateButton();
   applyTransform();
   $('stream-error').classList.add('hidden');
   $('stream-loading').classList.remove('hidden');
