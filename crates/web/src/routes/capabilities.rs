@@ -43,6 +43,7 @@ pub struct CapabilitiesResponse {
 #[tracing::instrument(skip_all)]
 pub async fn get_capabilities(
     Extension(ai): Extension<Arc<AiEngine>>,
+    Extension(stream_manager): Extension<Arc<crate::stream_manager::StreamManager>>,
     Extension(_protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
@@ -96,6 +97,9 @@ pub async fn get_capabilities(
         "devices": true,
         "mjpeg": true,
         "mse": true,
+        // Low-resolution substream (SPEC appendix A #20): advertised
+        // while any active stream runs with a substream.
+        "substream": stream_manager.any_substream_active().await,
         "webrtc": false,
         "events": events,
         "config_apply": {"default": "immediate", "sections": {}},
@@ -141,6 +145,7 @@ mod tests {
         ));
         let res = get_capabilities(
             Extension(ai),
+            Extension(Arc::new(crate::stream_manager::StreamManager::new())),
             Extension(Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             ))),
@@ -153,5 +158,8 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["watermark"], serde_json::json!(true));
+        // No active streams → substream capability false (SPEC appendix
+        // A #20: it follows an active substream pipeline, not the config).
+        assert_eq!(json["substream"], serde_json::json!(false));
     }
 }

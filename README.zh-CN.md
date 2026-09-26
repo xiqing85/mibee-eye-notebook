@@ -24,7 +24,7 @@
 - **MiBee NVR 集成** — REST API 客户端、摄像头同步、SSE 事件流
 - **Web 界面** — Axum REST API + 嵌入式 SPA、TLS 通过 rustls、基于会话的身份认证、双语（zh-CN / en-US）、日/夜间主题
 - **本地录制** — MP4 分段归档，自动清理，可按摄像头配置
-- **浏览器预览** — MJPEG 多部分实时流、JPEG 快照端点
+- **浏览器预览** — MJPEG 多部分实时流、JPEG 快照端点、fMP4/MSE H.264 直播（`stream.mse`），可选低分辨率省流子码流（`stream.sub.mse`、RTSP `/live/{id}/sub`、ONVIF `sub` Profile —— 每相机 `config.substream`，SPEC 附录 A #20）
 - **资源约束** — 信号量控制的并发（最多 16 路流）、每流内存预算
 - **可观测性** — 结构化日志、OpenTelemetry 追踪（132+ 仪器化 span）、Prometheus 指标（14+ 计数器/仪表）、可选的 Loki 远程日志发送
 - **安全性** — 速率限制与指数退避、CSRF（双提交 cookie）、CSP 头、TLS 仅
