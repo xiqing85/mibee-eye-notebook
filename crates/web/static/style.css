@@ -748,6 +748,23 @@ input:focus, select:focus {
   backdrop-filter: blur(6px);
 }
 
+/* Transport-level reconnect indicator — picture stays up, so the chip
+   must read as a footnote, not an alarm. */
+.stream-reconnect-chip {
+  position: absolute;
+  bottom: 12px; left: 12px;
+  z-index: 5;
+  font-size: .66rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(4, 8, 14, .6);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(6px);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
 /* AI detection overlay */
 #detection-overlay {
   position: absolute; inset: 0;
