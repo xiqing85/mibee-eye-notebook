@@ -121,21 +121,12 @@
           <input type="file" id="ai-upload-file" accept=".onnx" class="hidden">
           <button type="button" id="ai-upload-btn" class="tool-btn" data-i18n-title="aiUpload">↑ .onnx</button>
         </div>
-        <!-- Model upload (extension: ai_upload, SPEC §4.6) -->
-        <div class="field hidden" id="ai-upload-field">
-          <label for="ai-upload-family" data-i18n="aiUploadFamily">Family</label>
-          <select id="ai-upload-family" class="camera-select">
-            <option value="nanodet">nanodet</option>
-            <option value="yolox">yolox</option>
-          </select>
-          <button type="button" id="ai-upload-btn" class="btn" data-i18n="aiUploadBtn">Upload</button>
-          <input type="file" id="ai-upload-file" accept=".onnx" class="hidden">
-        </div>
       </div>
       <div class="stream-wrapper">
         <video id="stream-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:contain"></video>
         <img id="stream-img" class="stream-img hidden" alt="live" style="width:100%;height:100%;object-fit:contain">
         <span id="mjpeg-fallback-badge" class="stream-mode-badge hidden" data-i18n="fallbackMjpeg">MJPEG</span>
+        <span id="stream-reconnecting" class="stream-reconnect-chip hidden" data-i18n="reconnecting">Reconnecting…</span>
         <!-- AI detection overlay (extension: ai) -->
         <canvas id="detection-overlay" class="detection-box" aria-hidden="true"></canvas>
         <div class="stream-hud hud-left">

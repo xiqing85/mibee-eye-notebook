@@ -79,9 +79,37 @@ struct Inner {
     muxer: FragmentedMuxer,
     /// Whether the init segment has been emitted to the caller yet.
     init_sent: bool,
-    /// PTS of the first sample in this remuxer's life, subtracted from every
-    /// frame so the browser sees a stream starting near zero.
-    base_pts_ms: u64,
+    /// Absolute 90 kHz timestamp of this connection's first sample. muxide
+    /// starts every muxer's baseMediaDecodeTime at 0, so the first flushed
+    /// segment of a connection that joined mid-stream would carry tfdt=0 —
+    /// backwards on the client's timeline. [`retime_first_segment`] fixes
+    /// exactly that one segment (later segments already track absolute dts).
+    first_base_ticks: u64,
+    saw_sample: bool,
+    first_segment_retimed: bool,
+}
+
+/// Rewrite the tfdt (v1) of a connection's FIRST segment to its absolute
+/// timeline position (see [`Inner::first_base_ticks`]).
+fn retime_first_segment(inner: &mut Inner, mut bytes: Vec<u8>) -> Vec<u8> {
+    if inner.first_segment_retimed || !inner.saw_sample {
+        return bytes;
+    }
+    let base = inner.first_base_ticks;
+    if base == 0 {
+        inner.first_segment_retimed = true;
+        return bytes;
+    }
+    if let Some(pos) = bytes.windows(4).position(|w| w == b"tfdt")
+        && let Some(value) = bytes.get_mut(pos + 8..pos + 16)
+    {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(value);
+        let v = u64::from_be_bytes(b).saturating_add(base);
+        value.copy_from_slice(&v.to_be_bytes());
+        inner.first_segment_retimed = true;
+    }
+    bytes
 }
 
 /// Output chunks produced by [`Fmp4Remuxer::push`]. Drained in order and
@@ -160,7 +188,7 @@ impl Fmp4Remuxer {
             if self.pending_sps.is_some() && self.pending_pps.is_some() {
                 let sps = self.pending_sps.take().expect("checked above");
                 let pps = self.pending_pps.take().expect("checked above");
-                self.init_with_sps_pps(sps, pps, *timestamp)?;
+                self.init_with_sps_pps(sps, pps)?;
             } else {
                 // Still waiting for the other parameter set. We can't emit
                 // anything yet — the browser can't decode without the init
@@ -188,9 +216,17 @@ impl Fmp4Remuxer {
             return Ok(out);
         }
 
-        // Convert this NAL to AVCC and queue it as a sample.
+        // Convert this NAL to AVCC and queue it as a sample. Frame PTS is
+        // ms since camera-stream start and is passed through un-rebased:
+        // every (re)connection of a client lands on the SAME timeline, so
+        // a transparent reconnect can keep appending to its existing
+        // SourceBuffer — the seamless-reconnect contract (SPEC §4.1).
         let avcc = nal_to_avcc(data);
-        let pts_ticks = ms_to_ticks(timestamp.saturating_sub(inner.base_pts_ms));
+        let pts_ticks = ms_to_ticks(*timestamp);
+        if !inner.saw_sample {
+            inner.saw_sample = true;
+            inner.first_base_ticks = pts_ticks;
+        }
         inner
             .muxer
             .write_video(pts_ticks, pts_ticks, &avcc, *keyframe)
@@ -200,7 +236,7 @@ impl Fmp4Remuxer {
         if inner.muxer.ready_to_flush()
             && let Some(segment) = inner.muxer.flush_segment()
         {
-            out.push(Fmp4Chunk::Segment(segment));
+            out.push(Fmp4Chunk::Segment(retime_first_segment(inner, segment)));
         }
 
         Ok(out)
@@ -211,10 +247,12 @@ impl Fmp4Remuxer {
     /// Useful when the caller wants to keep latency low (flush on every
     /// keyframe) regardless of the target fragment duration.
     pub fn flush(&mut self) -> Option<Vec<u8>> {
-        self.inner.as_mut().and_then(|i| i.muxer.flush_segment())
+        let inner = self.inner.as_mut()?;
+        let segment = inner.muxer.flush_segment()?;
+        Some(retime_first_segment(inner, segment))
     }
 
-    fn init_with_sps_pps(&mut self, sps: Vec<u8>, pps: Vec<u8>, first_pts_ms: u64) -> Result<()> {
+    fn init_with_sps_pps(&mut self, sps: Vec<u8>, pps: Vec<u8>) -> Result<()> {
         // Parse width/height out of the SPS so the muxer's track metadata is
         // correct. Fall back to 1280x720 if parsing fails — MSE decoders
         // re-derive geometry from the SPS itself, so an incorrect value in the
@@ -237,7 +275,9 @@ impl Fmp4Remuxer {
         self.inner = Some(Inner {
             muxer: FragmentedMuxer::new(config),
             init_sent: false,
-            base_pts_ms: first_pts_ms,
+            first_base_ticks: 0,
+            saw_sample: false,
+            first_segment_retimed: false,
         });
         Ok(())
     }
@@ -322,6 +362,73 @@ mod tests {
         assert!(
             chunks.iter().any(|c| matches!(c, Fmp4Chunk::Init(_))),
             "init segment should emit once SPS+PPS are both buffered"
+        );
+    }
+
+    // ── seamless-reconnect contract (SPEC §4.1) ──────────────────────────────
+
+    /// Extract the 64-bit baseMediaDecodeTime from the first tfdt (v1) box.
+    fn parse_tfdt_v1(segment: &[u8]) -> Option<u64> {
+        let pos = segment.windows(4).position(|w| w == b"tfdt")?;
+        let bytes = segment.get(pos + 8..pos + 16)?;
+        let mut b = [0u8; 8];
+        b.copy_from_slice(bytes);
+        Some(u64::from_be_bytes(b))
+    }
+
+    #[test]
+    fn remuxer_timeline_continues_across_connections() {
+        let sps = vec![0x67, 0x42, 0x00, 0x0a, 0xf8, 0x41, 0xa2];
+        let pps = vec![0x68, 0xce, 0x38, 0x80];
+        let idr = vec![0x65, 0x88, 0x84, 0x00];
+
+        // Drive a remuxer over the given frames and return the tfdt of the
+        // LAST media segment it produced (segments may flush inside push()).
+        fn last_segment_tfdt(r: &mut Fmp4Remuxer, frames: &[(u64, Vec<u8>)]) -> u64 {
+            let mut last: Option<u64> = None;
+            for (ms, nal) in frames {
+                for chunk in r
+                    .push(&MediaFrame::Video {
+                        keyframe: true,
+                        data: nal.clone(),
+                        timestamp: *ms,
+                    })
+                    .expect("push ok")
+                {
+                    if let Fmp4Chunk::Segment(bytes) = chunk {
+                        last = parse_tfdt_v1(&bytes);
+                    }
+                }
+            }
+            if let Some(bytes) = r.flush() {
+                last = parse_tfdt_v1(&bytes);
+            }
+            last.expect("at least one media segment")
+        }
+
+        // Connection 1 joins the camera stream at t=0, sees frames to t=1s.
+        let t1 = last_segment_tfdt(
+            &mut Fmp4Remuxer::new(),
+            &[
+                (0, sps.clone()),
+                (0, pps.clone()),
+                (0, idr.clone()),
+                (1000, idr.clone()),
+            ],
+        );
+
+        // Connection 2 (transparent client reconnect) joins the SAME camera
+        // stream 4s later — its timeline must continue past connection 1's,
+        // not restart at zero, so the client can keep appending to its
+        // existing SourceBuffer.
+        let t2 = last_segment_tfdt(
+            &mut Fmp4Remuxer::new(),
+            &[(5000, sps), (5000, pps), (5000, idr)],
+        );
+
+        assert!(
+            t2 > t1,
+            "second connection must continue the timeline: {t2} <= {t1}"
         );
     }
 }
