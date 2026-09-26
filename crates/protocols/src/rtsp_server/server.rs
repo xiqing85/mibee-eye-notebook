@@ -471,17 +471,27 @@ pub(super) fn find_live_stream<'a>(
     uri: &'a str,
     live_streams: &'a HashMap<String, LiveStreamEntry>,
 ) -> Option<(String, &'a LiveStreamEntry)> {
-    for (path, entry) in live_streams.iter() {
-        let url_path = if path.starts_with('/') {
-            path.clone()
-        } else {
-            format!("/{}", path)
-        };
-        if uri == url_path || uri.ends_with(&url_path) || uri.contains(&url_path) {
-            return Some((path.clone(), entry));
-        }
-    }
-    None
+    // Longest-match-wins: exact / suffix / contains, picking the most
+    // specific mount. HashMap iteration order must not decide routing —
+    // with the substream mounts (SPEC appendix A #20), `/live/{id}/sub`
+    // must never be captured by the shorter `/live/{id}` entry just
+    // because it happened to be visited first.
+    live_streams
+        .iter()
+        .filter_map(|(path, entry)| {
+            let url_path = if path.starts_with('/') {
+                path.clone()
+            } else {
+                format!("/{}", path)
+            };
+            if uri == url_path || uri.ends_with(&url_path) || uri.contains(&url_path) {
+                Some((url_path.len(), path.clone(), entry))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(len, _, _)| *len)
+        .map(|(_, path, entry)| (path, entry))
 }
 
 /// Check if authorization is needed and valid.

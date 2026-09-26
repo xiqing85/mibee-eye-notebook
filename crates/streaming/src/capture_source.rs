@@ -62,6 +62,18 @@ const JPEG_REENCODE_EVERY_N_FRAMES: u64 = 6;
 /// A JPEG tap is maintained in parallel for the web UI: callers can obtain the
 /// most recent JPEG via [`VideoCaptureSource::latest_jpeg`] or subscribe to a
 /// stream of them via [`VideoCaptureSource::subscribe_jpeg`].
+/// Low-resolution bandwidth-saving substream settings (SPEC appendix
+/// A #20): a second H.264 encoder session fed by the downscaled
+/// (already rotated/flipped/watermarked) main frames.
+#[derive(Debug, Clone)]
+pub struct SubstreamSettings {
+    pub width: u32,
+    pub height: u32,
+    /// Target frame rate; `0.0` follows the main encoder rate.
+    pub fps: f32,
+    pub bitrate_bps: u32,
+}
+
 pub struct VideoCaptureSource {
     /// Camera device index (0 = `/dev/video0`).
     device_index: usize,
@@ -102,6 +114,16 @@ pub struct VideoCaptureSource {
     quality_preset: QualityPreset,
     /// Broadcast sender for live-preview subscribers.
     jpeg_tx: Option<broadcast::Sender<Arc<[u8]>>>,
+    /// Substream (SPEC appendix A #20): settings + the second encoder
+    /// session + its own frame broadcast (one NAL per message, mirroring
+    /// the main pipeline's granularity). The sender survives stream
+    /// restarts like `jpeg_tx`; the encoder re-inits per run.
+    substream: Option<SubstreamSettings>,
+    sub_encoder: Option<H264Encoder>,
+    sub_frame_tx: Option<broadcast::Sender<Arc<crate::source::MediaFrame>>>,
+    /// Emit every N-th main frame into the sub encoder (fps ratio).
+    sub_frame_div: u32,
+    sub_frame_count: u32,
     /// Frame counter, used to throttle YUYV→JPEG re-encoding.
     frame_count: u64,
     /// Device-level horizontal mirror, applied to each frame before encoding
@@ -206,6 +228,11 @@ impl VideoCaptureSource {
             capture: None,
             frame_rx: None,
             encoder: None,
+            substream: None,
+            sub_encoder: None,
+            sub_frame_tx: None,
+            sub_frame_div: 1,
+            sub_frame_count: 0,
             force_idr: None,
             pending_nals: Default::default(),
             running: false,
@@ -252,6 +279,24 @@ impl VideoCaptureSource {
     /// Returns `None` before [`start()`](Self::start) has been called.
     pub fn jpeg_sender(&self) -> Option<broadcast::Sender<Arc<[u8]>>> {
         self.jpeg_tx.clone()
+    }
+
+    /// Enable the low-resolution substream (SPEC appendix A #20): a second
+    /// encoder session at `settings` geometry, fed by the downscaled main
+    /// frames. Applies on stream start.
+    #[must_use]
+    pub fn with_substream(mut self, settings: SubstreamSettings) -> Self {
+        let (tx, _) = broadcast::channel::<Arc<crate::source::MediaFrame>>(64);
+        self.sub_frame_tx = Some(tx);
+        self.substream = Some(settings);
+        self
+    }
+
+    /// The substream frame broadcast sender (one H.264 NAL per message).
+    /// `None` when the substream is not enabled.
+    #[must_use]
+    pub fn sub_frames_sender(&self) -> Option<broadcast::Sender<Arc<crate::source::MediaFrame>>> {
+        self.sub_frame_tx.clone()
     }
 
     /// Return the most recent JPEG bytes, if available.
@@ -522,6 +567,68 @@ impl Source for VideoCaptureSource {
                     watermark.render_into(&mut yuv);
                 }
 
+                // 4b. Substream (SPEC appendix A #20): second encoder session
+                //     at reduced geometry over the downscaled — already
+                //     transformed — frame. Fail-open: an encoder init
+                //     failure disables the substream for this run, never
+                //     the main pipeline.
+                if let Some(settings) = self.substream.clone() {
+                    let timestamp_ms = self
+                        .start_time
+                        .map(|t| t.elapsed().as_millis() as u64)
+                        .unwrap_or(0);
+                    if self.sub_encoder.is_none() {
+                        let sub_fps = if settings.fps > 0.0 {
+                            settings.fps
+                        } else {
+                            self.fps
+                        };
+                        let config = H264EncoderConfig {
+                            width: settings.width,
+                            height: settings.height,
+                            fps: sub_fps,
+                            bitrate_bps: settings.bitrate_bps,
+                            quality_preset: self.quality_preset,
+                        };
+                        match H264Encoder::new(config) {
+                            Ok(enc) => {
+                                self.sub_frame_div = ((self.fps / sub_fps).round() as u32).max(1);
+                                info!(
+                                    width = settings.width,
+                                    height = settings.height,
+                                    fps = sub_fps,
+                                    bitrate_bps = settings.bitrate_bps,
+                                    "substream encoder initialized"
+                                );
+                                self.sub_encoder = Some(enc);
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "substream encoder init failed; substream disabled for this run");
+                                self.substream = None;
+                            }
+                        }
+                    }
+                    if let Some(enc) = self.sub_encoder.as_mut() {
+                        self.sub_frame_count = self.sub_frame_count.wrapping_add(1);
+                        if self.sub_frame_div <= 1
+                            || self.sub_frame_count.is_multiple_of(self.sub_frame_div)
+                        {
+                            let sub_yuv = yuv.downscaled(settings.width, settings.height);
+                            if let Ok(nals) = enc.encode(&sub_yuv, timestamp_ms)
+                                && let Some(tx) = &self.sub_frame_tx
+                            {
+                                for nal in nals {
+                                    let _ = tx.send(Arc::new(crate::source::MediaFrame::Video {
+                                        keyframe: nal.is_keyframe,
+                                        data: nal.data,
+                                        timestamp: timestamp_ms,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // 5. Update the JPEG tap. With flips or a watermark active
                 //    the raw MJPEG bytes would NOT match the encoded frame,
                 //    so re-encode from the modified YUV (throttled) instead.
@@ -595,6 +702,8 @@ impl Source for VideoCaptureSource {
             self.capture = None;
             self.frame_rx = None;
             self.encoder = None;
+            self.sub_encoder = None;
+            self.sub_frame_count = 0;
             self.pending_nals.clear();
             // Note: keep jpeg_tx alive so subscribers survive a restart cycle.
             *self.latest_jpeg.lock() = None;
@@ -864,6 +973,35 @@ impl Source for AudioCaptureSource {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn with_substream_installs_frame_broadcast() {
+        let base = VideoCaptureSource::new(0);
+        assert!(base.sub_frames_sender().is_none());
+        let with_sub = base.with_substream(SubstreamSettings {
+            width: 640,
+            height: 360,
+            fps: 0.0,
+            bitrate_bps: 400_000,
+        });
+        let tx = with_sub.sub_frames_sender().expect("sender installed");
+        let mut rx = tx.subscribe();
+        let frame = crate::source::MediaFrame::Video {
+            keyframe: true,
+            data: vec![0x67],
+            timestamp: 1,
+        };
+        std::sync::Arc::new(frame.clone());
+        tx.send(std::sync::Arc::new(frame)).unwrap();
+        assert!(rx.try_recv().is_ok());
+        // The sender handle outlives the source (subscribers survive a
+        // stream restart, mirroring jpeg_tx).
+        drop(with_sub);
+        assert!(
+            tx.receiver_count() == 1,
+            "the test subscriber is still attached"
+        );
+    }
+
     use super::*;
 
     #[test]

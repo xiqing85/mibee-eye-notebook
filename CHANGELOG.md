@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Low-resolution bandwidth-saving substream** (SPEC appendix A #20,
+  default off): per-camera `config.substream` `{enabled, width, height,
+  fps, bitrate}` (defaults 640x360 / 400 kbps / fps 0 = follow) adds a
+  second OpenH264 encoder session fed by the downscaled, already
+  rotated/flipped/watermarked frames — a bounded-tap design that never
+  stalls the main pipeline (encoder init failure disables the substream
+  for the run, fail-open). Exposed as `GET
+  /api/cameras/{id}/stream.sub.mse` (+ `capabilities.substream` while
+  any active stream runs a substream), the RTSP `/live/{id}/sub` mount
+  (`find_live_stream` now resolves longest-match-wins so the sub mount
+  can never be captured by the shorter main path) and the ONVIF `sub`
+  profile (onvif-device-rs multi-profile, git pin 1826726; advertised
+  after the primary; applies on the next protocol toggle). Structural
+  validation at the PUT boundary (even dims, sane bitrate) and at stream
+  start; applies on stream (re)start like the other per-camera keys.
+  `encoder::convert::Yuv420p::downscaled` is the new nearest-neighbour
+  scaler (twin of the rs/go implementations).
 - **Device-level rotation baked into the stream** (SPEC v1 appendix A
   #19): per-camera `config.rotation` (0 | 90 | 180 | 270, clockwise
   degrees) rotates the frames before encoding — every consumer (RTSP,
