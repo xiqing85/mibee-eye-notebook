@@ -1,0 +1,19 @@
+# cargo-audit advisories policy — DOCUMENTATION ONLY (2026-09-26).
+#
+# cargo-audit reads its config from ~/.cargo/audit.toml (global), not from
+# the repository; this file records the acceptance IN REPO so future
+# audits of this workspace know the rationale. Keep both in sync.
+#
+# RUSTSEC-2023-0071 — rsa "Marvin Attack" (timing sidechannel in RSA
+# decryption). Accepted for this product:
+#   - Transitive only, via sqlx's lock-time backend stanzas (sqlx 0.8
+#     lists every backend crate unconditionally in Cargo.lock). This is
+#     a SQLite-only app: `cargo tree -i rsa --target all` resolves to
+#     nothing — the crate is not compiled into any build target.
+#   - No patched release exists (advisory lists no fixed versions), so
+#     this is unfixable by bumping.
+#   - The attack surface (MySQL cached-password RSA auth) is unreachable.
+# Re-evaluate if sqlx ever makes backend stanzas optional or a fixed rsa
+# ships. Everything else stays loud on purpose.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
