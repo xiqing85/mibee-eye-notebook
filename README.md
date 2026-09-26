@@ -22,7 +22,7 @@ Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqin
 - **MiBee NVR integration** — REST API client, camera sync, SSE event stream
 - **Web UI** — Axum REST API + embedded SPA, TLS via rustls, session-based auth, bilingual (zh-CN / en-US), day/night theme
 - **Local recording** — MP4 segment archive with auto-prune, configurable per-camera
-- **Browser preview** — MJPEG multipart live stream, JPEG snapshot endpoint
+- **Browser preview** — MJPEG multipart live stream, JPEG snapshot endpoint, fMP4/MSE H.264 delivery (`stream.mse`) with an optional low-resolution bandwidth-saving substream (`stream.sub.mse`, RTSP `/live/{id}/sub`, ONVIF `sub` profile — per-camera `config.substream`, SPEC appendix A #20)
 - **Resource-bounded** — semaphore-guarded concurrency (max 16 streams), per-stream memory budgets
 - **Observable** — structured logging, OpenTelemetry traces (132+ instrumented spans), Prometheus metrics (14+ counters/gauges), optional Loki remote log shipping
 - **Security** — rate limiting with exponential backoff, CSRF (double-submit cookie), CSP header, TLS-only

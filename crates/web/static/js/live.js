@@ -16,6 +16,25 @@ const STALL_TIMEOUT_MS = 10000;
 const MAX_BUFFER_SECS = 8;
 
 let engine = null;       // active transport engine (mse | mjpeg | poll)
+let quality = localStorage.getItem('mibee_quality') === 'sub' ? 'sub' : 'main';
+
+/// MSE endpoint for the current quality (SPEC appendix A #20): the
+/// low-bandwidth substream lives at stream.sub.mse.
+function mseEndpoint() {
+  return quality === 'sub' ? 'stream.sub.mse' : 'stream.mse';
+}
+
+function updateQualityButton() {
+  const btn = $('btn-quality');
+  if (!btn) return;
+  const show = hasCap('substream') && hasCap('mse');
+  btn.classList.toggle('hidden', !show);
+  btn.textContent = quality === 'sub' ? 'SD' : 'HD';
+  btn.setAttribute('aria-pressed', String(quality === 'sub'));
+  const label = quality === 'sub' ? t('qualitySub') : t('qualityMain');
+  btn.title = t('qualityBtn', { q: quality === 'sub' ? 'SD' : 'HD' });
+  btn.setAttribute('aria-label', label);
+}
 let pollTimer = null;
 let liveDotTimer = null;
 let healthStamp = 0;
@@ -54,6 +73,15 @@ export function initLive() {
   });
   const rotateBtn = $('btn-rotate');
   if (rotateBtn) rotateBtn.addEventListener('click', rotateDeviceFromLive);
+  const qualityBtn = $('btn-quality');
+  if (qualityBtn) qualityBtn.addEventListener('click', () => {
+    // Toggle main ↔ sub; rebuild the MSE connection (stop→start cycle —
+    // a different SPS means a fresh decoder configuration).
+    quality = quality === 'sub' ? 'main' : 'sub';
+    localStorage.setItem('mibee_quality', quality);
+    updateQualityButton();
+    if (engine) { stopLive(); startLive(); }
+  });
   $('stream-retry').addEventListener('click', startLive);
   const sel = $('live-camera-select');
   if (sel) sel.addEventListener('change', () => {
@@ -202,6 +230,7 @@ export async function startLive() {
     if (cams && cams.ok) store.cameras = cams.data;
   }
   updateRotateButton();
+  updateQualityButton();
   applyTransform();
   $('stream-error').classList.add('hidden');
   $('stream-loading').classList.remove('hidden');
@@ -428,7 +457,7 @@ function startMse(cameraIdArg, onGiveUp) {
       const controller = new AbortController();
       abort = controller;
       try {
-        const resp = await fetch(`/api/cameras/${cameraIdArg}/stream.mse`, {
+        const resp = await fetch(`/api/cameras/${cameraIdArg}/${mseEndpoint()}`, {
           credentials: 'same-origin',
           signal: controller.signal,
         });

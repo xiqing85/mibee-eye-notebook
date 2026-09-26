@@ -153,6 +153,11 @@
               <svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="7.5" width="8" height="12" rx="1.8" transform="rotate(-10 12 13.5)"/><path d="M4.5 9A8.6 8.6 0 0 1 12 3.9c2.6 0 4.9 1.1 6.5 2.9"/><path d="M19 2.8v4h-4"/></svg>
             </button>
           </div>
+          <!-- Quality toggle (SPEC appendix A #20): main ↔ low-resolution
+               substream; rendered only when capabilities.substream. -->
+          <div class="stream-flip">
+            <button type="button" id="btn-quality" class="stream-ctl-btn hidden" aria-label="Quality" aria-pressed="false" title="Quality">HD</button>
+          </div>
           <div class="stream-actions">
             <button type="button" id="btn-snapshot" class="stream-ctl-btn" aria-label="Snapshot" title="Snapshot">
               <svg class="icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5A1.5 1.5 0 0 1 5 7h2.6l1.6-2.2A1.5 1.5 0 0 1 10.4 4h3.2a1.5 1.5 0 0 1 1.2.6L16.4 7H19a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 17z"/><circle cx="12" cy="12.5" r="3.4"/></svg>
