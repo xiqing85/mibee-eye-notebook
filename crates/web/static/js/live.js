@@ -228,63 +228,115 @@ export function stopLive() {
 }
 
 // ─── MSE engine ────────────────────────────────────────────────────
+// The engine separates the PLAYER (video element + MediaSource +
+// SourceBuffer) from the CONNECTION (one chunked fetch). Transport
+// hiccups — a server cutoff, a Wi-Fi blip, a half-open TCP — only kill
+// the connection: it is transparently refetched and goes on appending to
+// the SAME SourceBuffer. The server hands the fMP4 timeline from
+// connection to connection (SPEC §4.1), so the decoder never notices; a
+// small corner chip is the only visible trace. A full teardown (black
+// loading overlay) is reserved for decoder-level failures: append
+// errors, a frozen playhead with data available, or a SourceBuffer that
+// wedged.
 function startMse(cameraIdArg, onGiveUp) {
   const video = $('stream-video');
-  const state = { dead: false, retries: 0 };
+  const state = { dead: false, failures: 0 };
   let ms = null, sb = null, queue = [], abort = null, stall = null, pruning = false;
   let watchdog = null, lastCt = -1, stuckTicks = 0;
+  let refetching = false;
 
-  // Tear down transports/timers WITHOUT marking the engine dead — the
-  // internal reconnect path reuses this and restarts afterwards. The public
-  // stop() adds the dead flag so an external stop is final. (Checking the
-  // flag AFTER stop() made every internal reconnect a suicide — any
-  // transient network blip froze the player forever.)
-  function teardown() {
+  function abortFetch() {
     if (abort) { try { abort.abort(); } catch (_) { /* already closed */ } abort = null; }
+  }
+
+  function clearTimers() {
     if (stall) { clearTimeout(stall); stall = null; }
     if (watchdog) { clearInterval(watchdog); watchdog = null; }
+  }
+
+  function destroyPlayer() {
+    clearTimers();
     if (sb) { try { sb.onupdateend = null; sb.onerror = null; } catch (_) { /* detached */ } }
     if (ms && ms.readyState === 'open') { try { ms.endOfStream(); } catch (_) { /* ignore */ } }
     ms = null; sb = null; queue = []; pruning = false;
   }
 
+  // stop() is final (page navigation, engine swap); internal recovery
+  // paths never set the dead flag — checking it AFTER stop() made every
+  // internal reconnect a suicide in an earlier iteration.
   function stop() {
     state.dead = true;
-    teardown();
+    abortFetch();
+    destroyPlayer();
+    hideReconnectChip();
   }
 
-  function reconnect() {
+  // Transport-level recovery: drop the dead fetch, keep the player.
+  function refetch() {
+    if (state.dead || refetching) return;
+    refetching = true;
+    abortFetch();
+    if (stall) { clearTimeout(stall); stall = null; }
+    state.failures += 1;
+    if (state.failures > 12) { onGiveUp(); return; }
+    showReconnectChip();
+    const backoff = Math.min(MAX_BACKOFF_MS, 250 * 2 ** Math.min(state.failures - 1, 4));
+    setTimeout(() => {
+      refetching = false;
+      if (!state.dead) fetchStream();
+    }, backoff);
+  }
+
+  // Player-level recovery: the decoder pipeline itself is wedged — tear
+  // it down, show the full overlay, rebuild from scratch.
+  function hardReconnect() {
     if (state.dead) return;
-    teardown();
-    state.retries += 1;
-    // Endless reconnect loops leave a frozen frame on screen forever —
-    // after enough consecutive failures hand the slot to the fallback chain.
-    if (state.retries > 12) { onGiveUp(); return; }
-    const backoff = Math.min(MAX_BACKOFF_MS, 500 * 2 ** Math.min(state.retries - 1, 4));
+    abortFetch();
+    destroyPlayer();
+    state.failures += 1;
+    if (state.failures > 12) { onGiveUp(); return; }
+    const backoff = Math.min(MAX_BACKOFF_MS, 500 * 2 ** Math.min(state.failures - 1, 4));
     setLoadingLabel(true);
     $('stream-loading').classList.remove('hidden');
-    setTimeout(() => { if (!state.dead) start(); }, backoff);
+    setTimeout(() => { if (!state.dead) buildPlayer(); }, backoff);
   }
 
   function resetStall() {
     if (stall) clearTimeout(stall);
-    stall = setTimeout(() => reconnect(), STALL_TIMEOUT_MS);
+    // No network bytes for the budget → the fetch is dead (half-open TCP
+    // never errors on its own). That is a transport problem: refetch
+    // without touching the player.
+    stall = setTimeout(() => refetch(), STALL_TIMEOUT_MS);
   }
 
   function startWatchdog() {
-    // The stall timer above only fires when network bytes STOP. A stalled
-    // decoder, a SourceBuffer stuck in `updating`, or a silently paused
-    // element all keep bytes flowing while the picture freezes — so watch
-    // the playhead itself: no currentTime progress for ~8s -> reconnect.
+    // Watch the playhead itself: a stalled decoder or a SourceBuffer
+    // stuck in `updating` keep bytes flowing while the picture freezes.
     if (watchdog) clearInterval(watchdog);
     lastCt = -1; stuckTicks = 0;
     watchdog = setInterval(() => {
       if (state.dead) return;
-      if (video.ended) { reconnect(); return; }
+      // Background tabs pause rendering and throttle timers — a frozen
+      // playhead there is the browser, not the stream. Skipping the
+      // freeze detector while hidden prevents reconnect loops the user
+      // only ever sees as a flash on returning to the tab.
+      if (document.hidden) { lastCt = video.currentTime; stuckTicks = 0; return; }
+      if (video.ended) { hardReconnect(); return; }
       if (video.currentTime === lastCt) {
+        // Buffer gap ahead (a refetch skipped real time while the server
+        // held the timeline): jump to the next buffered range instead of
+        // freezing at the edge.
+        const b = video.buffered;
+        for (let i = 0; i < b.length; i++) {
+          if (b.start(i) > video.currentTime && b.start(i) - video.currentTime <= 10) {
+            video.currentTime = b.start(i) + 0.05;
+            stuckTicks = 0;
+            return;
+          }
+        }
         stuckTicks += 1;
-        if (video.paused && !document.hidden) video.play().catch(() => { /* retried next tick */ });
-        if (stuckTicks >= 4) { stuckTicks = 0; reconnect(); }
+        if (video.paused) video.play().catch(() => { /* retried next tick */ });
+        if (stuckTicks >= 4) { stuckTicks = 0; hardReconnect(); }
       } else {
         stuckTicks = 0;
       }
@@ -292,7 +344,7 @@ function startMse(cameraIdArg, onGiveUp) {
     }, 2000);
   }
 
-  function start() {
+  function buildPlayer() {
     resetStall();
     startWatchdog();
     try { ms = new MediaSource(); } catch (_) { onGiveUp(); return; }
@@ -302,7 +354,7 @@ function startMse(cameraIdArg, onGiveUp) {
   }
 
   function onOpen() {
-    if (state.dead) return;
+    if (state.dead || !ms) return;
     // Init segment arrives first; codec string is parsed from its avcC box.
     sb = null;
     const initBuffer = [];
@@ -312,6 +364,7 @@ function startMse(cameraIdArg, onGiveUp) {
     async function pump() {
       if (state.dead) return;
       if (!sourceBuffer || sourceBuffer.updating) return;
+      if (!ms || ms.readyState !== 'open') { hardReconnect(); return; }
 
       // Prune behind the playhead so the buffer never saturates.
       if (!pruning && video.buffered.length > 0) {
@@ -334,7 +387,8 @@ function startMse(cameraIdArg, onGiveUp) {
       try {
         sourceBuffer.appendBuffer(chunk);
         bumpLiveDot();
-        state.retries = 0;
+        state.failures = 0;
+        hideReconnectChip();
         if (initDone) {
           $('stream-loading').classList.add('hidden');
           updateHealth();
@@ -364,12 +418,13 @@ function startMse(cameraIdArg, onGiveUp) {
             if (to > s0) { try { sourceBuffer.remove(s0, to); return; } catch (_) { pruning = false; } }
           }
         } else {
-          reconnect();
+          hardReconnect();
         }
       }
     }
 
     async function fetchStream() {
+      resetStall(); // covers the fetch setup + first-byte (IDR) wait too
       const controller = new AbortController();
       abort = controller;
       try {
@@ -377,12 +432,12 @@ function startMse(cameraIdArg, onGiveUp) {
           credentials: 'same-origin',
           signal: controller.signal,
         });
-        if (!resp.ok || !resp.body) { reconnect(); return; }
+        if (!resp.ok || !resp.body) { refetch(); return; }
         const reader = resp.body.getReader();
         for (;;) {
           if (state.dead) return;
           const { done, value } = await reader.read();
-          if (done) { reconnect(); return; }
+          if (done) { refetch(); return; }
           if (!value || !value.length) continue;
           resetStall();
           if (!sourceBuffer) {
@@ -399,25 +454,28 @@ function startMse(cameraIdArg, onGiveUp) {
             sb = sourceBuffer;
             sourceBuffer.mode = 'segments';
             sourceBuffer.addEventListener('updateend', () => { pruning = false; pump(); });
-            sourceBuffer.addEventListener('error', () => reconnect());
+            sourceBuffer.addEventListener('error', () => hardReconnect());
             queue.push(merged);
             initDone = true;
             pump();
           } else {
+            // A refetched connection re-sends the init segment before its
+            // first keyframe — appending it again mid-stream is the
+            // spec-blessed way to refresh the decoder configuration.
             queue.push(value);
             pump();
           }
         }
       } catch (e) {
         if (state.dead || e.name === 'AbortError') return;
-        reconnect();
+        refetch();
       }
     }
 
     fetchStream();
   }
 
-  start();
+  buildPlayer();
   return { stop };
 }
 
@@ -450,8 +508,13 @@ function startMjpeg(cameraIdArg) {
   $('mjpeg-fallback-badge').classList.remove('hidden');
   $('stream-loading').classList.add('hidden');
   const load = () => { img.src = `/api/cameras/${cameraIdArg}/live?_=${Date.now()}`; };
-  img.onload = () => img.classList.remove('hidden');
-  img.onerror = () => { img.classList.add('hidden'); img.src = ''; setTimeout(load, 3000); };
+  img.onload = () => { img.classList.remove('hidden'); hideReconnectChip(); };
+  img.onerror = () => {
+    // Keep the last decoded frame on screen — a blank flash on every
+    // transport blip is worse than a briefly stale one.
+    showReconnectChip();
+    setTimeout(load, 2000);
+  };
   load();
   bumpLiveDot();
   return {
@@ -459,6 +522,7 @@ function startMjpeg(cameraIdArg) {
       img.onload = img.onerror = null;
       img.src = '';
       img.classList.add('hidden');
+      hideReconnectChip();
       video.classList.remove('hidden');
     },
   };
@@ -471,8 +535,8 @@ function startPolling(cameraIdArg) {
   video.classList.add('hidden');
   img.classList.add('hidden');
   const tick = () => { img.src = `/api/cameras/${cameraIdArg}/snapshot?_=${Date.now()}`; };
-  img.onload = () => img.classList.remove('hidden');
-  img.onerror = () => img.classList.add('hidden');
+  img.onload = () => { img.classList.remove('hidden'); hideReconnectChip(); };
+  img.onerror = () => showReconnectChip(); // keep the stale frame visible
   tick();
   pollTimer = setInterval(tick, 5000);
   return {
@@ -481,12 +545,27 @@ function startPolling(cameraIdArg) {
       img.onload = img.onerror = null;
       img.src = '';
       img.classList.add('hidden');
+      hideReconnectChip();
       video.classList.remove('hidden');
     },
   };
 }
 
 // ─── HUD / helpers ─────────────────────────────────────────────────
+// The reconnect chip is the low-key UI for TRANSPORT-level recovery (the
+// full-screen loading overlay stays reserved for decoder-level rebuilds
+// and the initial load): picture stays up, one small badge says why it
+// briefly stalled.
+function showReconnectChip() {
+  const chip = $('stream-reconnecting');
+  if (chip) chip.classList.remove('hidden');
+}
+
+function hideReconnectChip() {
+  const chip = $('stream-reconnecting');
+  if (chip) chip.classList.add('hidden');
+}
+
 function bumpLiveDot() {
   const dot = $('stream-live-dot');
   if (!dot) return;
