@@ -614,6 +614,27 @@ impl ProtocolRuntime {
                 device_ip.clone(),
             );
             media.stream_path = stream_path;
+            // Substream profile (SPEC appendix A #20): advertised after the
+            // primary when the first active camera runs with a substream;
+            // GetStreamUri maps its `sub` token to the RTSP /live/{id}/sub
+            // mount. Applies on the next ONVIF toggle (restart-to-apply,
+            // like every other media field here).
+            if let Some(sub) = stream_manager.first_active_substream().await {
+                let base = media.stream_path.trim_end_matches('/');
+                media.extra_profiles = vec![onvif_device_rs::media::MediaProfileConfig::new(
+                    "sub",
+                    sub.width,
+                    sub.height,
+                    sub.fps.max(1.0) as u32,
+                    sub.bitrate_bps,
+                    &format!("{base}/sub"),
+                )];
+                tracing::info!(
+                    width = sub.width,
+                    height = sub.height,
+                    "ONVIF substream profile advertised"
+                );
+            }
             let media_cfg = Arc::new(media);
             soap.register_handler(
                 "GetProfiles",

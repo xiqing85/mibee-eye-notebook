@@ -1214,6 +1214,48 @@ mod tests {
         assert!(find_live_stream("/other", &live_map).is_none());
     }
 
+    #[test]
+    fn test_find_live_stream_longest_match_wins() {
+        // Substream mounts (SPEC appendix A #20): `/live/{id}/sub` must
+        // resolve to its own entry regardless of HashMap iteration order.
+        let mut live_map = HashMap::new();
+        let (tx_main, rx_main) = broadcast::channel(300);
+        let (tx_sub, rx_sub) = broadcast::channel(300);
+        live_map.insert(
+            "live/cam-1".to_string(),
+            LiveStreamEntry {
+                frame_tx: tx_main,
+                sdp_body: "s=Main".to_string(),
+                ssrc: 1,
+                cached_sps: None,
+                cached_pps: None,
+            },
+        );
+        live_map.insert(
+            "live/cam-1/sub".to_string(),
+            LiveStreamEntry {
+                frame_tx: tx_sub,
+                sdp_body: "s=Sub".to_string(),
+                ssrc: 2,
+                cached_sps: None,
+                cached_pps: None,
+            },
+        );
+        std::mem::forget(rx_main);
+        std::mem::forget(rx_sub);
+
+        let (path, entry) = find_live_stream("/live/cam-1/sub", &live_map).unwrap();
+        assert_eq!(path, "live/cam-1/sub");
+        assert_eq!(
+            entry.ssrc, 2,
+            "the sub mount must win over the shorter main path"
+        );
+
+        let (path, entry) = find_live_stream("/live/cam-1", &live_map).unwrap();
+        assert_eq!(path, "live/cam-1");
+        assert_eq!(entry.ssrc, 1, "exact main path still resolves to main");
+    }
+
     #[tokio::test]
     async fn test_live_stream_describe_and_play() {
         let server = RtspServer::new(RtspServerConfig::default());

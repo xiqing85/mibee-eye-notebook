@@ -195,6 +195,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         )
         // MSE / fMP4 stream for <video> (H.264, hardware-decoded by browser)
         .route("/api/cameras/{id}/stream.mse", get(routes::mse::stream_mse))
+        .route(
+            "/api/cameras/{id}/stream.sub.mse",
+            get(routes::mse::stream_sub_mse),
+        )
         // WebRTC WHIP/WHEP signalling (sub-second latency; gated by [webrtc].enabled)
         .route("/api/webrtc/whep/{id}", post(routes::webrtc::whep))
         .route("/api/webrtc/whip/{id}", post(routes::webrtc::whip))

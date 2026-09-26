@@ -44,6 +44,75 @@ impl Yuv420p {
         }
     }
 
+    /// Nearest-neighbour downscale to a smaller geometry (SPEC appendix
+    /// A #20 — the bandwidth-saving substream). Rust twin of the
+    /// mibee-eye-rs / mibee-eye-go downscalers; same guarantees:
+    /// identity and no-op-upscale requests return an unchanged copy,
+    /// and the function never panics on mismatched input.
+    ///
+    /// Rotation/flips/watermark are already baked into `self`, so the
+    /// downscaled frame inherits them for free.
+    #[must_use]
+    pub fn downscaled(&self, dst_w: u32, dst_h: u32) -> Self {
+        let src_w = self.width as usize;
+        let src_h = self.height as usize;
+        let src_y = src_w * src_h;
+        let src_c = src_w / 2 * (src_h / 2);
+        if self.width == 0
+            || self.height == 0
+            || dst_w == 0
+            || dst_h == 0
+            || dst_w > self.width
+            || dst_h > self.height
+            || self.data.len() < src_y + 2 * src_c
+            || (dst_w, dst_h) == (self.width, self.height)
+        {
+            return Self {
+                width: self.width,
+                height: self.height,
+                data: self.data.clone(),
+            };
+        }
+
+        let xmap = map_axis(dst_w, self.width);
+        let ymap = map_axis(dst_h, self.height);
+        let dst_ch = (dst_h as usize / 2).max(1);
+        let dst_cw = (dst_w as usize / 2).max(1);
+        let dst_y = (dst_w as usize) * (dst_h as usize);
+        let dst_c = dst_ch * dst_cw;
+        let mut out = Self {
+            width: dst_w,
+            height: dst_h,
+            data: vec![0; dst_y + 2 * dst_c],
+        };
+
+        // Luma.
+        for (dy, sy) in ymap.iter().enumerate() {
+            let s_row = sy * src_w;
+            let d_row = dy * dst_w as usize;
+            for (dx, sx) in xmap.iter().enumerate() {
+                out.data[d_row + dx] = self.data[s_row + sx];
+            }
+        }
+        // Chroma: dst row/col c pairs with luma dst row/col 2c, mapped
+        // through the luma tables and halved.
+        let src_cw = src_w / 2;
+        let last_row = ymap.len() - 1;
+        let last_col = xmap.len() - 1;
+        for dcy in 0..dst_ch {
+            let luma_row = (dcy * 2).min(last_row);
+            let s_row_u = src_y + ymap[luma_row] / 2 * src_cw;
+            let s_row_v = s_row_u + src_c;
+            for dcx in 0..dst_cw {
+                let luma_col = (dcx * 2).min(last_col);
+                let col = xmap[luma_col] / 2;
+                out.data[dst_y + dcy * dst_cw + dcx] = self.data[s_row_u + col];
+                out.data[dst_y + dst_c + dcy * dst_cw + dcx] = self.data[s_row_v + col];
+            }
+        }
+        out
+    }
+
     /// Slice over the Y (luma) plane.
     pub fn y_plane(&self) -> &[u8] {
         let n = (self.width as usize) * (self.height as usize);
@@ -436,9 +505,81 @@ fn mjpeg_to_yuv420p_turbojpeg(mjpeg_bytes: &[u8]) -> Result<Yuv420p> {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+/// `dst` → `src` nearest-neighbour index table for one axis.
+fn map_axis(dst: u32, src: u32) -> Vec<usize> {
+    (0..dst)
+        .map(|d| (u64::from(d) * u64::from(src) / u64::from(dst)) as usize)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame_8x4() -> Yuv420p {
+        let mut f = Yuv420p::new(8, 4);
+        for (i, b) in f.data.iter_mut().enumerate() {
+            *b = if i < 32 {
+                (i + 1) as u8 // luma 1..=32
+            } else if i < 40 {
+                0x10 + (i - 32) as u8 // U 0x10..0x17
+            } else {
+                0x20 + (i - 40) as u8 // V 0x20..0x27
+            };
+        }
+        f
+    }
+
+    #[test]
+    fn downscaled_half_scale_golden() {
+        let out = frame_8x4().downscaled(4, 2);
+        // Luma rows 0,2 × cols 0,2,4,6 (row 2 starts at byte 17).
+        assert_eq!(&out.data[..8], &[1, 3, 5, 7, 17, 19, 21, 23]);
+        // Chroma: src 4×2 → dst 2×1; nearest picks cols 0,2 of row 0.
+        assert_eq!(&out.data[8..10], &[0x10, 0x12]);
+        assert_eq!(&out.data[10..12], &[0x20, 0x22]);
+        assert_eq!((out.width, out.height), (4, 2));
+    }
+
+    #[test]
+    fn downscaled_identity_returns_copy() {
+        let src = frame_8x4();
+        let out = src.downscaled(8, 4);
+        assert_eq!(out.data, src.data);
+        assert_eq!((out.width, out.height), (8, 4));
+    }
+
+    #[test]
+    fn downscaled_upscale_is_noop() {
+        let src = frame_8x4();
+        let out = src.downscaled(16, 8);
+        assert_eq!((out.width, out.height), (8, 4));
+        assert_eq!(out.data, src.data);
+    }
+
+    #[test]
+    fn downscaled_short_input_is_noop() {
+        let mut src = Yuv420p {
+            width: 8,
+            height: 4,
+            data: vec![1, 2, 3],
+        };
+        let out = src.downscaled(4, 2);
+        assert_eq!(out.data, src.data);
+        src.data.clear();
+    }
+
+    #[test]
+    fn downscaled_non_integer_ratio() {
+        // 3×2: Y = [1,2,3 / 4,5,6], U = 0xAA, V = 0xBB.
+        let src = Yuv420p {
+            width: 3,
+            height: 2,
+            data: vec![1, 2, 3, 4, 5, 6, 0xAA, 0xBB],
+        };
+        let out = src.downscaled(2, 2);
+        assert_eq!(&out.data[..6], &[1, 2, 4, 5, 0xAA, 0xBB]);
+    }
 
     #[test]
     fn yuv420p_layout_is_planar_i420() {

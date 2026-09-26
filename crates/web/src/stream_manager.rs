@@ -117,6 +117,10 @@ type SourceBundle = (
     Option<LatestJpeg>,
     Option<DimensionsHandle>,
     Option<broadcast::Sender<Arc<[u8]>>>,
+    // Substream frame broadcast (SPEC appendix A #20); None = disabled.
+    Option<broadcast::Sender<Arc<streaming::source::MediaFrame>>>,
+    // Parsed substream settings (None = disabled/unsupported arm).
+    Option<streaming::capture_source::SubstreamSettings>,
 );
 
 struct StreamHandle {
@@ -139,6 +143,13 @@ struct StreamHandle {
     /// clients can bootstrap an init segment without waiting for the next IDR.
     /// `None` until the first IDR has been observed.
     sps_pps_cache: Option<SpsPpsCache>,
+    /// Substream (SPEC appendix A #20): frame broadcast sender, its own
+    /// SPS/PPS harvester cache and the RTSP `/live/{id}/sub` URL. All
+    /// `None` when the camera runs without a substream.
+    sub_frames: Option<broadcast::Sender<Arc<streaming::source::MediaFrame>>>,
+    sub_sps_pps_cache: Option<SpsPpsCache>,
+    /// Substream geometry (w, h, fps, bitrate) for the ONVIF sub profile.
+    sub_settings: Option<streaming::capture_source::SubstreamSettings>,
     /// Current status.
     status: StreamStatus,
 }
@@ -337,93 +348,110 @@ impl StreamManager {
         // *before* the source is boxed as `dyn Source`, since those methods
         // are specific to `VideoCaptureSource`. So we keep the typed value
         // around for handle extraction, then box it.
-        let (source, latest_jpeg, dimensions, jpeg_tx): SourceBundle = match camera_type {
-            "usb" => {
-                let device_index = config
-                    .get("device_index")
-                    .and_then(|v| v.as_u64())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("USB camera config must include 'device_index'")
-                    })?;
-                let mut vcs =
-                    streaming::capture_source::VideoCaptureSource::new(device_index as usize);
-                if let Some(flag) = &self.force_idr_flag {
-                    vcs = vcs.with_force_idr_flag(Arc::clone(flag));
-                }
-                if let Some(flips) = &self.gb_flips {
-                    vcs = vcs.with_gb_flips(Arc::clone(flips));
-                }
-                // Adapt the encoder to the host: probe once (cached) and pick
-                // the recommended quality preset. A user-set override from the
-                // camera config (`quality_preset`) takes precedence when present.
-                let preset = config
-                    .get("quality_preset")
-                    .and_then(|v| v.as_str())
-                    .and_then(parse_quality_preset)
-                    .unwrap_or_else(|| streaming::capability::probe().recommended_quality);
-                vcs = vcs.with_quality_preset(preset);
-                // Honour an explicit target fps from the camera config so the
-                // encoder's GOP matches the real capture rate.
-                if let Some(fps) = config.get("target_fps").and_then(|v| v.as_f64())
-                    && fps > 0.0
-                {
-                    vcs = vcs.with_target_fps(fps as f32);
-                }
-                // Device-level flips from the camera config — permanent,
-                // baked into the encoded stream and snapshots.
-                let hflip = config
-                    .get("hflip")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let vflip = config
-                    .get("vflip")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                vcs = vcs.with_flips(hflip, vflip);
-                // Device-level rotation (SPEC v1 appendix A #19), same
-                // bake-in semantics; 90/270 swap the stream geometry —
-                // applied on this (re)start like the flips.
-                let rotation = config.get("rotation").and_then(|v| v.as_u64());
-                if let Some(rotation) = rotation
-                    && !matches!(rotation, 0 | 90 | 180 | 270)
-                {
-                    anyhow::bail!(
-                        "camera config rotation must be 0, 90, 180 or 270, got {rotation}"
-                    );
-                }
-                vcs = vcs.with_rotation(rotation.unwrap_or(0) as u32);
-                // Watermark (SPEC v1 §5.2): device-global `protocols.watermark`,
-                // read at use time like `protocols.recording` — a config change
-                // applies on the next stream (re)start. Burned pre-encode into
-                // every camera's frames.
-                if let Some(db) = &self.db
-                    && let Ok(Some(cfg)) = crate::db::get_protocol_config(db, "watermark").await
-                {
-                    match serde_json::from_value::<streaming::watermark::WatermarkSettings>(cfg) {
-                        Ok(wm_cfg) if wm_cfg.enabled => {
-                            match streaming::watermark::Watermark::new(&wm_cfg) {
-                                Ok(wm) => {
-                                    info!(%camera_id, position = ?wm_cfg.position, font_size = wm_cfg.font_size, "watermark attached");
-                                    vcs = vcs.with_watermark(wm);
-                                }
-                                Err(e) => {
-                                    warn!(%camera_id, error = %e, "watermark init failed; streaming without watermark")
+        let (source, latest_jpeg, dimensions, jpeg_tx, sub_frames, sub_settings): SourceBundle =
+            match camera_type {
+                "usb" => {
+                    let device_index = config
+                        .get("device_index")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("USB camera config must include 'device_index'")
+                        })?;
+                    let mut vcs =
+                        streaming::capture_source::VideoCaptureSource::new(device_index as usize);
+                    if let Some(flag) = &self.force_idr_flag {
+                        vcs = vcs.with_force_idr_flag(Arc::clone(flag));
+                    }
+                    if let Some(flips) = &self.gb_flips {
+                        vcs = vcs.with_gb_flips(Arc::clone(flips));
+                    }
+                    // Adapt the encoder to the host: probe once (cached) and pick
+                    // the recommended quality preset. A user-set override from the
+                    // camera config (`quality_preset`) takes precedence when present.
+                    let preset = config
+                        .get("quality_preset")
+                        .and_then(|v| v.as_str())
+                        .and_then(parse_quality_preset)
+                        .unwrap_or_else(|| streaming::capability::probe().recommended_quality);
+                    vcs = vcs.with_quality_preset(preset);
+                    // Honour an explicit target fps from the camera config so the
+                    // encoder's GOP matches the real capture rate.
+                    if let Some(fps) = config.get("target_fps").and_then(|v| v.as_f64())
+                        && fps > 0.0
+                    {
+                        vcs = vcs.with_target_fps(fps as f32);
+                    }
+                    // Device-level flips from the camera config — permanent,
+                    // baked into the encoded stream and snapshots.
+                    let hflip = config
+                        .get("hflip")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let vflip = config
+                        .get("vflip")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    vcs = vcs.with_flips(hflip, vflip);
+                    // Device-level rotation (SPEC v1 appendix A #19), same
+                    // bake-in semantics; 90/270 swap the stream geometry —
+                    // applied on this (re)start like the flips.
+                    let rotation = config.get("rotation").and_then(|v| v.as_u64());
+                    if let Some(rotation) = rotation
+                        && !matches!(rotation, 0 | 90 | 180 | 270)
+                    {
+                        anyhow::bail!(
+                            "camera config rotation must be 0, 90, 180 or 270, got {rotation}"
+                        );
+                    }
+                    vcs = vcs.with_rotation(rotation.unwrap_or(0) as u32);
+                    // Watermark (SPEC v1 §5.2): device-global `protocols.watermark`,
+                    // read at use time like `protocols.recording` — a config change
+                    // applies on the next stream (re)start. Burned pre-encode into
+                    // every camera's frames.
+                    if let Some(db) = &self.db
+                        && let Ok(Some(cfg)) = crate::db::get_protocol_config(db, "watermark").await
+                    {
+                        match serde_json::from_value::<streaming::watermark::WatermarkSettings>(cfg)
+                        {
+                            Ok(wm_cfg) if wm_cfg.enabled => {
+                                match streaming::watermark::Watermark::new(&wm_cfg) {
+                                    Ok(wm) => {
+                                        info!(%camera_id, position = ?wm_cfg.position, font_size = wm_cfg.font_size, "watermark attached");
+                                        vcs = vcs.with_watermark(wm);
+                                    }
+                                    Err(e) => {
+                                        warn!(%camera_id, error = %e, "watermark init failed; streaming without watermark")
+                                    }
                                 }
                             }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(%camera_id, error = %e, "invalid protocols.watermark config in DB; streaming without watermark")
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(%camera_id, error = %e, "invalid protocols.watermark config in DB; streaming without watermark")
+                            }
                         }
                     }
+                    // Substream (SPEC appendix A #20): per-camera
+                    // `config.substream`, read-at-use like the other keys —
+                    // applies on stream (re)start.
+                    let sub_settings = parse_substream_config(config)?;
+                    if let Some(settings) = &sub_settings {
+                        vcs = vcs.with_substream(settings.clone());
+                    }
+                    let latest = vcs.latest_jpeg_handle();
+                    let dims = vcs.dimensions_handle();
+                    let tx = vcs.jpeg_sender();
+                    let sub_tx = vcs.sub_frames_sender();
+                    (
+                        Box::new(vcs),
+                        Some(latest),
+                        Some(dims),
+                        tx,
+                        sub_tx,
+                        sub_settings,
+                    )
                 }
-                let latest = vcs.latest_jpeg_handle();
-                let dims = vcs.dimensions_handle();
-                let tx = vcs.jpeg_sender();
-                (Box::new(vcs), Some(latest), Some(dims), tx)
-            }
-            other => anyhow::bail!("unsupported camera type: {other}"),
-        };
+                other => anyhow::bail!("unsupported camera type: {other}"),
+            };
 
         // ── 3b. Spawn the AI detection worker (when enabled) ────────
         //
@@ -441,7 +469,7 @@ impl StreamManager {
         let (stop_tx, stop_rx) = watch::channel(false);
         let rtsp_base = format!("rtsp://{}:{}", self.advertised_host, RTSP_PORT);
 
-        let (run_handle, rtsp_url, rtmp_url, hub_handle, sps_pps_cache) = {
+        let (run_handle, rtsp_url, rtmp_url, hub_handle, sps_pps_cache, sub_sps_pps_cache) = {
             let mut hub = StreamHub::new(source, self.resource_controller.clone());
             let stream_url: Option<String>;
 
@@ -478,6 +506,65 @@ impl StreamManager {
                 info!(%camera_id, rtsp_url = %stream_url.as_ref().unwrap(), "RTSP output registered");
             } else {
                 stream_url = None;
+            }
+
+            // ── 4a-bis. Substream RTSP mount (SPEC appendix A #20) ──────
+            //
+            // `live/{id}/sub` fed by a forwarder from the sub frame
+            // broadcast; the SDP's sprop-parameter-sets are harvested from
+            // the same broadcast (second subscriber).
+            if let Some(sub_tx) = sub_frames.as_ref()
+                && let Some(server) = rtsp_server
+            {
+                let sub_path = format!("live/{}/sub", camera_id);
+                let sub_ssrc = Uuid::new_v4().as_u128() as u32;
+                let frame_tx =
+                    server.register_live_stream(sub_path.clone(), SDP_BODY.to_string(), sub_ssrc);
+                let mut frx = sub_tx.subscribe();
+                tokio::spawn(async move {
+                    loop {
+                        match frx.recv().await {
+                            Ok(frame) => {
+                                if let streaming::source::MediaFrame::Video { data, .. } = &*frame
+                                    && frame_tx.send(data.clone()).is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
+
+                // One-shot SDP sprop update once both parameter sets
+                // have been seen (mirrors the main mount's oneshot).
+                let mut hrx = sub_tx.subscribe();
+                let server_clone = server.clone();
+                let path_clone = sub_path.clone();
+                tokio::spawn(async move {
+                    let mut sps: Option<Vec<u8>> = None;
+                    let mut pps: Option<Vec<u8>> = None;
+                    while let Ok(frame) = hrx.recv().await {
+                        let streaming::source::MediaFrame::Video { data, .. } = &*frame else {
+                            continue;
+                        };
+                        if data.is_empty() {
+                            continue;
+                        }
+                        match data[0] & 0x1f {
+                            7 => sps = Some(data.clone()),
+                            8 => pps = Some(data.clone()),
+                            _ => {}
+                        }
+                        if let (Some(s), Some(p)) = (sps.clone(), pps.clone()) {
+                            server_clone.update_sps_pps(&path_clone, s, p);
+                            break;
+                        }
+                    }
+                });
             }
 
             // ── 4b. Optional RTMP push output ───────────────────────────
@@ -653,12 +740,43 @@ impl StreamManager {
                 hub.stop();
             });
 
+            // Substream SPS/PPS harvester for the MSE init-segment cache
+            // (mirror of the main harvester above).
+            let sub_sps_pps_cache: Option<SpsPpsCache> = sub_frames.as_ref().map(|sub_tx| {
+                let cache: SpsPpsCache = Arc::new(Mutex::new(None));
+                let cache_clone = Arc::clone(&cache);
+                let mut rx = sub_tx.subscribe();
+                tokio::spawn(async move {
+                    while let Ok(frame) = rx.recv().await {
+                        let streaming::source::MediaFrame::Video { data, .. } = &*frame else {
+                            continue;
+                        };
+                        if data.is_empty() {
+                            continue;
+                        }
+                        match data[0] & 0x1f {
+                            7 => {
+                                let mut g = cache_clone.lock();
+                                g.get_or_insert_with(|| (Vec::new(), Vec::new())).0 = data.clone();
+                            }
+                            8 => {
+                                let mut g = cache_clone.lock();
+                                g.get_or_insert_with(|| (Vec::new(), Vec::new())).1 = data.clone();
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                cache
+            });
+
             (
                 handle,
                 stream_url,
                 rtmp_url,
                 Some(hub_handle),
                 Some(sps_pps_cache),
+                sub_sps_pps_cache,
             )
         };
 
@@ -672,6 +790,9 @@ impl StreamManager {
             latest_jpeg,
             jpeg_tx,
             sps_pps_cache,
+            sub_frames: sub_frames.clone(),
+            sub_sps_pps_cache,
+            sub_settings,
             status: StreamStatus::Running,
         };
 
@@ -831,6 +952,47 @@ impl StreamManager {
         cache.lock().clone()
     }
 
+    /// Subscribe to a camera's SUBSTREAM frame broadcast (SPEC appendix
+    /// A #20). `None` when the camera is unknown or runs without a
+    /// substream.
+    pub async fn subscribe_frames_sub(
+        &self,
+        camera_id: &str,
+    ) -> Option<tokio::sync::broadcast::Receiver<Arc<streaming::source::MediaFrame>>> {
+        let streams = self.streams.read().await;
+        let handle = streams.get(camera_id)?;
+        let tx = handle.sub_frames.as_ref()?;
+        Some(tx.subscribe())
+    }
+
+    /// Cached (SPS, PPS) of a camera's substream, if observed.
+    pub async fn sps_pps_sub(&self, camera_id: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+        let streams = self.streams.read().await;
+        let handle = streams.get(camera_id)?;
+        let cache = handle.sub_sps_pps_cache.as_ref()?;
+        cache.lock().clone()
+    }
+
+    /// Whether any active stream runs with a substream (drives the
+    /// device-level `capabilities.substream`, SPEC appendix A #20).
+    pub async fn any_substream_active(&self) -> bool {
+        let streams = self.streams.read().await;
+        streams.values().any(|h| h.sub_frames.is_some())
+    }
+
+    /// The first active stream's substream geometry (ONVIF `sub` profile —
+    /// the ONVIF media service advertises the first active camera, so its
+    /// substream is the one the extra profile must describe).
+    pub async fn first_active_substream(
+        &self,
+    ) -> Option<streaming::capture_source::SubstreamSettings> {
+        let streams = self.streams.read().await;
+        streams
+            .values()
+            .find(|h| h.sub_frames.is_some())
+            .and_then(|h| h.sub_settings.clone())
+    }
+
     /// Attach a new output to an already-running stream.
     ///
     /// This is the runtime entry point used by external protocol handlers
@@ -906,8 +1068,92 @@ fn parse_quality_preset(s: &str) -> Option<streaming::capability::QualityPreset>
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+/// Validate the `config.substream` subtree without building settings —
+/// used at the PUT boundary so mistakes surface next to the save, not at
+/// the next stream start.
+pub fn validate_substream_config(config: &serde_json::Value) -> anyhow::Result<()> {
+    parse_substream_config(config).map(|_| ())
+}
+
+/// Parse the per-camera `config.substream` subtree (SPEC appendix A #20).
+/// Absent or `enabled: false` → `None`; structural violations (odd/zero
+/// dims, absurd bitrate) are errors — same shape as the rotation guard.
+fn parse_substream_config(
+    config: &serde_json::Value,
+) -> anyhow::Result<Option<streaming::capture_source::SubstreamSettings>> {
+    use streaming::capture_source::SubstreamSettings;
+    let Some(node) = config.get("substream") else {
+        return Ok(None);
+    };
+    let enabled = node
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return Ok(None);
+    }
+    let width = node.get("width").and_then(|v| v.as_u64()).unwrap_or(640) as u32;
+    let height = node.get("height").and_then(|v| v.as_u64()).unwrap_or(360) as u32;
+    if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+        anyhow::bail!(
+            "camera config substream dimensions must be positive and even, got {width}x{height}"
+        );
+    }
+    if width > 7680 || height > 4320 {
+        anyhow::bail!("camera config substream dimensions exceed 7680x4320");
+    }
+    let fps = node.get("fps").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    let bitrate_bps = node
+        .get("bitrate")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(400_000) as u32;
+    if bitrate_bps == 0 || bitrate_bps > 50_000_000 {
+        anyhow::bail!("camera config substream bitrate must be 1..50000000, got {bitrate_bps}");
+    }
+    Ok(Some(SubstreamSettings {
+        width,
+        height,
+        fps,
+        bitrate_bps,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_substream_config_absent_and_disabled() {
+        let cfg = serde_json::json!({"device_index": 0});
+        assert!(parse_substream_config(&cfg).unwrap().is_none());
+        let cfg = serde_json::json!({"substream": {"enabled": false}});
+        assert!(parse_substream_config(&cfg).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_substream_config_defaults_and_values() {
+        let cfg = serde_json::json!({"substream": {"enabled": true}});
+        let s = parse_substream_config(&cfg).unwrap().unwrap();
+        assert_eq!((s.width, s.height), (640, 360));
+        assert_eq!(s.bitrate_bps, 400_000);
+        assert_eq!(s.fps, 0.0);
+
+        let cfg = serde_json::json!({"substream": {"enabled": true, "width": 480, "height": 270, "fps": 5, "bitrate": 250000}});
+        let s = parse_substream_config(&cfg).unwrap().unwrap();
+        assert_eq!((s.width, s.height, s.bitrate_bps), (480, 270, 250_000));
+        assert_eq!(s.fps, 5.0);
+    }
+
+    #[test]
+    fn parse_substream_config_rejects_odd_dims_and_bad_bitrate() {
+        for bad in [
+            serde_json::json!({"substream": {"enabled": true, "width": 641}}),
+            serde_json::json!({"substream": {"enabled": true, "height": 0}}),
+            serde_json::json!({"substream": {"enabled": true, "bitrate": 0}}),
+            serde_json::json!({"substream": {"enabled": true, "bitrate": 60000000}}),
+        ] {
+            assert!(parse_substream_config(&bad).is_err(), "must reject {bad}");
+        }
+    }
+
     use super::*;
 
     #[tokio::test]
@@ -997,6 +1243,9 @@ mod tests {
                 latest_jpeg: None,
                 jpeg_tx: None,
                 sps_pps_cache: None,
+                sub_frames: None,
+                sub_sps_pps_cache: None,
+                sub_settings: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("cam-1".into(), handle);
@@ -1032,6 +1281,9 @@ mod tests {
                 latest_jpeg: None,
                 jpeg_tx: None,
                 sps_pps_cache: None,
+                sub_frames: None,
+                sub_sps_pps_cache: None,
+                sub_settings: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -1068,6 +1320,9 @@ mod tests {
                 latest_jpeg: None,
                 jpeg_tx: None,
                 sps_pps_cache: None,
+                sub_frames: None,
+                sub_sps_pps_cache: None,
+                sub_settings: None,
                 status: StreamStatus::Running,
             };
             manager
@@ -1102,6 +1357,9 @@ mod tests {
                 latest_jpeg: None,
                 jpeg_tx: None,
                 sps_pps_cache: None,
+                sub_frames: None,
+                sub_sps_pps_cache: None,
+                sub_settings: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("a".into(), handle);
@@ -1119,6 +1377,9 @@ mod tests {
                 latest_jpeg: None,
                 jpeg_tx: None,
                 sps_pps_cache: None,
+                sub_frames: None,
+                sub_sps_pps_cache: None,
+                sub_settings: None,
                 status: StreamStatus::Running,
             };
             manager.streams.write().await.insert("b".into(), handle);

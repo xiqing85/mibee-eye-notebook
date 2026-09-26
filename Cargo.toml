@@ -19,7 +19,10 @@ rust-version = "1.88"
 [workspace.dependencies]
 # ONVIF Device stack — v0.7.0: quick-xml 0.41 security fix + the parity
 # batch the git pin tracked.
-onvif-device-rs = "0.7.0"
+# Multi-profile media (GetProfiles extras + GetStreamUri ProfileToken
+# routing, library PR mickeyzzc/onvif-rs#46) — git pin until the next
+# library release (merge ≠ release).
+onvif-device-rs = { git = "https://github.com/mickeyzzc/onvif-rs.git", rev = "1826726" }
 # GB/T 28181 device stack — v0.12.0: the 2022 device-side closure
 # package; contains everything the git pin tracked.
 gb28181-rs = { version = "0.12.0", features = ["gb35114"] }

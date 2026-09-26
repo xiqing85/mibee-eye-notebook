@@ -2936,9 +2936,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onvif-device-rs"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e5ffe7762cc2998530e91a8e806396d792e1350d9801ec4e6d518868d5fa02b"
+version = "0.8.0"
+source = "git+https://github.com/mickeyzzc/onvif-rs.git?rev=1826726#182672673dea2116e0ad825cb1365ab90263b6aa"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

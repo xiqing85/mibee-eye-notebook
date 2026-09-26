@@ -202,6 +202,14 @@ pub async fn update_camera(
         ));
     }
 
+    // SPEC v1 appendix A #20: reject structurally invalid substream
+    // settings at the API boundary (same surface principle as rotation).
+    if let Some(cfg) = &body.config
+        && let Err(e) = crate::stream_manager::validate_substream_config(cfg)
+    {
+        return Err(ApiError::bad_request(format!("config.substream: {e}")));
+    }
+
     let now = crate::routes::chrono_now();
     let updated = CameraRow {
         id: existing.id,
@@ -307,6 +315,22 @@ mod tests {
             security::auth::create_session(&conn, "admin").unwrap()
         };
         (build_state(pool, auth_db), token)
+    }
+
+    /// SPEC appendix A #20: the substream MSE endpoint 404s when the
+    /// camera runs without a substream (capability false / no pipeline).
+    #[tokio::test]
+    async fn stream_sub_mse_404_without_substream() {
+        use tower::ServiceExt;
+        let (state, token) = test_app_with_token().await;
+        let app = crate::server::build_app_with_state(state);
+        let req = axum::http::Request::builder()
+            .uri("/api/cameras/cam-1/stream.sub.mse")
+            .header("cookie", format!("session={token}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     /// Seed the users table with an admin user for test setup.

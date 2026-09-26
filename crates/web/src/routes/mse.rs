@@ -1,6 +1,8 @@
-//! MSE / fMP4 streaming endpoint.
+//! MSE / fMP4 streaming endpoints.
 //!
-//! `GET /api/cameras/{id}/stream.mse` returns a chunked HTTP response whose
+//! `GET /api/cameras/{id}/stream.mse` (and the low-resolution substream
+//! variant `stream.sub.mse`, SPEC appendix A #20) return chunked HTTP
+//! responses whose
 //! body is a fragmented-MP4 byte-stream consumable by a browser
 //! `MediaSource`. This is the H.264 delivery path (vs the legacy MJPEG
 //! `<img>` preview) and carries a ~5-10× bandwidth saving plus client-side
@@ -11,6 +13,7 @@
 //! rolling media segments.
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Extension, Path};
@@ -37,12 +40,40 @@ pub async fn stream_mse(
     Extension(_user): Extension<AuthenticatedUser>,
     Path(camera_id): Path<String>,
 ) -> Response {
-    let mut rx = match stream_manager.subscribe_frames(&camera_id).await {
+    let rx = match stream_manager.subscribe_frames(&camera_id).await {
         Some(rx) => rx,
         None => {
             return ApiError::conflict("stream not active or no frames available").into_response();
         }
     };
+    let seeded = stream_manager.sps_pps(&camera_id).await;
+    mse_response(rx, seeded)
+}
+
+/// GET /api/cameras/{id}/stream.sub.mse — the low-resolution
+/// bandwidth-saving substream (SPEC appendix A #20). 404 when the camera
+/// runs without a substream (`capabilities.substream` false).
+#[tracing::instrument(skip_all)]
+pub async fn stream_sub_mse(
+    Extension(stream_manager): Extension<std::sync::Arc<StreamManager>>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Path(camera_id): Path<String>,
+) -> Response {
+    let Some(rx) = stream_manager.subscribe_frames_sub(&camera_id).await else {
+        return ApiError::not_found("substream not enabled").into_response();
+    };
+    let seeded = stream_manager.sps_pps_sub(&camera_id).await;
+    mse_response(rx, seeded)
+}
+
+/// Shared chunked-fMP4 body behind both MSE endpoints.
+fn mse_response(
+    rx: tokio::sync::broadcast::Receiver<Arc<MediaFrame>>,
+    seeded: Option<(Vec<u8>, Vec<u8>)>,
+) -> Response {
+    // The background task owns the receiver from here on; recv() needs a
+    // mutable binding inside the async block.
+    let mut rx = rx;
 
     // Drive the remuxer on a background task and forward chunks over a
     // channel; the HTTP body reads from the channel so backpressure flows
@@ -52,7 +83,7 @@ pub async fn stream_mse(
     // Bootstrap the init segment with cached SPS/PPS so the browser can start
     // decoding the very first media segment, rather than stalling until the
     // next IDR (which may be a full GOP away) re-emits the parameter sets.
-    if let Some((sps, pps)) = stream_manager.sps_pps(&camera_id).await {
+    if let Some((sps, pps)) = seeded {
         remuxer.seed_sps_pps(sps, pps);
     }
 
