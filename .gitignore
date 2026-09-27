@@ -66,3 +66,11 @@ models/*.onnx
 *.log
 config.local.*
 cookies.txt
+# Runtime AI models (deployment assets — see models/README.md)
+models/**/*.onnx
+models/llm/*.gguf
+models/vlm/*.gguf
+# melo TTS: verbatim official package (tarball + extracted lexicon/dict/fsts)
+models/voice/melo/
+# model source tarballs (extracted/tracked files document provenance instead)
+models/voice/kws.tar.bz2

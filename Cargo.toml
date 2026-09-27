@@ -88,6 +88,11 @@ license.workspace = true
 description = "Professional laptop surveillance agent"
 rust-version = "1.88"
 
+[features]
+voice = ["streaming/voice"]
+llm = ["streaming/llm"]
+vlm = ["streaming/vlm"]
+
 [dependencies]
 tokio.workspace = true
 clap.workspace = true

@@ -25,10 +25,48 @@ struct Args {
     /// Reset password for a user (prompts for credentials, does not start the server)
     #[arg(long)]
     reset_password: bool,
+
+    /// Run the audio-event pipeline on a WAV file and print the JSON
+    /// result (deterministic deployment verification; no server started).
+    #[arg(long)]
+    selftest_audio: Option<PathBuf>,
+
+    /// Run OCR on an image file and print the JSON result.
+    #[arg(long)]
+    selftest_ocr: Option<PathBuf>,
+
+    /// Run the wake-word + transcription pipeline on a WAV file and print
+    /// the JSON result (deterministic deployment verification).
+    #[arg(long)]
+    selftest_voice: Option<PathBuf>,
+
+    /// Run one greedy LLM completion and print the JSON result.
+    #[arg(long)]
+    selftest_llm: Option<String>,
+
+    /// Synthesize one utterance via the TTS subprocess and report the WAV.
+    #[arg(long)]
+    selftest_tts: Option<String>,
+    /// Describe one JPEG via the VLM (`--selftest-vlm <path>`).
+    #[arg(long)]
+    selftest_vlm: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Cap the OpenMP pool before any ORT session spawns it (hosts like
+    // .40 have no swap — an oversubscribed spin-waiting pool is an
+    // OOM/latency hazard). Halve the logical CPUs, clamped to [1, 4];
+    // a user-provided OMP_NUM_THREADS always wins.
+    if std::env::var_os("OMP_NUM_THREADS").is_none() {
+        let logical = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        let omp = (logical / 2).clamp(1, 4);
+        // SAFETY: single-threaded startup, before any worker exists.
+        unsafe { std::env::set_var("OMP_NUM_THREADS", omp.to_string()) };
+    }
+
     // Install rustls crypto provider (required for rustls 0.23+)
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -39,6 +77,30 @@ async fn main() -> anyhow::Result<()> {
     // Handle --reset-password before starting the server
     if args.reset_password {
         return reset_password_cli(&args).await;
+    }
+    if let Some(path) = &args.selftest_audio {
+        return selftest_cli("audio", || {
+            streaming::audio_ai::selftest_wav(&path.to_string_lossy())
+        });
+    }
+    if let Some(path) = &args.selftest_ocr {
+        return selftest_cli("ocr", || {
+            streaming::ocr::selftest_image(&path.to_string_lossy())
+        });
+    }
+    if let Some(path) = &args.selftest_voice {
+        return selftest_cli("voice", || {
+            streaming::voice::selftest_voice(&path.to_string_lossy())
+        });
+    }
+    if let Some(prompt) = &args.selftest_llm {
+        return selftest_cli("llm", || streaming::llm::selftest_llm(prompt));
+    }
+    if let Some(path) = &args.selftest_vlm {
+        return selftest_cli("vlm", || streaming::vlm::selftest_vlm(path));
+    }
+    if let Some(text) = &args.selftest_tts {
+        return selftest_cli("tts", || streaming::tts::selftest_tts(text));
     }
 
     let mut config = mibee_eye::config::AppConfig::load(&args.config)?;
@@ -192,10 +254,18 @@ async fn main() -> anyhow::Result<()> {
         alarm_notify_gate.store(gate, std::sync::atomic::Ordering::SeqCst);
     }
 
+    // VLM alarm-frame descriptions (SPEC appendix A #23). Created before
+    // the alarm bridge so the hook below can clone it.
+    let vlm_engine = Arc::new(streaming::vlm::VlmEngine::from_config(&config.vlm));
+    if !vlm_engine.is_active() {
+        tracing::info!(reason = %vlm_engine.inactive_reason(), "vlm: descriptions disabled");
+    }
+
     // Bridge AI detection events into the SSE event bus (SPEC v1 §6), and
     // fire alarms on detection rising edges (SPEC §6 `alarm` + §9.5.2
     // Alarm NOTIFY when GB28181 is up and the AlarmReport gate allows).
     {
+        let vlm_engine = Arc::clone(&vlm_engine);
         let mut ai_events = ai_engine.subscribe_events();
         let bridge_tx = event_tx.clone();
         let mut alarm_bridge =
@@ -228,7 +298,43 @@ async fn main() -> anyhow::Result<()> {
                                 camera_id: sig.camera_id.clone(),
                                 targets: sig.targets,
                                 timestamp_ms: sig.timestamp_ms,
+                                source: "ai".to_string(),
+                                class: None,
+                                score: None,
                             });
+                            // VLM description of the triggering frame (SPEC
+                            // appendix A #23): the alarm never waits for it —
+                            // the description arrives as its own SSE event.
+                            if vlm_engine.is_active()
+                                && let Some(jpeg) = ev.jpeg.clone()
+                            {
+                                let vlm = Arc::clone(&vlm_engine);
+                                let tx = bridge_tx.clone();
+                                let camera_id = sig.camera_id.clone();
+                                let alarm_ts = sig.timestamp_ms;
+                                tokio::task::spawn_blocking(move || {
+                                    let started = std::time::Instant::now();
+                                    match vlm.describe_jpeg(&jpeg) {
+                                        Ok(description) => {
+                                            let _ = tx.send(
+                                                web::routes::events::CameraEvent::AlarmDescription {
+                                                    camera_id,
+                                                    alarm_timestamp_ms: alarm_ts,
+                                                    description,
+                                                    elapsed_s: (started.elapsed().as_secs_f64()
+                                                        * 100.0)
+                                                        .round()
+                                                        / 100.0,
+                                                },
+                                            );
+                                        }
+                                        Err(e) => tracing::warn!(
+                                            error = %e,
+                                            "vlm: description failed"
+                                        ),
+                                    }
+                                });
+                            }
                             // ONVIF MotionAlarm rides the same accepted
                             // edge (no NVR subscribed = no-op).
                             if let Some(events) = onvif_events_slot
@@ -263,6 +369,261 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(skipped = n, "ai: SSE bridge lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    // Audio AI engine (sound events + voice presence). Fail-open: no
+    // microphone, missing models, or a missing ONNX Runtime library leave
+    // it inactive.
+    let audio_ai_engine = Arc::new(streaming::audio_ai::AudioAiEngine::from_config(
+        &config.audio_ai,
+    ));
+    if !audio_ai_engine.is_active() {
+        tracing::info!(
+            reason = %audio_ai_engine.inactive_reason(),
+            "audio_ai: sound events disabled"
+        );
+    }
+    let voice_engine = Arc::new(streaming::voice::VoiceEngine::from_config(&config.voice));
+    let chat_engine = Arc::new(streaming::llm::ChatEngine::from_config(&config.llm));
+    if !chat_engine.is_active() {
+        tracing::info!(reason = %chat_engine.inactive_reason(), "llm: chat disabled");
+    }
+    let tts_engine = Arc::new(streaming::tts::TtsEngine::from_config(&config.tts));
+    if !tts_engine.is_active() {
+        tracing::info!(reason = %tts_engine.inactive_reason(), "tts: playback disabled");
+    }
+    if !voice_engine.is_active() {
+        tracing::info!(reason = %voice_engine.inactive_reason(), "voice: interaction disabled");
+    }
+    let mut _audio_monitor = None;
+    if audio_ai_engine.is_active() || voice_engine.is_active() {
+        match capture::audio_monitor::AudioMonitor::open(&config.audio_ai.device) {
+            Ok(mut monitor) => match monitor.start() {
+                Ok((rx, _tx)) => {
+                    if audio_ai_engine.is_active() {
+                        audio_ai_engine.spawn_worker(rx.resubscribe());
+                    }
+                    if voice_engine.is_active() {
+                        voice_engine.spawn_worker(rx.resubscribe());
+                    }
+                    _audio_monitor = Some(monitor);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "audio_ai: monitor failed to start (sound events paused)")
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "audio_ai: input device unavailable (sound events paused)")
+            }
+        }
+    }
+    // Sound events ride the same alarm pipeline as visual detections: SSE
+    // `alarm` with source:"audio" (+ class/score) and the GB Alarm NOTIFY
+    // with the same pinned 2022 standard triple; the description carries
+    // the detected class. The microphone is device-level hardware, so the
+    // event is attributed to camera "0".
+    {
+        let mut sound_events = audio_ai_engine.subscribe_events();
+        let bridge_tx = event_tx.clone();
+        let notifier_slot = Arc::clone(&notifier_slot);
+        let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
+        tokio::spawn(async move {
+            loop {
+                match sound_events.recv().await {
+                    Ok(ev) => {
+                        let _ = bridge_tx.send(web::routes::events::CameraEvent::Alarm {
+                            camera_id: "0".to_string(),
+                            targets: 1,
+                            timestamp_ms: ev.timestamp_ms,
+                            source: "audio".to_string(),
+                            class: Some(ev.class.clone()),
+                            score: Some(ev.score),
+                        });
+                        if alarm_notify_gate.load(std::sync::atomic::Ordering::SeqCst) {
+                            let notifier =
+                                notifier_slot.lock().expect("gb notifier slot lock").clone();
+                            if let Some(n) = notifier {
+                                let description = format!(
+                                    "audio event: {} ({:.2})",
+                                    if ev.label_zh.is_empty() {
+                                        &ev.class
+                                    } else {
+                                        &ev.label_zh
+                                    },
+                                    ev.score
+                                );
+                                let sent = n.send_alarm(
+                                    "4",
+                                    "5",
+                                    &gb28181_rs::client::format_gb_time_ms(ev.timestamp_ms),
+                                    "2",
+                                    &description,
+                                );
+                                if !sent {
+                                    tracing::debug!("alarm notify: no active subscription");
+                                }
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "audio_ai: SSE bridge lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    // OCR engine (fail-open: missing models leave it inactive).
+    let ocr_engine = Arc::new(streaming::ocr::OcrEngine::from_config(&config.ocr));
+    if !ocr_engine.is_active() {
+        tracing::info!(reason = %ocr_engine.inactive_reason(), "ocr: disabled");
+    }
+
+    // Shared zone map (user-drawn intrusion/tripwire zones, db-mirrored)
+    // feeding the zone-event engine below.
+    let shared_zones = web::zones::new_shared();
+    web::zones::load_from_db(&pool, &shared_zones).await;
+
+    // Zone-event engine: tracked detections × user zones → intrusion /
+    // loiter / line-cross events → SSE `zone_event` + GB Alarm NOTIFY
+    // (same pinned triple; description names the zone).
+    {
+        let mut track_events = ai_engine.subscribe_tracks();
+        let bridge_tx = event_tx.clone();
+        let zones_ref = shared_zones.clone();
+        let notifier_slot = Arc::clone(&notifier_slot);
+        let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
+        tokio::spawn(async move {
+            let mut engines: HashMap<String, streaming::ai::zones::ZoneEngine> = HashMap::new();
+            loop {
+                match track_events.recv().await {
+                    Ok(ev) => {
+                        let zones = zones_ref.read().clone();
+                        if zones.is_empty() {
+                            continue;
+                        }
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        let engine = engines.entry(ev.camera_id.clone()).or_default();
+                        for ze in engine.update(
+                            &ev.camera_id,
+                            zones.get(&ev.camera_id).map_or(&[], Vec::as_slice),
+                            &ev.tracks,
+                            now_ms,
+                        ) {
+                            let kind = match ze.event {
+                                streaming::ai::zones::ZoneEventKind::Intrusion => "intrusion",
+                                streaming::ai::zones::ZoneEventKind::Loiter => "loiter",
+                                streaming::ai::zones::ZoneEventKind::LineCross {
+                                    forward: true,
+                                } => "line_cross_forward",
+                                streaming::ai::zones::ZoneEventKind::LineCross {
+                                    forward: false,
+                                } => "line_cross_backward",
+                            };
+                            tracing::info!(
+                                camera = %ze.camera_id,
+                                zone = %ze.zone,
+                                kind,
+                                track = ze.track_id,
+                                "zones: event"
+                            );
+                            let _ = bridge_tx.send(web::routes::events::CameraEvent::ZoneEvent {
+                                camera_id: ze.camera_id.clone(),
+                                zone: ze.zone.clone(),
+                                event: kind.to_string(),
+                                track_id: ze.track_id,
+                                label: ze.label.clone(),
+                                timestamp_ms: ze.timestamp_ms,
+                            });
+                            if alarm_notify_gate.load(std::sync::atomic::Ordering::SeqCst) {
+                                let notifier =
+                                    notifier_slot.lock().expect("gb notifier slot lock").clone();
+                                if let Some(n) = notifier {
+                                    let description = format!("zone event: {} ({kind})", ze.zone);
+                                    let sent = n.send_alarm(
+                                        "4",
+                                        "5",
+                                        &gb28181_rs::client::format_gb_time_ms(ze.timestamp_ms),
+                                        "2",
+                                        &description,
+                                    );
+                                    if !sent {
+                                        tracing::debug!("alarm notify: no active subscription");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "zones: bridge lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    // Voice interactions → SSE `voice_transcript`; when the local LLM is
+    // active, non-empty transcripts also get one auto-reply (SSE
+    // `chat_reply`) — the TTS playback stage will consume these.
+    {
+        let mut voice_events = voice_engine.subscribe_events();
+        let bridge_tx = event_tx.clone();
+        let chat_for_voice = chat_engine.clone();
+        tokio::spawn(async move {
+            loop {
+                match voice_events.recv().await {
+                    Ok(ev) => {
+                        let _ = bridge_tx.send(web::routes::events::CameraEvent::VoiceTranscript {
+                            keyword: ev.keyword,
+                            transcript: ev.transcript.clone(),
+                            timestamp_ms: ev.timestamp_ms,
+                        });
+                        if chat_for_voice.is_active() && !ev.transcript.trim().is_empty() {
+                            let turns = vec![
+                                streaming::llm::ChatTurn {
+                                    role: "system".into(),
+                                    content: "你是家庭摄像头的语音助手，用不超过两句话的中文回答。"
+                                        .into(),
+                                },
+                                streaming::llm::ChatTurn {
+                                    role: "user".into(),
+                                    content: ev.transcript.clone(),
+                                },
+                            ];
+                            let engine = chat_for_voice.clone();
+                            let tx = bridge_tx.clone();
+                            let tts_for_reply = tts_engine.clone();
+                            tokio::task::spawn_blocking(move || match engine.complete(&turns) {
+                                Ok(reply) => {
+                                    let _ = tx.send(web::routes::events::CameraEvent::ChatReply {
+                                        source: "voice".into(),
+                                        reply: reply.clone(),
+                                        timestamp_ms: unix_now_ms(),
+                                    });
+                                    if tts_for_reply.is_active()
+                                        && let Err(e) = tts_for_reply.speak(&reply)
+                                    {
+                                        tracing::warn!(error = %e, "tts: speak failed");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "llm: voice auto-reply failed");
+                                }
+                            });
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "voice: SSE bridge lagged");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -600,6 +961,12 @@ async fn main() -> anyhow::Result<()> {
         advertised_host.clone(),
         event_tx,
         ai_engine,
+        audio_ai_engine,
+        shared_zones,
+        ocr_engine,
+        voice_engine,
+        chat_engine,
+        vlm_engine,
     )
     .await?;
 
@@ -621,6 +988,36 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!("All protocol tasks shut down");
     Ok(())
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Run one self-test subcommand, print the JSON report. Exit code 0 on a
+/// completed run (events or not), 2 when the pipeline is unavailable.
+fn selftest_cli<F>(name: &str, run: F) -> anyhow::Result<()>
+where
+    F: FnOnce() -> anyhow::Result<serde_json::Value>,
+{
+    match run() {
+        Ok(report) => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            // Skip destructors AND atexit handlers: tearing down the
+            // dynamically loaded ONNX Runtime + OpenMP threads segfaults
+            // on some hosts after the report is complete.
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            unsafe { libc::_exit(0) };
+        }
+        Err(e) => {
+            eprintln!("selftest[{name}] failed: {e:#}");
+            std::process::exit(2);
+        }
+    }
 }
 
 /// Handle the `--reset-password` CLI flag.

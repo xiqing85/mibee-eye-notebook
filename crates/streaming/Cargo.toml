@@ -19,6 +19,16 @@ ai = ["dep:ort"]
 # Enable Intel/AMD hardware H.264 encoding via libva (VAAPI). Requires libva at
 # build/run time. Off by default — the software (OpenH264) path is always built.
 vaapi = []
+# Voice interaction (wake word + offline ASR via sherpa-onnx). Requires
+# the sherpa-onnx static libs at build time (SHERPA_ONNX_LIB_DIR); off by
+# default so default builds and CI need nothing extra.
+voice = ["dep:sherpa-onnx"]
+# Local LLM dialogue (llama.cpp via llama-cpp-2). Builds llama.cpp from
+# source — significant compile time, off by default.
+llm = ["dep:llama-cpp-2"]
+# Alarm-image description (Qwen3-VL via llama.cpp mtmd). Implies `llm`
+# and turns on the multimodal support in llama-cpp-2.
+vlm = ["llm", "llama-cpp-2/mtmd"]
 # Enable NVIDIA hardware H.264 encoding via NVENC. Requires the NVIDIA Codec
 # SDK at build time and a proprietary driver at run time. Off by default.
 nvenc = []
@@ -54,6 +64,11 @@ muxide.workspace = true
 fdk-aac = { workspace = true, optional = true }
 turbojpeg = { version = "1.0", optional = true }
 ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic"] }
+sherpa-onnx = { version = "=1.13.8", optional = true }
+# default-features off: no openmp (the statically linked sherpa-onnx
+# already embeds its own OpenMP runtime — two static OpenMP copies in one
+# binary corrupt each other's init and abort with bad_alloc).
+llama-cpp-2 = { version = "=0.1.157", optional = true, default-features = false }
 
 [dev-dependencies]
 axum.workspace = true

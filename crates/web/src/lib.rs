@@ -16,6 +16,7 @@ pub mod protocol_runtime;
 pub mod routes;
 pub mod server;
 pub mod stream_manager;
+pub mod zones;
 
 #[cfg(test)]
 mod tests {

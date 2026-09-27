@@ -291,6 +291,36 @@ pub struct AppConfig {
     /// config). Off by default; see `streaming::ai` for semantics.
     #[serde(default)]
     pub ai: streaming::ai::AiConfig,
+
+    /// On-device audio intelligence (`[audio_ai]` section): sound events
+    /// from the always-on microphone monitor. Off by default — continuous
+    /// listening is opt-in; see `streaming::audio_ai`.
+    #[serde(default)]
+    pub audio_ai: streaming::audio_ai::AudioAiConfig,
+
+    /// On-device OCR (`[ocr]` section, PP-OCRv5). Off by default.
+    #[serde(default)]
+    pub ocr: streaming::ocr::OcrConfig,
+
+    /// Voice interaction (`[voice]` section: wake word + offline ASR).
+    /// Off by default; requires a `voice`-feature build.
+    #[serde(default)]
+    pub voice: streaming::voice::VoiceConfig,
+
+    /// Local LLM dialogue (`[llm]` section, llama.cpp/Qwen3 GGUF). Off by
+    /// default; requires an `llm`-feature build.
+    #[serde(default)]
+    pub llm: streaming::llm::LlmConfig,
+
+    /// TTS playback (`[tts]` section, sherpa-onnx CLI subprocess). Off by
+    /// default; the binary is a deployment asset.
+    #[serde(default)]
+    pub tts: streaming::tts::TtsConfig,
+
+    /// Alarm-image description (`[vlm]` section, Qwen3-VL GGUF via
+    /// llama.cpp mtmd). Off by default; workstation-class only.
+    #[serde(default)]
+    pub vlm: streaming::vlm::VlmConfig,
 }
 impl AppConfig {
     /// Load configuration from a TOML file.
@@ -387,6 +417,21 @@ impl AppConfig {
                     "ai.confidence_threshold: must be within [0, 1], got {}",
                     self.ai.confidence_threshold
                 );
+            }
+        }
+        // Audio AI section
+        if self.audio_ai.enabled {
+            if !(0.01..=1.0).contains(&self.audio_ai.threshold) {
+                anyhow::bail!(
+                    "audio_ai.threshold: must be within (0, 1], got {}",
+                    self.audio_ai.threshold
+                );
+            }
+            if self.audio_ai.classes.is_empty() {
+                anyhow::bail!("audio_ai.classes: must not be empty when audio_ai.enabled");
+            }
+            if self.audio_ai.cooldown_secs == 0 {
+                anyhow::bail!("audio_ai.cooldown_secs: must be > 0, got 0");
             }
         }
         Ok(())

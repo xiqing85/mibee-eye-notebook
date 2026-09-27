@@ -2,6 +2,8 @@
 // Device schemas differ — the editor renders whatever document it receives.
 
 import { api, refreshCapabilities } from './api.js';
+import { updateZonesVisibility } from './zones.js';
+import { updateChatVisibility } from './chat.js';
 import { store, hasCap } from './store.js';
 import { $, toast, setBtnLoading, confirmDlg } from './ui.js';
 import { t, cfgLabel } from './i18n.js';
@@ -295,6 +297,8 @@ export async function handleSave() {
     // Capabilities may have flipped (e.g. recording enabled) — refresh.
     await refreshCapabilities();
     initImaging();
+    updateZonesVisibility();
+    updateChatVisibility();
     // Point the user at the restart entry when edited sections need it —
     // unless the device applied the camera section via an in-place camera
     // restart (Go dialect, applied:"camera_restart"): that section is

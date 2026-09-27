@@ -120,3 +120,90 @@ enabled = false
 model_path = "models/nanodet-m.onnx"
 confidence_threshold = 0.5
 interval_ms = 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# On-device sound-event detection (YAMNet + Silero VAD, `[audio_ai]`).
+# Off by default — the microphone is privacy-sensitive input, so continuous
+# listening is opt-in. Fired events ride the `alarm` SSE event with
+# source:"audio" (plus class/score) and the GB28181 Alarm NOTIFY, exactly
+# like visual alarms. Requires ONNX Runtime at run time (like `[ai]`).
+[audio_ai]
+enabled = false
+# device = "default"   # input device name substring
+# classes = ["Dog","Bark","Yip","Howl","Bow-wow","Baby cry, infant cry","Screaming","Shout","Glass","Shatter","Breaking","Smoke detector, smoke alarm","Fire alarm","Siren","Knock"]
+# threshold = 0.3      # voted score (mean of 3 windows) needed to fire
+# cooldown_secs = 30   # per-class cooldown
+# model_path = "models/audio/yamnet.onnx"
+# vad_model_path = "models/audio/silero_vad.onnx"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# On-device OCR (PP-OCRv5 mobile, `[ocr]`). Off by default. When enabled,
+# POST a JPEG to /api/ocr to recognize text (Chinese + English) in it.
+[ocr]
+enabled = false
+# det_path = "models/ocr/ch_PP-OCRv4_det_infer.onnx"
+# rec_path = "models/ocr/ppocrv5_mobile_rec.onnx"
+# dict_path = "models/ocr/ppocrv5_dict.txt"
+# max_side = 960
+# det_threshold = 0.3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice interaction (`[voice]`): wake word (sherpa-onnx KWS zipformer,
+# keywords.txt — "小蜜蜂" appended by default) + offline transcription of
+# the utterance that follows (paraformer zh int8). Off by default and
+# requires a binary built with the `voice` feature. Completed interactions
+# are reported as SSE `voice_transcript` events.
+[voice]
+enabled = false
+# kws_encoder = "models/voice/kws/encoder.int8.onnx"
+# kws_decoder = "models/voice/kws/decoder.int8.onnx"
+# kws_joiner = "models/voice/kws/joiner.int8.onnx"
+# kws_tokens = "models/voice/kws/tokens.txt"
+# keywords_file = "models/voice/kws/keywords.txt"
+# keywords_threshold = 0.25
+# keywords_score = 1.0
+# paraformer_model = "models/voice/paraformer/model.int8.onnx"
+# paraformer_tokens = "models/voice/paraformer/tokens.txt"
+# capture_secs = 4
+# num_threads = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local LLM dialogue (`[llm]`, llama.cpp + Qwen3 GGUF). Off by default and
+# requires a binary built with the `llm` feature. Serves POST /api/chat and
+# answers voice interactions when both are enabled.
+[llm]
+enabled = false
+# model_path = "models/llm/qwen3-0.6b-q8_0.gguf"
+# n_ctx = 1024
+# n_threads = 2
+# max_tokens = 200
+# no_think = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TTS playback (`[tts]`): the sherpa-onnx-offline-tts CLI as a subprocess
+# (keeps the GPL espeak-ng link out of this binary). Speaks LLM replies
+# when voice + llm + tts are all enabled. Off by default.
+[tts]
+enabled = false
+# binary = "tmp/sherpa-libs/tools-bin/bin/sherpa-onnx-offline-tts"
+# model = "models/voice/melo/model.onnx"
+# lexicon = "models/voice/melo/lexicon.txt"
+# tokens = "models/voice/melo/tokens.txt"
+# dict_dir = "models/voice/melo/dict"
+# rule_fsts = "models/voice/melo/number.fst,models/voice/melo/date.fst"
+# player = "aplay -q"
+
+# Alarm-image descriptions (SPEC appendix A #23): when a visual alarm
+# fires, the triggering frame is described by Qwen3-VL and the sentence
+# arrives as an `alarm_description` SSE event. Event-triggered, never
+# polled; the alarm itself never waits for the description. Requires a
+# `vlm`-feature build and an AVX2-class CPU (llama.cpp GGML kernels) —
+# on weaker hosts leave disabled (fail-open).
+[vlm]
+enabled = false
+# model_path = "models/vlm/qwen3-vl-2b-instruct-q4_k_m.gguf"
+# mmproj_path = "models/vlm/mmproj-qwen3-vl-2b-instruct-q8_0.gguf"
+# n_ctx = 2048
+# n_threads = 2
+# max_tokens = 100
+# prompt = "这是安防摄像头的告警画面。请用一句中文描述画面里发生了什么。"
