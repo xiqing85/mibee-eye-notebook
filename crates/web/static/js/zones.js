@@ -273,7 +273,7 @@ function commitDraft() {
 
 async function saveZones() {
   const id = cameraId();
-  const res = await api.put(`/api/cameras/${encodeURIComponent(id)}/zones`, { zones: editZones });
+  const res = await api.put(`/api/cameras/${encodeURIComponent(id)}/zones`, editZones);
   if (!res.ok) { toast(t('saveFailed'), 'error'); return; }
   toast(t('zonesSaved'), 'success');
   closeZonesEditor();
