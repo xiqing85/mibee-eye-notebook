@@ -16,9 +16,12 @@ export function aiModelsEnabled() {
 
 async function refreshModels() {
   if (!aiModelsEnabled()) return;
-  const data = await api.get('/api/ai/models').catch(() => null);
-  if (!data) return;
-  renderModelSelect(data);
+  // api.get returns the request wrapper ({ok, data}); the renderer wants
+  // the unwrapped payload — passing the wrapper left the select empty and
+  // the upload button hidden everywhere (found by the mock panel probe).
+  const r = await api.get('/api/ai/models').catch(() => null);
+  if (!r || !r.ok || !r.data) return;
+  renderModelSelect(r.data);
 }
 
 function wireUpload(store2) {
