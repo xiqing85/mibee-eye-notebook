@@ -53,3 +53,25 @@ jobs:
       - uses: actions/checkout@v4
       - name: Hardcoded-value gate (configurable values must come from config)
         run: tools/check-hardcode.sh
+
+  identity:
+    # 身份门禁（2026-09-27）：公开历史只允许已验证的 xiqing85 noreply 身份
+    # （324791119）。捏造的 noreply 数字 ID 曾把陌生账号挂上贡献者列表。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Identity allowlist (verified xiqing85 noreply only)
+        run: |
+          ok="324791119+xiqing85@users.noreply.github.com"
+          viol=$(git log --format="%ae%n%(trailers:key=Co-authored-by,valueonly)" \
+            | grep -oE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+" | sort -u \
+            | grep -vxF -e "$ok" -e "clio-agent@sisyphuslabs.ai" || true)
+          violc=$(git log --format="%ce" \
+            | grep -oE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+" | sort -u \
+            | grep -vxF -e "$ok" -e "noreply@github.com" || true)
+          if [ -n "$viol$violc" ]; then
+            echo "::error::Non-allowlisted identity emails — author/trailer [$viol] committer [$violc]"
+            exit 1
+          fi
