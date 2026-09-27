@@ -67,7 +67,7 @@ jobs:
           ok="324791119+xiqing85@users.noreply.github.com"
           viol=$(git log --format="%ae%n%(trailers:key=Co-authored-by,valueonly)" \
             | grep -oE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+" | sort -u \
-            | grep -vxF -e "$ok" -e "xiqing85@users.noreply.github.com" -e "clio-agent@sisyphuslabs.ai" || true)
+            | grep -vxF -e "$ok" -e "xiqing85@users.noreply.github.com" || true)
           violc=$(git log --format="%ce" \
             | grep -oE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+" | sort -u \
             | grep -vxF -e "$ok" -e "xiqing85@users.noreply.github.com" -e "noreply@github.com" || true)
