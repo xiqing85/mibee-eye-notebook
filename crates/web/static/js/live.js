@@ -273,6 +273,11 @@ function startMse(cameraIdArg, onGiveUp) {
   let ms = null, sb = null, queue = [], abort = null, stall = null, pruning = false;
   let watchdog = null, lastCt = -1, stuckTicks = 0;
   let refetching = false;
+  // fetchStream is declared inside onOpen (buildPlayer); the
+  // transport-recovery backoff below runs in this scope, so it must
+  // go through the slot onOpen fills — calling the name directly is
+  // a ReferenceError and the seamless refetch never fired.
+  let fetchStreamFn = null;
 
   function abortFetch() {
     if (abort) { try { abort.abort(); } catch (_) { /* already closed */ } abort = null; }
@@ -312,7 +317,7 @@ function startMse(cameraIdArg, onGiveUp) {
     const backoff = Math.min(MAX_BACKOFF_MS, 250 * 2 ** Math.min(state.failures - 1, 4));
     setTimeout(() => {
       refetching = false;
-      if (!state.dead) fetchStream();
+      if (!state.dead && fetchStreamFn) fetchStreamFn();
     }, backoff);
   }
 
@@ -501,6 +506,7 @@ function startMse(cameraIdArg, onGiveUp) {
       }
     }
 
+    fetchStreamFn = fetchStream;
     fetchStream();
   }
 

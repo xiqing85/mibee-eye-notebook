@@ -149,18 +149,37 @@ pub async fn list_video_device_formats(
 pub async fn list_audio_devices(
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
-    let devices = match tokio::task::spawn_blocking(capture::audio::enumerate_devices).await {
+    list_audio_devices_with(capture::audio::enumerate_devices).await
+}
+
+async fn list_audio_devices_with(
+    enumerate: fn() -> anyhow::Result<Vec<capture::audio::AudioDeviceInfo>>,
+) -> impl IntoResponse {
+    let devices = match tokio::task::spawn_blocking(enumerate).await {
         Ok(Ok(d)) => d,
+        // Fail-open: a host that cannot enumerate audio inputs (user
+        // service without device access, headless CI) reports an empty
+        // list — the endpoint contract already says the array may be
+        // empty, and the 500 broke the devices view everywhere audio
+        // access was missing (found by the browser walkthrough on
+        // :8443, 2026-09-27).
         Ok(Err(e)) => {
-            tracing::error!(error = %e, "failed to enumerate audio devices");
-            return ApiError::internal("failed to enumerate audio devices").into_response();
+            tracing::warn!(error = %e, "audio enumeration failed — reporting no devices (fail-open)");
+            Vec::new()
         }
         Err(e) => {
-            tracing::error!(error = %e, "spawn_blocking join error for audio enumeration");
-            return ApiError::internal("failed to enumerate audio devices").into_response();
+            tracing::warn!(error = %e, "audio enumeration join error — reporting no devices");
+            Vec::new()
         }
     };
 
+    // cpal surfaces every ALSA PCM plugin as a device with tens of
+    // thousands of rate/format rows (rate-converter plugins alone list
+    // ~15k configs each) — a multi-megabyte payload that blew the
+    // envelope middleware's body limit and 500'd the devices view. The
+    // UI only lists device names; keep a few config rows per device as
+    // a representative hint.
+    const MAX_CONFIGS_PER_DEVICE: usize = 8;
     let response: Vec<AudioDeviceResponse> = devices
         .into_iter()
         .map(|d| AudioDeviceResponse {
@@ -168,6 +187,7 @@ pub async fn list_audio_devices(
             supported_configs: d
                 .supported_configs
                 .into_iter()
+                .take(MAX_CONFIGS_PER_DEVICE)
                 .map(|c| AudioConfigResponse {
                     channels: c.channels,
                     min_sample_rate: c.min_sample_rate,
@@ -205,18 +225,62 @@ mod tests {
         );
     }
 
-    /// Verify that `list_audio_devices` compiles and returns an acceptable
-    /// status code.
+    /// `list_audio_devices` is always 200 — enumeration failure degrades
+    /// to an empty list (fail-open), never a 500.
     #[tokio::test]
     async fn test_list_audio_devices_returns_ok() {
         let user = AuthenticatedUser("test".into());
         let ext = Extension(user);
 
         let resp = list_audio_devices(ext).await.into_response();
-        let status = resp.status();
-        assert!(
-            status == StatusCode::OK || status == StatusCode::INTERNAL_SERVER_ERROR,
-            "expected 200 or 500, got {status}"
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// ALSA plugin "devices" report tens of thousands of config rows —
+    /// the response must stay bounded (envelope middleware buffers at
+    /// most 4MB; a raw dump 500'd the devices view on :8443).
+    #[tokio::test]
+    async fn test_list_audio_devices_caps_configs() {
+        fn many_configs() -> anyhow::Result<Vec<capture::audio::AudioDeviceInfo>> {
+            Ok(vec![capture::audio::AudioDeviceInfo {
+                name: "rate converter plugin".into(),
+                supported_configs: (0..20_000)
+                    .map(|_| capture::audio::AudioConfigInfo {
+                        channels: 2,
+                        min_sample_rate: 44_100.0,
+                        max_sample_rate: 48_000.0,
+                        sample_format: "F32".into(),
+                    })
+                    .collect(),
+            }])
+        }
+        let resp = list_audio_devices_with(many_configs).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .expect("read body");
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(v.as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            v[0]["supported_configs"].as_array().map(Vec::len),
+            Some(8),
+            "configs must be capped to 8 per device"
         );
+    }
+
+    /// An environment with no enumerable audio inputs (user service
+    /// without device access) must answer 200 with an empty array, not
+    /// 500 — regression for the :8443 devices-view breakage.
+    #[tokio::test]
+    async fn test_list_audio_devices_fail_open_empty() {
+        fn no_audio() -> anyhow::Result<Vec<capture::audio::AudioDeviceInfo>> {
+            Err(anyhow::anyhow!("no audio host"))
+        }
+        let resp = list_audio_devices_with(no_audio).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert_eq!(body.as_ref(), b"[]");
     }
 }
