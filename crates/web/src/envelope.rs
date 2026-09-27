@@ -42,7 +42,12 @@ pub async fn envelope(req: Request<Body>, next: Next) -> Response {
     let (mut parts, body) = resp.into_parts();
     let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(b) => b,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            // Loud, enveloped failure — the silent bare 500 hid this for
+            // months (an oversized audio-device dump on :8443).
+            tracing::error!(path = %path, error = %e, "envelope: response body exceeds limit");
+            return crate::errors::ApiError::internal("response too large").into_response();
+        }
     };
     let inner: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
