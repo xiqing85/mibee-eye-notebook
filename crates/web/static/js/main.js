@@ -1,7 +1,7 @@
 // App bootstrap: auth state machine → capability discovery → view wiring.
 
 import { api, onSessionExpired, refreshCapabilities } from './api.js';
-import { store, setLang } from './store.js';
+import { store, setLang, hasCap } from './store.js';
 import { $, toast, confirmDlg } from './ui.js';
 import { t, applyLang } from './i18n.js';
 import { icon, initIcons } from './icons.js';
@@ -10,7 +10,9 @@ import { AuthState, detectAuthState, setAuthMode, initAuth, handleLogout } from 
 import { connectEvents, disconnectEvents } from './sse.js';
 import { initLive, startLive, stopLive, refreshCameraSelect, renderDetections } from './live.js';
 import { initAi, handleModelChanged } from './ai.js';
-import { handleAlarmEvent } from './alarm.js';
+import { handleAlarmEvent, handleAlarmDescription, handleVoiceTranscript } from './alarm.js';
+import { initZones, updateZonesVisibility, refreshZones, renderZonesOverlay } from './zones.js';
+import { initChat, updateChatVisibility, handleChatReplyEvent } from './chat.js';
 import { initPtz, fetchPtz, updatePtzVisibility, handlePtzEvent } from './ptz.js';
 import { initImaging, handleParamChanged } from './imaging.js';
 import { refreshCameras, renderCameras, initCameras, stopCameras, announceRecording } from './cameras.js';
@@ -59,6 +61,8 @@ async function enterApp() {
   await refreshCapabilities();
   await refreshCameras();
   applyLang();
+  updateZonesVisibility();
+  updateChatVisibility();
   initNav();
   initLive();
   initPtz();
@@ -68,13 +72,20 @@ async function enterApp() {
   initStatus();
   initDevices();
   initAi();
+  initZones();
+  initChat();
   refreshCameraSelect();
   if (store.ptzEnabled) fetchPtz();
+  if (hasCap('zones')) refreshZones();
 
   connectEvents({
-    ai_detection: (p) => renderDetections(p.detections || []),
+    ai_detection: (p) => { renderDetections(p.detections || []); renderZonesOverlay(); },
     ai_model_changed: handleModelChanged,
     alarm: handleAlarmEvent,
+    alarm_description: handleAlarmDescription,
+    voice_transcript: handleVoiceTranscript,
+    chat_reply: handleChatReplyEvent,
+    zone_event: () => { /* zone events ride the alarm/toast path */ },
     param_changed: handleParamChanged,
     recording: (p) => {
       if (p) announceRecording(!!p.active, 'info');

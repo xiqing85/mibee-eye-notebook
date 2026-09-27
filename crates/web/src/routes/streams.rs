@@ -364,6 +364,22 @@ mod tests {
                 streaming::ai::AiConfig::default(),
                 None,
             )),
+            audio_ai: Arc::new(streaming::audio_ai::AudioAiEngine::from_config(
+                &streaming::audio_ai::AudioAiConfig::default(),
+            )),
+            zones: crate::zones::new_shared(),
+            ocr: Arc::new(streaming::ocr::OcrEngine::from_config(
+                &streaming::ocr::OcrConfig::default(),
+            )),
+            voice: Arc::new(streaming::voice::VoiceEngine::from_config(
+                &streaming::voice::VoiceConfig::default(),
+            )),
+            chat: Arc::new(streaming::llm::ChatEngine::from_config(
+                &streaming::llm::LlmConfig::default(),
+            )),
+            vlm: Arc::new(streaming::vlm::VlmEngine::from_config(
+                &streaming::vlm::VlmConfig::default(),
+            )),
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),

@@ -40,6 +40,47 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libv4l-dev libasound2-dev libclang-dev
       - run: cargo test --workspace
 
+  feature-matrix:
+    # 跨 feature 编译面（AI 扩展规划横切项）：接口改动必须全矩阵过
+    # 一遍。voice+llm 腿抓跨 feature 静态初始化回归（e02c2a6 一类）。
+    # 注意 workspace 级 --no-default-features 不传导给成员 crate 的
+    # 默认特性，no-ai 腿须按 -p streaming 指定。
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-ai
+            flags: "-p streaming --no-default-features"
+          - name: voice
+            flags: "--features voice"
+            sherpa: true
+          - name: llm
+            flags: "--features llm"
+          - name: voice-plus-llm
+            flags: "--features voice,llm"
+            sherpa: true
+          - name: vlm
+            flags: "--features vlm"
+    name: feature-matrix (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libv4l-dev libasound2-dev libclang-dev
+      - name: Fetch sherpa-onnx static libs
+        if: matrix.sherpa
+        run: |
+          curl -sSfL -o /tmp/sherpa.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-linux-x64-static-lib.tar.bz2
+          mkdir -p tmp/sherpa-libs
+          tar -xjf /tmp/sherpa.tar.bz2 -C tmp/sherpa-libs
+      - name: cargo check
+        run: cargo check --all-targets ${{ matrix.flags }}
+        env:
+          SHERPA_ONNX_LIB_DIR: ${{ github.workspace }}/tmp/sherpa-libs/sherpa-onnx-v1.13.8-linux-x64-static-lib/lib
+
   hygiene:
     runs-on: ubuntu-latest
     steps:

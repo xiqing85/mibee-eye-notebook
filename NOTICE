@@ -13,3 +13,30 @@ crate with the `source` feature and built from source at compile time).
 Optional at runtime: ONNX Runtime (https://github.com/microsoft/onnxruntime,
 MIT License) is loaded dynamically when AI detection is enabled — it is not
 distributed as part of this product's release artifacts.
+
+Optional build-time features (not part of default builds or release
+artifacts):
+
+- The `voice` feature statically links sherpa-onnx
+  (https://github.com/k2-fsa/sherpa-onnx, Apache License 2.0), which bundles
+  kaldi-native-fbank, espeak-ng (GPL-3.0 with exceptions) and ONNX Runtime
+  phonemization data. The GPL espeak-ng code is only reachable through the
+  separately distributed `sherpa-onnx-offline-tts` binary (see below), never
+  linked into this product's binary.
+- The `llm` feature builds llama.cpp via the llama-cpp-2 crate
+  (https://github.com/utilityai/llama-cpp-rs, MIT OR Apache-2.0; llama.cpp
+  itself is MIT licensed).
+
+Optional deployment assets (downloaded per models/README.md, never
+distributed with this product):
+
+- NanoDet-Plus, YAMNet and PP-OCRv4/v5 ONNX models (Apache License 2.0);
+  Silero VAD (MIT License).
+- k2-fsa sherpa-onnx keyword/ASR models (Apache License 2.0) and the
+  `sherpa-onnx-offline-tts` binary (Apache License 2.0; statically links
+  GPL espeak-ng phonemization — invoked strictly as a subprocess, source:
+  https://github.com/k2-fsa/sherpa-onnx).
+- MeloTTS zh_en model package (MIT License,
+  https://github.com/myshell-ai/MeloTTS).
+- Qwen3 GGUF language model (Apache License 2.0,
+  https://github.com/QwenLM/Qwen3).

@@ -27,6 +27,8 @@ pub mod ort;
 pub mod postprocess;
 pub mod preprocess;
 pub mod registry;
+pub mod tracking;
+pub mod zones;
 
 pub use registry::{ActivateError, DetectorFactory, Registry};
 
@@ -61,12 +63,25 @@ pub struct CameraDetections {
 }
 
 /// Event published on every completed inference; bridged to the SSE
-/// `ai_detection` event (SPEC v1 §6) by the web layer.
+/// `ai_detection` event (SPEC v1 §4.6/§6) by the web layer.
 #[derive(Debug, Clone, Serialize)]
 pub struct DetectionEvent {
     pub camera_id: String,
     pub detections: Vec<Detection>,
     pub frame_number: u64,
+    /// The exact frame this inference ran on (never serialized — the SSE
+    /// `ai_detection` payload stays unchanged). Consumers use it for
+    /// event-triggered image analysis (VLM alarm descriptions).
+    #[serde(skip)]
+    pub jpeg: Option<std::sync::Arc<[u8]>>,
+}
+
+/// Per-camera tracker state after an inference (drives the zone event
+/// engine in main.rs; not part of the SPEC v1 wire format).
+#[derive(Debug, Clone)]
+pub struct TrackEvent {
+    pub camera_id: String,
+    pub tracks: Vec<tracking::Track>,
 }
 
 /// `[ai]` configuration section (SPEC v1 §5 device-specific config).
@@ -196,6 +211,7 @@ pub struct AiEngine {
     inactive_reason: Option<String>,
     state: Arc<AiState>,
     event_tx: broadcast::Sender<DetectionEvent>,
+    track_tx: broadcast::Sender<TrackEvent>,
 }
 
 impl AiEngine {
@@ -271,6 +287,7 @@ impl AiEngine {
             None
         };
         let (event_tx, _) = broadcast::channel(64);
+        let (track_tx, _) = broadcast::channel(64);
         let active_model = config.model.clone();
         Self {
             config,
@@ -281,6 +298,7 @@ impl AiEngine {
             inactive_reason,
             state: Arc::new(AiState::default()),
             event_tx,
+            track_tx,
         }
     }
 
@@ -378,6 +396,12 @@ impl AiEngine {
         self.event_tx.subscribe()
     }
 
+    /// Subscribe to per-inference track states (zone event engine input).
+    #[must_use]
+    pub fn subscribe_tracks(&self) -> broadcast::Receiver<TrackEvent> {
+        self.track_tx.subscribe()
+    }
+
     /// Spawn the per-camera inference worker.
     ///
     /// The worker consumes the camera's JPEG preview broadcast, runs one
@@ -401,6 +425,8 @@ impl AiEngine {
         let interval = Duration::from_millis(self.config.interval_ms.max(1));
         let state = Arc::clone(&self.state);
         let event_tx = self.event_tx.clone();
+        let track_tx = self.track_tx.clone();
+        let mut tracker = tracking::Tracker::new(tracking::TrackerParams::default());
 
         info!(%camera_id, model = %startup_name, interval_ms = interval.as_millis() as u64, "ai: detection worker started");
 
@@ -422,6 +448,9 @@ impl AiEngine {
                             .read()
                             .clone()
                             .expect("worker keeps running only while a detector is loaded");
+                        // Keep a handle for the event (the closure below
+                        // moves the Arc into the blocking task).
+                        let frame = std::sync::Arc::clone(&jpeg);
                         let result = tokio::task::spawn_blocking(move || detect.detect(&jpeg))
                             .await
                             .unwrap_or_else(|e| Err(anyhow::anyhow!("inference task failed: {e}")));
@@ -437,10 +466,16 @@ impl AiEngine {
                                     frame_number,
                                     timestamp,
                                 });
+                                let tracks = tracker.update(&detections);
                                 let _ = event_tx.send(DetectionEvent {
                                     camera_id: camera_id.clone(),
                                     detections,
                                     frame_number,
+                                    jpeg: Some(frame),
+                                });
+                                let _ = track_tx.send(TrackEvent {
+                                    camera_id: camera_id.clone(),
+                                    tracks,
                                 });
                             }
                             Err(e) => {

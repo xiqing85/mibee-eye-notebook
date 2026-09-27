@@ -44,6 +44,34 @@ use security::middleware::AuthenticatedUser;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum CameraEvent {
+    /// An LLM reply (SPEC appendix A notebook dialect: `chat_reply`) —
+    /// either the voice auto-reply or a POST /api/chat answer.
+    ChatReply {
+        /// `"voice"` (auto-reply to a transcript) — HTTP replies return
+        /// directly and do not ride the SSE bus.
+        source: String,
+        reply: String,
+        timestamp_ms: u64,
+    },
+    /// A voice interaction completed (SPEC appendix A notebook dialect:
+    /// `voice_transcript`): wake word detected + utterance transcribed.
+    VoiceTranscript {
+        keyword: String,
+        transcript: String,
+        timestamp_ms: u64,
+    },
+    /// A zone event fired (SPEC appendix A notebook dialect:
+    /// `zone_event`). Produced by the zone engine in main.rs from tracked
+    /// detections crossing user-drawn zones.
+    ZoneEvent {
+        camera_id: String,
+        zone: String,
+        /// `intrusion` | `loiter` | `line_cross_forward` | `line_cross_backward`
+        event: String,
+        track_id: u64,
+        label: String,
+        timestamp_ms: u64,
+    },
     /// A new camera was discovered (plugged in or detected on startup).
     CameraAdded {
         camera_id: String,
@@ -67,13 +95,31 @@ pub enum CameraEvent {
         detections: Vec<streaming::ai::Detection>,
         frame_number: u64,
     },
-    /// An AI alarm fired on a camera (SPEC v1 §6 `alarm`). Produced by
-    /// the alarm bridge in main.rs on a detection rising edge, gated by
-    /// the per-camera cooldown.
+    /// An alarm fired (SPEC v1 §6 `alarm`). Produced by the alarm bridge
+    /// in main.rs on a detection rising edge (source `"ai"`) or by the
+    /// audio-event engine on a voted sound-class rising edge
+    /// (source `"audio"`, carrying the class and its score).
     Alarm {
         camera_id: String,
         targets: usize,
         timestamp_ms: u64,
+        /// `"ai"` (visual detection) or `"audio"` (sound event).
+        source: String,
+        /// Sound class (YAMNet display name) — audio alarms only.
+        class: Option<String>,
+        /// Voted sound-class score — audio alarms only.
+        score: Option<f32>,
+    },
+    /// A VLM description of an alarm frame arrived (SPEC appendix A #23
+    /// `alarm_description`). Emitted asynchronously after the visual
+    /// alarm — the alarm itself never waits for the description.
+    AlarmDescription {
+        camera_id: String,
+        /// Timestamp of the alarm this description belongs to (join key
+        /// on the browser side).
+        alarm_timestamp_ms: u64,
+        description: String,
+        elapsed_s: f64,
     },
 }
 
@@ -124,6 +170,48 @@ pub async fn sse_events(
 /// Convert a [`CameraEvent`] into an Axum SSE [`Event`].
 fn event_to_sse(event: CameraEvent) -> Event {
     match &event {
+        CameraEvent::ChatReply {
+            source,
+            reply,
+            timestamp_ms,
+        } => Event::default().event("chat_reply").data(
+            serde_json::json!({
+                "source": source,
+                "reply": reply,
+                "timestamp": timestamp_ms,
+            })
+            .to_string(),
+        ),
+        CameraEvent::VoiceTranscript {
+            keyword,
+            transcript,
+            timestamp_ms,
+        } => Event::default().event("voice_transcript").data(
+            serde_json::json!({
+                "keyword": keyword,
+                "transcript": transcript,
+                "timestamp": timestamp_ms,
+            })
+            .to_string(),
+        ),
+        CameraEvent::ZoneEvent {
+            camera_id,
+            zone,
+            event,
+            track_id,
+            label,
+            timestamp_ms,
+        } => Event::default().event("zone_event").data(
+            serde_json::json!({
+                "camera_id": camera_id,
+                "zone": zone,
+                "event": event,
+                "track_id": track_id,
+                "label": label,
+                "timestamp": timestamp_ms,
+            })
+            .to_string(),
+        ),
         CameraEvent::CameraAdded {
             camera_id,
             device_index,
@@ -169,13 +257,36 @@ fn event_to_sse(event: CameraEvent) -> Event {
             camera_id,
             targets,
             timestamp_ms,
-        } => Event::default().event("alarm").data(
-            serde_json::json!({
+            source,
+            class,
+            score,
+        } => {
+            let mut payload = serde_json::json!({
                 "camera_id": camera_id,
                 "active": true,
-                "source": "ai",
+                "source": source,
                 "targets": targets,
                 "timestamp": timestamp_ms,
+            });
+            if let Some(class) = class {
+                payload["class"] = serde_json::json!(class);
+            }
+            if let Some(score) = score {
+                payload["score"] = serde_json::json!(score);
+            }
+            Event::default().event("alarm").data(payload.to_string())
+        }
+        CameraEvent::AlarmDescription {
+            camera_id,
+            alarm_timestamp_ms,
+            description,
+            elapsed_s,
+        } => Event::default().event("alarm_description").data(
+            serde_json::json!({
+                "camera_id": camera_id,
+                "alarm_timestamp": alarm_timestamp_ms,
+                "description": description,
+                "elapsed_s": elapsed_s,
             })
             .to_string(),
         ),

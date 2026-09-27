@@ -47,6 +47,19 @@ pub struct AppRouterState {
     /// AI detection engine (inactive when disabled/unavailable — never None
     /// so capability and detections handlers can treat it uniformly).
     pub ai: Arc<streaming::ai::AiEngine>,
+    /// Audio-event engine (inactive when disabled/unavailable — same
+    /// uniform-fail-open contract as `ai`).
+    pub audio_ai: Arc<streaming::audio_ai::AudioAiEngine>,
+    /// Shared zone map (db-mirrored; read by the zone-event engine).
+    pub zones: crate::zones::SharedZones,
+    /// OCR engine (inactive when disabled/unavailable — fail-open).
+    pub ocr: Arc<streaming::ocr::OcrEngine>,
+    /// Voice interaction engine (inactive without `voice` feature/models).
+    pub voice: Arc<streaming::voice::VoiceEngine>,
+    /// Local LLM dialogue engine (inactive without `llm` feature/model).
+    pub chat: Arc<streaming::llm::ChatEngine>,
+    /// VLM alarm-description engine (inactive without `llm`/models).
+    pub vlm: Arc<streaming::vlm::VlmEngine>,
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +151,12 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let protocol_runtime = state.protocol_runtime.clone();
     let advertised_host = state.advertised_host.clone();
     let ai = state.ai.clone();
+    let audio_ai = state.audio_ai.clone();
+    let zones = state.zones.clone();
+    let ocr = state.ocr.clone();
+    let voice = state.voice.clone();
+    let chat = state.chat.clone();
+    let vlm = state.vlm.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -172,6 +191,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // Live preview (MJPEG stream for <img>)
         .route("/api/cameras/{id}/live", get(routes::streams::live_preview))
         // AI detections (SPEC v1 §4.6 + per-camera multi-camera dialect)
+        .route("/api/ocr", post(routes::ocr::run_ocr))
+        .route("/api/chat", post(routes::chat::chat))
+        .route("/api/cameras/{id}/zones", get(crate::zones::get_zones))
+        .route("/api/cameras/{id}/zones", put(crate::zones::put_zones))
         .route("/api/detections", get(routes::detections::get_detections))
         .route(
             "/api/cameras/{id}/detections",
@@ -268,6 +291,12 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(state.event_tx.clone()))
         .layer(Extension(advertised_host))
         .layer(Extension(ai))
+        .layer(Extension(audio_ai))
+        .layer(Extension(zones))
+        .layer(Extension(ocr))
+        .layer(Extension(voice))
+        .layer(Extension(chat))
+    .layer(Extension(vlm))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
         // HSTS
@@ -305,6 +334,22 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
             streaming::ai::AiConfig::default(),
             None,
         )),
+        audio_ai: Arc::new(streaming::audio_ai::AudioAiEngine::from_config(
+            &streaming::audio_ai::AudioAiConfig::default(),
+        )),
+        zones: crate::zones::new_shared(),
+        ocr: Arc::new(streaming::ocr::OcrEngine::from_config(
+            &streaming::ocr::OcrConfig::default(),
+        )),
+        voice: Arc::new(streaming::voice::VoiceEngine::from_config(
+            &streaming::voice::VoiceConfig::default(),
+        )),
+        chat: Arc::new(streaming::llm::ChatEngine::from_config(
+            &streaming::llm::LlmConfig::default(),
+        )),
+        vlm: Arc::new(streaming::vlm::VlmEngine::from_config(
+            &streaming::vlm::VlmConfig::default(),
+        )),
     })
 }
 
@@ -340,6 +385,22 @@ pub async fn test_app_with_user() -> Router {
         ai: Arc::new(streaming::ai::AiEngine::from_parts(
             streaming::ai::AiConfig::default(),
             None,
+        )),
+        audio_ai: Arc::new(streaming::audio_ai::AudioAiEngine::from_config(
+            &streaming::audio_ai::AudioAiConfig::default(),
+        )),
+        zones: crate::zones::new_shared(),
+        ocr: Arc::new(streaming::ocr::OcrEngine::from_config(
+            &streaming::ocr::OcrConfig::default(),
+        )),
+        voice: Arc::new(streaming::voice::VoiceEngine::from_config(
+            &streaming::voice::VoiceConfig::default(),
+        )),
+        chat: Arc::new(streaming::llm::ChatEngine::from_config(
+            &streaming::llm::LlmConfig::default(),
+        )),
+        vlm: Arc::new(streaming::vlm::VlmEngine::from_config(
+            &streaming::vlm::VlmConfig::default(),
         )),
     })
 }
@@ -525,6 +586,12 @@ pub async fn run(
     protocol_runtime: Arc<Mutex<ProtocolRuntime>>,
     advertised_host: String,
     ai: Arc<streaming::ai::AiEngine>,
+    audio_ai: Arc<streaming::audio_ai::AudioAiEngine>,
+    zones: crate::zones::SharedZones,
+    ocr: Arc<streaming::ocr::OcrEngine>,
+    voice: Arc<streaming::voice::VoiceEngine>,
+    chat: Arc<streaming::llm::ChatEngine>,
+    vlm: Arc<streaming::vlm::VlmEngine>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -540,6 +607,12 @@ pub async fn run(
         event_tx: Arc::new(routes::events::new_event_bus()),
         advertised_host: Arc::new(advertised_host),
         ai,
+        audio_ai,
+        zones,
+        ocr,
+        voice,
+        chat,
+        vlm,
     };
     let app = build_app_with_state(state);
 
@@ -597,6 +670,12 @@ pub async fn run_with_shutdown(
     advertised_host: String,
     event_tx: Arc<routes::events::EventBus>,
     ai: Arc<streaming::ai::AiEngine>,
+    audio_ai: Arc<streaming::audio_ai::AudioAiEngine>,
+    zones: crate::zones::SharedZones,
+    ocr: Arc<streaming::ocr::OcrEngine>,
+    voice: Arc<streaming::voice::VoiceEngine>,
+    chat: Arc<streaming::llm::ChatEngine>,
+    vlm: Arc<streaming::vlm::VlmEngine>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -614,6 +693,12 @@ pub async fn run_with_shutdown(
         event_tx,
         advertised_host: Arc::new(advertised_host),
         ai,
+        audio_ai,
+        zones,
+        ocr,
+        voice,
+        chat,
+        vlm,
     };
     let app = build_app_with_state(state);
 

@@ -44,6 +44,16 @@ const DICT = {
     recordingStarted: '录像已开始', recordingStopped: '录像已停止',
     // Alarm (SPEC §6 rising-edge events)
     alarmTriggered: '告警：检测到 {n} 个目标',
+    alarmSound: '告警：声音 — {c}',
+    alarmDescription: '告警画面：{d}',
+    voiceHeard: '听到：{s}',
+    voiceReply: '回复：{s}',
+    zonesEditorTitle: '侦测区域', zoneKind: '类型', zoneKindIntrusion: '入侵区域',
+    zoneKindLine: '越线侦测', zoneName: '名称', zoneDwell: '停留告警(秒)',
+    zoneUndo: '撤销点', zoneClear: '清除', zoneAdd: '添加区域',
+    zoneNeedPoints: '至少需要 {n} 个点', zoneNeedName: '请输入区域名称',
+    zonesSaved: '区域已保存', zonesLoadFailed: '区域加载失败',
+    chatTitle: 'AI 对话', chatSend: '发送', chatPlaceholder: '输入消息…', chatFailed: '对话失败',
     // PTZ
     ptzControl: '云台控制', ptzEnableDesc: '在实时画面显示方向控制按钮',
     pan: '水平', tilt: '俯仰', zoom: '变焦',
@@ -186,6 +196,16 @@ const DICT = {
     recordingStarted: 'Recording started', recordingStopped: 'Recording stopped',
     // Alarm (SPEC §6 rising-edge events)
     alarmTriggered: 'Alarm: {n} target(s) detected',
+    alarmSound: 'Alarm: sound — {c}',
+    alarmDescription: 'Alarm frame: {d}',
+    voiceHeard: 'Heard: {s}',
+    voiceReply: 'Reply: {s}',
+    zonesEditorTitle: 'Detection zones', zoneKind: 'Kind', zoneKindIntrusion: 'Intrusion zone',
+    zoneKindLine: 'Tripwire', zoneName: 'Name', zoneDwell: 'Dwell alert (s)',
+    zoneUndo: 'Undo point', zoneClear: 'Clear', zoneAdd: 'Add zone',
+    zoneNeedPoints: 'At least {n} points required', zoneNeedName: 'Zone name required',
+    zonesSaved: 'Zones saved', zonesLoadFailed: 'Failed to load zones',
+    chatTitle: 'AI chat', chatSend: 'Send', chatPlaceholder: 'Type a message…', chatFailed: 'Chat failed',
     // PTZ
     ptzControl: 'PTZ Control', ptzEnableDesc: 'Show direction controls on the Live view',
     pan: 'Pan', tilt: 'Tilt', zoom: 'Zoom',
@@ -311,6 +331,9 @@ export function applyLang() {
   document.title = t('appTitle');
   document.querySelectorAll('[data-i18n]').forEach((node) => {
     node.textContent = t(node.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => {
+    node.setAttribute('placeholder', t(node.dataset.i18nPlaceholder));
   });
   document.querySelectorAll('.lang-btn').forEach((b) => {
     b.textContent = store.lang === 'zh' ? 'EN' : '中';

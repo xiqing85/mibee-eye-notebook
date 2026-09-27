@@ -129,6 +129,8 @@
         <span id="stream-reconnecting" class="stream-reconnect-chip hidden" data-i18n="reconnecting">Reconnecting…</span>
         <!-- AI detection overlay (extension: ai) -->
         <canvas id="detection-overlay" class="detection-box" aria-hidden="true"></canvas>
+        <!-- Zones overlay (extension: zones, SPEC appendix A #21) -->
+        <canvas id="zones-overlay" class="detection-box" aria-hidden="true"></canvas>
         <div class="stream-hud hud-left">
           <span class="live-dot" id="stream-live-dot" aria-hidden="true"></span>
           <span class="hud-live-label">LIVE</span>
@@ -157,6 +159,12 @@
                substream; rendered only when capabilities.substream. -->
           <div class="stream-flip">
             <button type="button" id="btn-quality" class="stream-ctl-btn hidden" aria-label="Quality" aria-pressed="false" title="Quality">HD</button>
+          </div>
+          <!-- Zones editor (extension: zones, SPEC appendix A #21) -->
+          <div class="stream-flip">
+            <button type="button" id="btn-zones-edit" class="stream-ctl-btn hidden" aria-label="Zones" title="Zones">
+              <svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 20 8.5v7L12 20.5 4 15.5v-7z"/><path d="M12 3.5 7 6.2l5 2.7 5-2.7M7 6.2v7L12 16v4.5M17 6.2v7L12 16"/></svg>
+            </button>
           </div>
           <div class="stream-actions">
             <button type="button" id="btn-snapshot" class="stream-ctl-btn" aria-label="Snapshot" title="Snapshot">
@@ -343,6 +351,57 @@
   </div>
 
   <!-- ===== Confirm Dialog ===== -->
+  <!-- Zones editor (extension: zones, SPEC appendix A #21) -->
+  <div id="zones-editor" class="confirm-overlay hidden">
+    <div class="zones-dialog">
+      <div class="modal-head">
+        <span data-i18n="zonesEditorTitle">Detection zones</span>
+        <button type="button" id="zones-close" class="tool-btn" aria-label="Close">✕</button>
+      </div>
+      <div class="zones-canvas-wrap"><canvas id="zones-edit-canvas"></canvas></div>
+      <div class="zones-controls">
+        <div class="field">
+          <label for="zones-kind" data-i18n="zoneKind">Kind</label>
+          <select id="zones-kind" class="camera-select">
+            <option value="intrusion" data-i18n="zoneKindIntrusion">Intrusion zone</option>
+            <option value="line_cross" data-i18n="zoneKindLine">Tripwire</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="zones-name" data-i18n="zoneName">Name</label>
+          <input id="zones-name" type="text" maxlength="32" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="zones-dwell" data-i18n="zoneDwell">Dwell (s)</label>
+          <input id="zones-dwell" type="number" min="0" max="600" value="0">
+        </div>
+        <div class="zones-btn-row">
+          <button type="button" id="zones-undo" class="tool-btn" data-i18n="zoneUndo">Undo point</button>
+          <button type="button" id="zones-clear" class="tool-btn" data-i18n="zoneClear">Clear</button>
+          <button type="button" id="zones-add" class="btn-primary" data-i18n="zoneAdd">Add zone</button>
+          <button type="button" id="zones-save" class="btn-primary" data-i18n="save">Save</button>
+        </div>
+        <ul id="zones-list" class="zones-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local chat panel (extension: chat, SPEC appendix A #22) -->
+  <button type="button" id="chat-fab" class="chat-fab hidden" aria-label="AI chat" title="AI chat">
+    <svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9.5h7M8.5 12h4.5"/></svg>
+  </button>
+  <div id="chat-panel" class="chat-panel hidden">
+    <div class="modal-head">
+      <span data-i18n="chatTitle">AI chat</span>
+      <button type="button" id="chat-close" class="tool-btn" aria-label="Close">✕</button>
+    </div>
+    <div id="chat-log" class="chat-log"></div>
+    <div class="chat-input-row">
+      <input id="chat-input" type="text" maxlength="500" autocomplete="off" data-i18n-placeholder="chatPlaceholder">
+      <button type="button" id="chat-send" class="btn-primary" data-i18n="chatSend">Send</button>
+    </div>
+  </div>
+
   <div id="confirm-overlay" class="confirm-overlay hidden">
     <div class="confirm-box" role="dialog" aria-modal="true" aria-labelledby="confirm-msg">
       <div class="confirm-icon" id="confirm-icon"></div>
