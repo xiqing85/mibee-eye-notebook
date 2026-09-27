@@ -48,16 +48,16 @@ impl Default for VlmConfig {
 /// VLM engine (fail-open: missing models, the memory guardrail, or a
 /// build without the `llm` feature leave it inactive).
 pub struct VlmEngine {
-    #[cfg_attr(not(feature = "llm"), allow(dead_code))]
+    #[cfg_attr(not(feature = "vlm"), allow(dead_code))]
     config: VlmConfig,
     active: bool,
     inactive_reason: String,
-    #[cfg(feature = "llm")]
+    #[cfg(feature = "vlm")]
     inner: Option<std::sync::Arc<VlmInner>>,
 }
 
 /// Loaded model + multimodal context pair.
-#[cfg(feature = "llm")]
+#[cfg(feature = "vlm")]
 struct VlmInner {
     model: llama_cpp_2::model::LlamaModel,
     mtmd: llama_cpp_2::mtmd::MtmdContext,
@@ -68,7 +68,7 @@ impl VlmEngine {
     #[must_use]
     pub fn from_config(config: &VlmConfig) -> Self {
         match Self::load(config) {
-            #[cfg(feature = "llm")]
+            #[cfg(feature = "vlm")]
             Ok(inner) => {
                 tracing::info!(model = %config.model_path, "vlm: description engine loaded");
                 Self {
@@ -78,7 +78,7 @@ impl VlmEngine {
                     inner: Some(std::sync::Arc::new(inner)),
                 }
             }
-            #[cfg(not(feature = "llm"))]
+            #[cfg(not(feature = "vlm"))]
             Ok(()) => unreachable!("non-llm load never succeeds"),
             Err(reason) => {
                 tracing::info!(%reason, "vlm: disabled");
@@ -86,14 +86,14 @@ impl VlmEngine {
                     config: config.clone(),
                     active: false,
                     inactive_reason: format!("{reason:#}"),
-                    #[cfg(feature = "llm")]
+                    #[cfg(feature = "vlm")]
                     inner: None,
                 }
             }
         }
     }
 
-    #[cfg(feature = "llm")]
+    #[cfg(feature = "vlm")]
     fn load(config: &VlmConfig) -> anyhow::Result<VlmInner> {
         use llama_cpp_2::mtmd::{MtmdContext, MtmdContextParams};
 
@@ -132,21 +132,18 @@ impl VlmEngine {
             &llama_cpp_2::model::params::LlamaModelParams::default(),
         )
         .map_err(|e| anyhow::anyhow!("load {}: {e}", config.model_path))?;
-        let mtmd = MtmdContext::init_from_file(
-            &config.mmproj_path,
-            &model,
-            &MtmdContextParams::default(),
-        )
-        .map_err(|e| anyhow::anyhow!("mmproj {}: {e:?}", config.mmproj_path))?;
+        let mtmd =
+            MtmdContext::init_from_file(&config.mmproj_path, &model, &MtmdContextParams::default())
+                .map_err(|e| anyhow::anyhow!("mmproj {}: {e:?}", config.mmproj_path))?;
         Ok(VlmInner { model, mtmd })
     }
 
-    #[cfg(not(feature = "llm"))]
+    #[cfg(not(feature = "vlm"))]
     fn load(config: &VlmConfig) -> anyhow::Result<()> {
         if !config.enabled {
             anyhow::bail!("disabled by configuration");
         }
-        anyhow::bail!("built without the `llm` feature")
+        anyhow::bail!("built without the `vlm` feature")
     }
 
     /// Whether descriptions are available.
@@ -167,26 +164,26 @@ impl VlmEngine {
     ///
     /// Inactive engine, image decode failure, or inference failure.
     pub fn describe_jpeg(&self, jpeg: &[u8]) -> anyhow::Result<String> {
-        #[cfg(feature = "llm")]
+        #[cfg(feature = "vlm")]
         {
             let Some(inner) = &self.inner else {
                 anyhow::bail!("vlm inactive: {}", self.inactive_reason);
             };
             self.run_describe(inner, jpeg)
         }
-        #[cfg(not(feature = "llm"))]
+        #[cfg(not(feature = "vlm"))]
         {
             let _ = jpeg;
             anyhow::bail!("vlm inactive: {}", self.inactive_reason)
         }
     }
 
-    #[cfg(feature = "llm")]
+    #[cfg(feature = "vlm")]
     fn run_describe(&self, inner: &VlmInner, jpeg: &[u8]) -> anyhow::Result<String> {
         use llama_cpp_2::context::params::LlamaContextParams;
         use llama_cpp_2::llama_batch::LlamaBatch;
-        use llama_cpp_2::mtmd::{MtmdBitmap, MtmdInputText};
         use llama_cpp_2::model::AddBos;
+        use llama_cpp_2::mtmd::{MtmdBitmap, MtmdInputText};
         use llama_cpp_2::token::LlamaToken;
 
         let backend = crate::llm::backend_shared();
@@ -230,9 +227,10 @@ impl VlmEngine {
             .model
             .str_to_token("\n", AddBos::Never)
             .map_err(|e| anyhow::anyhow!("vlm: newline tokenize: {e:?}"))?;
-        let nl = nl_tokens.first().copied().ok_or_else(|| {
-            anyhow::anyhow!("vlm: newline produced no tokens")
-        })?;
+        let nl = nl_tokens
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("vlm: newline produced no tokens"))?;
         let mut batch = LlamaBatch::new(1, 1);
         batch.add(nl, n_pos, &[0], true)?;
         ctx.decode(&mut batch)?;
@@ -293,8 +291,7 @@ pub fn selftest_vlm(path: &str) -> anyhow::Result<serde_json::Value> {
     if !engine.is_active() {
         anyhow::bail!("vlm inactive: {}", engine.inactive_reason());
     }
-    let jpeg = std::fs::read(path)
-        .map_err(|e| anyhow::anyhow!("read {path}: {e}"))?;
+    let jpeg = std::fs::read(path).map_err(|e| anyhow::anyhow!("read {path}: {e}"))?;
     let started = std::time::Instant::now();
     let description = engine.describe_jpeg(&jpeg)?;
     Ok(serde_json::json!({

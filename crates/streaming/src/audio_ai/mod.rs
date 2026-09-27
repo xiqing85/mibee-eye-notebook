@@ -31,13 +31,16 @@ pub mod state;
 pub mod wav;
 
 use std::sync::Arc;
+#[cfg(feature = "ai")]
 use std::time::Duration;
 
 use capture::audio_monitor::AudioChunk;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(feature = "ai")]
+use tracing::warn;
 
 /// YAMNet input window: 0.96 s of 16 kHz audio.
 pub const WINDOW_SAMPLES: usize = 15_360;
@@ -115,6 +118,7 @@ struct AudioAiInternals {
 /// Process-wide audio AI engine: owns the models, the voice-presence flag
 /// and the sound-event bus.
 pub struct AudioAiEngine {
+    #[cfg_attr(not(feature = "ai"), allow(dead_code))]
     config: AudioAiConfig,
     active: bool,
     inactive_reason: String,
@@ -141,12 +145,15 @@ impl AudioAiEngine {
             info!(reason = %reason, "audio_ai: disabled");
         }
         let (event_tx, _) = broadcast::channel(16);
+        #[cfg(not(feature = "ai"))]
+        let _ = internals; // the field does not exist in non-ai builds
         Self {
             config: config.clone(),
             active,
             inactive_reason: reason,
             voice_present: Arc::new(RwLock::new(false)),
             event_tx,
+            #[cfg(feature = "ai")]
             internals,
         }
     }
@@ -226,7 +233,8 @@ impl AudioAiEngine {
     /// engine is inactive.
     pub fn spawn_worker(
         &self,
-        mut rx: broadcast::Receiver<AudioChunk>,
+        #[cfg(feature = "ai")] mut rx: broadcast::Receiver<AudioChunk>,
+        #[cfg(not(feature = "ai"))] _rx: broadcast::Receiver<AudioChunk>,
     ) -> tokio::task::JoinHandle<()> {
         #[cfg(feature = "ai")]
         let Some(internals) = self.internals.as_ref().map(|i| AudioAiInternals {
@@ -237,7 +245,6 @@ impl AudioAiEngine {
         };
         #[cfg(not(feature = "ai"))]
         {
-            let _ = &rx;
             return tokio::spawn(async {});
         }
         #[cfg(feature = "ai")]
@@ -354,6 +361,7 @@ pub fn ort_available_for_test() -> bool {
 /// File/parse errors, or "built without the `ai` feature".
 pub fn selftest_wav(path: &str) -> anyhow::Result<serde_json::Value> {
     let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("read {path}: {e}"))?;
+    #[cfg_attr(not(feature = "ai"), allow(unused_variables))]
     let wav = wav::parse_wav(&bytes)?;
     #[cfg(feature = "ai")]
     {
@@ -436,6 +444,7 @@ pub fn selftest_wav(path: &str) -> anyhow::Result<serde_json::Value> {
     }
 }
 
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
 fn unix_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

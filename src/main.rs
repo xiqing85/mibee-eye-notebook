@@ -97,9 +97,7 @@ async fn main() -> anyhow::Result<()> {
         return selftest_cli("llm", || streaming::llm::selftest_llm(prompt));
     }
     if let Some(path) = &args.selftest_vlm {
-        return selftest_cli("vlm", || {
-            streaming::vlm::selftest_vlm(path)
-        });
+        return selftest_cli("vlm", || streaming::vlm::selftest_vlm(path));
     }
     if let Some(text) = &args.selftest_tts {
         return selftest_cli("tts", || streaming::tts::selftest_tts(text));

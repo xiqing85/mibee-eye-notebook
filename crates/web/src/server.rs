@@ -296,7 +296,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(ocr))
         .layer(Extension(voice))
         .layer(Extension(chat))
-    .layer(Extension(vlm))
+        .layer(Extension(vlm))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
         // HSTS
