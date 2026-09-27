@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- nothing yet
+
+## [0.4.0] — 2026-09-27
+
 - **Low-resolution bandwidth-saving substream** (SPEC appendix A #20,
   default off): per-camera `config.substream` `{enabled, width, height,
   fps, bitrate}` (defaults 640x360 / 400 kbps / fps 0 = follow) adds a
@@ -49,8 +53,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key (default `true`, absent DB rows parse as enabled; protocol
   re-toggle applies). The `alarm` SSE event is now advertised with AI
   active instead of requiring a running GB28181 protocol — each alarm
-  channel no-ops independently until its consumer is up/subscribed.
+  channel no-ops independently until its consumer is up/subscribed.- **Device-level rotation** baked into the stream (SPEC appendix A #19),
+  with the 180° fold pinned by frame-level regression tests.
+- **Talkback upstream** (GB/T 28181 §9.2 send half): microphone audio to
+  the platform as G.711 A-law, following the negotiated law (PCMU) per
+  session; **voice broadcast receive** completes full-duplex talk.
+- **Seamless MSE reconnect**: the live timeline continues across
+  connection drops (SPEC §4.1).
+- **ONVIF**: AI motion alarms as Pull-Point MotionAlarm events; unset
+  device serial no longer reports the shared NC00000001 identity.
+- **Fail-open audio device list**: `/api/devices/audio` degrades to an
+  empty list when the host cannot enumerate inputs (a user service
+  without audio-device access), and per-device config rows are capped —
+  the previous multi-megabyte dump was silently 500'd by the response
+  envelope middleware, which now fails loudly instead.
+- **AI model panel fixed**: the model select rendered empty and the
+  upload button stayed hidden (request wrapper passed instead of the
+  unwrapped payload).
+- Security dependency refresh: onvif-device-rs quick-xml 0.41
+  (RUSTSEC-2026-0194/0195), h2 / rustls / crossbeam updates.
+- Shared frontend: explicit username login field, alarm toasts, mobile
+  toolbar wrap, live-view rotate button, substream quality toggle.
 
+Synchronized with [mibee-eye-go](https://github.com/xiqing85/mibee-eye-go/releases/tag/v0.4.0) and [mibee-eye-rs](https://github.com/xiqing85/mibee-eye-rs/releases/tag/v0.4.0) (same version, same day).
 ## [0.3.0] - 2026-09-16
 
 Late join to the v0.3.0 train (user decision): the version number aligns
