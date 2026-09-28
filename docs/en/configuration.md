@@ -330,6 +330,245 @@ max_capacity_mb = 10240
 - Oldest segments are auto-pruned when total size exceeds `max_capacity_mb`
 - Individual streams can enable/disable recording via Web UI
 
+### On-device intelligence sections
+
+The sections below configure the optional AI engines. They share a common
+contract:
+
+- **All default to `enabled = false`** — microphones and always-on analysis
+  are privacy-sensitive, so every engine is opt-in.
+- **Fail-open**: a missing model file, a build without the required cargo
+  feature, or an under-powered host simply leaves the engine off — the
+  capability disappears from `/api/capabilities` and the UI, never breaking
+  startup or the rest of the product.
+- **Startup-state**: these sections are read once at startup; changes require
+  a service restart (unlike protocol sections, which hot-toggle).
+- Model files are untracked deploy-time downloads — see
+  [`models/README.md`](../../models/README.md) for sources, sizes and
+  licenses.
+
+### [audio_ai] - Sound-Event Detection
+
+Constant microphone listening with YAMNet classification. When a watched
+sound class fires (vote-smoothed, per-class cooldown), the SPEC §6 `alarm`
+event is emitted with `source: "audio"`, the class display name in `class`
+and the voted score in `score`.
+
+```toml
+[audio_ai]
+enabled = false
+device = "default"
+classes = ["Dog", "Bark", "Baby cry, infant cry", "Glass", "Siren"]
+threshold = 0.3
+cooldown_secs = 30
+model_path = "models/audio/yamnet.onnx"
+vad_model_path = "models/audio/silero_vad.onnx"
+```
+
+**Field Reference:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch. Off by default — continuous microphone listening is opt-in. |
+| `device` | String | `"default"` | Input device selector: `"default"` or a substring of the ALSA device description. |
+| `classes` | Vec<String> | 15 default classes (Dog/Bark/Yip/Howl/Bow-wow, Baby cry, Screaming, Shout, Glass/Shatter/Breaking, Smoke detector/Fire alarm, Siren, Knock) | Watched YAMNet class display names (exact match). Unknown names are logged and ignored at startup. |
+| `threshold` | f32 | `0.3` | Voted score a class must reach to fire (0 < threshold ≤ 1). |
+| `cooldown_secs` | u64 | `30` | Per-class cooldown between consecutive alarms (must be > 0). |
+| `model_path` | String | `"models/audio/yamnet.onnx"` | YAMNet ONNX model path. |
+| `vad_model_path` | String | `"models/audio/silero_vad.onnx"` | Silero VAD ONNX path (voice-presence signal). |
+
+**Notes:**
+
+- A rolling 0.96 s window with 50% overlap is classified; three consecutive
+  window scores are averaged before a class may fire, so single-patch blips
+  never alarm.
+- Windows quieter than the RMS floor skip classification entirely.
+- Also publishes a live voice-presence flag consumed by the voice
+  interaction loop.
+
+### [voice] - Voice Interaction (Wake Word + ASR)
+
+Wake-word detection with offline speech-to-text. Requires the `voice` cargo
+feature (sherpa-onnx linked statically at build time). After a wake word is
+recognized, `capture_secs` of audio are transcribed offline and emitted as a
+`voice_transcript` SSE event; with `[llm]` enabled the transcript is answered
+by the local LLM, and with `[tts]` enabled the reply is spoken.
+
+```toml
+[voice]
+enabled = false
+kws_encoder = "models/voice/kws/encoder.int8.onnx"
+kws_decoder = "models/voice/kws/decoder.int8.onnx"
+kws_joiner = "models/voice/kws/joiner.int8.onnx"
+kws_tokens = "models/voice/kws/tokens.txt"
+keywords_file = "models/voice/kws/keywords.txt"
+keywords_threshold = 0.25
+keywords_score = 1.0
+paraformer_model = "models/voice/paraformer/model.int8.onnx"
+paraformer_tokens = "models/voice/paraformer/tokens.txt"
+capture_secs = 4
+num_threads = 1
+```
+
+**Field Reference:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch (requires the `voice` build feature). |
+| `kws_encoder` / `kws_decoder` / `kws_joiner` / `kws_tokens` | String | `models/voice/kws/…` | Zipformer transducer KWS model trio + tokens. |
+| `keywords_file` | String | `"models/voice/kws/keywords.txt"` | Keywords file, one `word :boost #threshold` per line. Default list includes 小蜜蜂. |
+| `keywords_threshold` | f32 | `0.25` | Wake sensitivity — lower fires more easily. |
+| `keywords_score` | f32 | `1.0` | Minimum score for an accepted wake. |
+| `paraformer_model` / `paraformer_tokens` | String | `models/voice/paraformer/…` | Offline paraformer zh int8 recognizer. |
+| `capture_secs` | u32 | `4` | Seconds of audio captured after a wake word before transcription. |
+| `num_threads` | i32 | `1` | Inference threads (target hosts are small). |
+
+**Notes:**
+
+- While waiting for a wake word nothing is recorded or transmitted — the
+  keyword model matches locally against a small audio fingerprint.
+- `capture_secs` bounds the utterance length; speak after the wake word.
+- Best results with an external USB microphone; laptop built-ins often lack
+  the sensitivity (see the [user guide](user-guide.md#troubleshooting)).
+
+### [llm] - Local LLM Dialogue
+
+Local chat completions via llama.cpp (GGUF). Powers `POST /api/chat`, the
+web chat panel and the voice-loop replies (`chat_reply` SSE). Requires the
+`llm` cargo feature and an AVX2-class CPU.
+
+```toml
+[llm]
+enabled = false
+model_path = "models/llm/qwen3-0.6b-q8_0.gguf"
+n_ctx = 1024
+n_threads = 2
+max_tokens = 200
+no_think = true
+```
+
+**Field Reference:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch (requires the `llm` build feature + AVX2). |
+| `model_path` | String | `"models/llm/qwen3-0.6b-q8_0.gguf"` | GGUF model path (Qwen3-0.6B Q8_0 by default). |
+| `n_ctx` | u32 | `1024` | Dialogue context window. |
+| `n_threads` | u32 | `2` | CPU threads. |
+| `max_tokens` | u32 | `200` | Generation cap per reply. |
+| `no_think` | bool | `true` | Append `/no_think` to user turns (Qwen3 thinking mode off — faster, conversational). |
+
+**Notes:**
+
+- Greedy decoding (temperature 0): deterministic answers, no sampling drift.
+- Thinking blocks are stripped from replies regardless of `no_think`.
+- A memory guardrail refuses to load when the model exceeds 2/3 of available
+  RAM (fail-open).
+- Inference thread pools are capped automatically (`OMP_NUM_THREADS` =
+  cores/2, max 4) unless the environment already sets it.
+
+### [tts] - Text-to-Speech Playback
+
+Spoken replies via the `sherpa-onnx-offline-tts` **CLI subprocess** (the GPL
+espeak-ng dependency stays isolated in the subprocess, outside this binary)
+playing through `aplay`. The LLM reply text is spoken when TTS is enabled.
+
+```toml
+[tts]
+enabled = false
+binary = "tmp/sherpa-libs/tools-bin/bin/sherpa-onnx-offline-tts"
+model = "models/voice/melo/model.onnx"
+lexicon = "models/voice/melo/lexicon.txt"
+tokens = "models/voice/melo/tokens.txt"
+dict_dir = "models/voice/melo/dict"
+rule_fsts = "models/voice/melo/number.fst,models/voice/melo/date.fst"
+player = "aplay -q"
+```
+
+**Field Reference:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch. No cargo feature needed. |
+| `binary` | String | `"tmp/sherpa-libs/tools-bin/bin/sherpa-onnx-offline-tts"` | sherpa-onnx-offline-tts binary path (downloaded separately from the k2-fsa release). |
+| `model` / `lexicon` / `tokens` / `dict_dir` | String | `models/voice/melo/…` | vits-melo-tts-zh_en voice assets. |
+| `rule_fsts` | String | `"…/number.fst,…/date.fst"` | Number/date normalization FSTs (comma-joined). |
+| `player` | String | `"aplay -q"` | Playback command; empty = synthesize only (no speaker output). |
+
+### [vlm] - Alarm-Frame Image Descriptions
+
+Event-triggered "what happened" descriptions of alarm frames via a
+vision-language model (Qwen3-VL through llama.cpp mtmd). When a visual alarm
+edge is accepted, the triggering JPEG is described asynchronously and the
+result is emitted as the `alarm_description` SSE event — the alarm itself is
+never delayed. Requires the `llm` build feature (AVX2-class CPU).
+
+```toml
+[vlm]
+enabled = false
+model_path = "models/vlm/qwen3-vl-2b-instruct-q4_k_m.gguf"
+mmproj_path = "models/vlm/mmproj-qwen3-vl-2b-instruct-q8_0.gguf"
+n_ctx = 2048
+n_threads = 2
+max_tokens = 100
+prompt = "这是安防摄像头的告警画面。请用一句中文描述画面里发生了什么。"
+```
+
+**Field Reference:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch (requires the `llm` build feature + AVX2). |
+| `model_path` | String | `"models/vlm/qwen3-vl-2b-instruct-q4_k_m.gguf"` | Text-model GGUF. |
+| `mmproj_path` | String | `"models/vlm/mmproj-qwen3-vl-2b-instruct-q8_0.gguf"` | Vision-projector (mmproj) GGUF. |
+| `n_ctx` | u32 | `2048` | Context window (the image alone costs ~1k positions). |
+| `n_threads` | u32 | `2` | CPU threads. |
+| `max_tokens` | u32 | `100` | Generation cap per description. |
+| `prompt` | String | Chinese security-phrasing instruction | Instruction shown to the model; the answer should be one sentence. |
+
+**Notes:**
+
+- **Single-flight scheduling**: at most one description runs at a time and a
+  120 s floor separates consecutive starts — a flapping detector cannot
+  stack VLM loads on a small host.
+- Shares the same llama.cpp backend instance and memory guardrail as `[llm]`.
+
+### [ocr] - Text Recognition
+
+On-device OCR (PP-OCR v4 detector + v5 recognizer, zh+en) exposed as
+`POST /api/ocr` (JPEG body → `{"items":[{text,score,bbox}]}`) with the `ocr`
+capability.
+
+```toml
+[ocr]
+enabled = false
+det_path = "models/ocr/ch_PP-OCRv4_det_infer.onnx"
+rec_path = "models/ocr/ppocrv5_mobile_rec.onnx"
+dict_path = "models/ocr/ppocrv5_dict.txt"
+max_side = 960
+det_threshold = 0.3
+```
+
+**Field Reference:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch. |
+| `det_path` | String | `"models/ocr/ch_PP-OCRv4_det_infer.onnx"` | DBNet text detector. |
+| `rec_path` | String | `"models/ocr/ppocrv5_mobile_rec.onnx"` | CRNN text recognizer. |
+| `dict_path` | String | `"models/ocr/ppocrv5_dict.txt"` | Recognition dictionary (shipped in git). |
+| `max_side` | u32 | `960` | Longest image side fed to the detector (multiples of 32). |
+| `det_threshold` | f32 | `0.3` | DBNet binarization threshold. |
+
+### Per-camera stream keys (Web UI / API)
+
+Some camera options are per-camera JSON config (set from the Cameras view or
+`PUT /api/cameras/{id}`), not TOML — notably `substream`
+(`{enabled, width, height, fps, bitrate}`, SPEC appendix A #20): a
+low-resolution secondary H.264 stream exposed as `stream.sub.mse`, the RTSP
+`/live/{id}/sub` mount and the ONVIF `sub` profile. Applies on the next
+stream (re)start.
+
 ### [database] - SQLite Database
 
 Configure SQLite database path for camera settings, protocol configs, sessions, and users.
@@ -364,6 +603,8 @@ Configuration is validated on startup. The following rules apply:
 - **Log level**: observability.log_level must be one of: trace, debug, info, warn, error
 - **Recording path**: recording.path must not be empty
 - **Recording segment**: recording.segment_duration_secs must be > 0
+- **Sound events**: audio_ai.threshold must be within (0, 1], classes must
+  not be empty and cooldown_secs must be > 0 (if enabled)
 
 ## Examples
 

@@ -251,6 +251,38 @@ udev netlink listener (`crates/capture/src/hotplug.rs`) detects ADD/REMOVE event
 - **W3C TraceContext**: `traceparent` header extraction (incoming, Axum middleware) + injection (outbound HTTP).
 - **Remote log shipping**: optional `tracing-loki` layer (fail-open — unreachable endpoint just logs a warning).
 
+### On-Device Intelligence (AI expansion)
+
+All engines live in `crates/streaming` behind cargo features and share one
+contract: **opt-in config (default off), fail-open loading, honest
+capabilities** — a missing model or feature removes the capability from
+`/api/capabilities` and the UI instead of degrading the service.
+
+- **Visual detection** (`ai`): NanoDet-Plus inference on captured frames;
+  rising edges drive SPEC §6 `alarm` SSE + GB Alarm NOTIFY; overlay boxes
+  reach the UI through `/api/detections` and `ai_detection` events.
+- **Tracking + zones** (`zones`): a ByteTrack-subset tracker rides on the
+  detections (zero extra inference); user-drawn intrusion/tripwire zones
+  (`GET/PUT /api/cameras/{id}/zones`) produce `zone_event` SSE events.
+- **Sound events** (`audio_ai`, YAMNet): rolling 0.96 s windows on the
+  microphone, 3-vote smoothing and per-class cooldowns; accepted edges emit
+  `alarm` with `source: "audio"` and a Silero-VAD voice-presence flag feeds
+  the voice loop.
+- **Voice interaction** (`voice`, sherpa-onnx): streaming zipformer KWS wake
+  word (小蜜蜂) → `capture_secs` of audio → offline paraformer zh
+  transcription → `voice_transcript` SSE.
+- **Local LLM chat** (`chat`, llama.cpp + Qwen3 GGUF): `POST /api/chat`,
+  the web chat panel, and voice-loop replies (`chat_reply` SSE); greedy
+  decoding, `/no_think`, memory guardrail, `OMP_NUM_THREADS` auto-cap.
+- **Alarm-frame descriptions** (`vlm`, Qwen3-VL via llama.cpp mtmd): the
+  accepted visual alarm's triggering JPEG is described asynchronously —
+  single-flight scheduler with a 120 s inter-description floor so flapping
+  detectors cannot stack inference — and lands as `alarm_description` SSE.
+- **TTS** (`[tts]`): `sherpa-onnx-offline-tts` CLI subprocess (GPL
+  espeak-ng isolated outside this binary) speaks LLM replies.
+- **OCR** (`ocr`, PP-OCR v4 det + v5 rec): `POST /api/ocr` (JPEG in, text
+  items with scores and boxes out).
+
 ## Design Decisions
 
 ### Hand-Written Protocols

@@ -326,6 +326,233 @@ max_capacity_mb = 10240
 - 当总大小超过 `max_capacity_mb` 时，最旧的段自动修剪
 - 单个流可以通过 Web UI 启用/禁用录制
 
+### 端侧智能配置节
+
+以下各节配置可选的 AI 引擎，共用同一套契约：
+
+- **全部默认 `enabled = false`**——麦克风与常驻分析属于隐私敏感输入，
+  每个引擎都是主动开启（opt-in）。
+- **故障开放（fail-open）**：模型文件缺失、构建未编入对应 cargo feature
+  或主机性能不足时，引擎只是保持关闭——能力位从 `/api/capabilities` 与
+  界面消失，绝不影响启动或产品其余部分。
+- **启动态**：这些节只在启动时读取一次，修改后需重启服务（与可热切换的
+  协议节不同）。
+- 模型文件是不进 git 的部署期下载——来源、体积与许可见
+  [`models/README.md`](../../models/README.md)。
+
+### [audio_ai] - 声音事件检测
+
+常驻麦克风监听 + YAMNet 分类。关注的声音类别触发时（投票平滑、逐类冷却），
+发出 SPEC §6 `alarm` 事件：`source: "audio"`，`class` 带类别显示名，
+`score` 带投票得分。
+
+```toml
+[audio_ai]
+enabled = false
+device = "default"
+classes = ["Dog", "Bark", "Baby cry, infant cry", "Glass", "Siren"]
+threshold = 0.3
+cooldown_secs = 30
+model_path = "models/audio/yamnet.onnx"
+vad_model_path = "models/audio/silero_vad.onnx"
+```
+
+**字段参考：**
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关。默认关闭——常驻麦克风监听属主动开启。 |
+| `device` | String | `"default"` | 输入设备选择：`"default"` 或 ALSA 设备描述的子串。 |
+| `classes` | Vec<String> | 15 个默认类别（Dog/Bark/Yip/Howl/Bow-wow、Baby cry、Screaming、Shout、Glass/Shatter/Breaking、Smoke detector/Fire alarm、Siren、Knock） | 关注的 YAMNet 类别显示名（精确匹配）。未知名称启动时记日志并忽略。 |
+| `threshold` | f32 | `0.3` | 类别触发所需投票得分（0 < threshold ≤ 1）。 |
+| `cooldown_secs` | u64 | `30` | 同类别两次告警的最小间隔（必须 > 0）。 |
+| `model_path` | String | `"models/audio/yamnet.onnx"` | YAMNet ONNX 模型路径。 |
+| `vad_model_path` | String | `"models/audio/silero_vad.onnx"` | Silero VAD ONNX 路径（语音存在信号）。 |
+
+**注意事项：**
+
+- 滚动 0.96 秒窗口、50% 重叠分类；连续三个窗口得分平均后才可能触发，
+  单窗口毛刺不会告警。
+- 低于 RMS 底噪的窗口直接跳过分类。
+- 同时发布实时语音存在标志，供语音交互环路消费。
+
+### [voice] - 语音交互（唤醒词 + 转写）
+
+唤醒词检测 + 离线语音转文字。需要 `voice` cargo feature（构建期静态链接
+sherpa-onnx）。识别到唤醒词后，离线转写 `capture_secs` 秒音频并发送
+`voice_transcript` SSE 事件；`[llm]` 开启时转写文本交本地 LLM 作答，
+`[tts]` 开启时回复会被播报。
+
+```toml
+[voice]
+enabled = false
+kws_encoder = "models/voice/kws/encoder.int8.onnx"
+kws_decoder = "models/voice/kws/decoder.int8.onnx"
+kws_joiner = "models/voice/kws/joiner.int8.onnx"
+kws_tokens = "models/voice/kws/tokens.txt"
+keywords_file = "models/voice/kws/keywords.txt"
+keywords_threshold = 0.25
+keywords_score = 1.0
+paraformer_model = "models/voice/paraformer/model.int8.onnx"
+paraformer_tokens = "models/voice/paraformer/tokens.txt"
+capture_secs = 4
+num_threads = 1
+```
+
+**字段参考：**
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关（需 `voice` 构建特性）。 |
+| `kws_encoder` / `kws_decoder` / `kws_joiner` / `kws_tokens` | String | `models/voice/kws/…` | Zipformer transducer KWS 模型三件套 + tokens。 |
+| `keywords_file` | String | `"models/voice/kws/keywords.txt"` | 关键词文件，每行 `词 :boost #threshold`。默认表含 小蜜蜂。 |
+| `keywords_threshold` | f32 | `0.25` | 唤醒灵敏度——越低越容易触发。 |
+| `keywords_score` | f32 | `1.0` | 接受唤醒的最低得分。 |
+| `paraformer_model` / `paraformer_tokens` | String | `models/voice/paraformer/…` | 离线 paraformer 中文 int8 转写模型。 |
+| `capture_secs` | u32 | `4` | 唤醒词识别后采集音频的秒数。 |
+| `num_threads` | i32 | `1` | 推理线程数（目标主机较小）。 |
+
+**注意事项：**
+
+- 等待唤醒词期间不录制、不传输任何音频——关键词模型只在本地比对极短的
+  音频指纹。
+- `capture_secs` 限定一句话的长度；唤醒词之后再说话。
+- 外接 USB 麦克风效果远好于笔记本内置麦克风（见
+  [用户手册](user-guide.md#故障排查)）。
+
+### [llm] - 本地 LLM 对话
+
+基于 llama.cpp（GGUF）的本地对话补全。支撑 `POST /api/chat`、Web 对话
+面板与语音环路回复（`chat_reply` SSE）。需要 `llm` cargo feature 与
+AVX2 档 CPU。
+
+```toml
+[llm]
+enabled = false
+model_path = "models/llm/qwen3-0.6b-q8_0.gguf"
+n_ctx = 1024
+n_threads = 2
+max_tokens = 200
+no_think = true
+```
+
+**字段参考：**
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关（需 `llm` 构建特性 + AVX2）。 |
+| `model_path` | String | `"models/llm/qwen3-0.6b-q8_0.gguf"` | GGUF 模型路径（默认 Qwen3-0.6B Q8_0）。 |
+| `n_ctx` | u32 | `1024` | 对话上下文窗口。 |
+| `n_threads` | u32 | `2` | CPU 线程数。 |
+| `max_tokens` | u32 | `200` | 每次回复的生成上限。 |
+| `no_think` | bool | `true` | user 轮追加 `/no_think`（关闭 Qwen3 思考模式——更快、对话向）。 |
+
+**注意事项：**
+
+- 贪心解码（temperature 0）：答案确定，无采样漂移。
+- 无论 `no_think` 与否，回复中的思考块一律剥离。
+- 内存 guardrail：模型超过可用内存 2/3 时拒绝加载（fail-open）。
+- 推理线程池自动设上限（`OMP_NUM_THREADS` = 核数/2，最高 4），环境已设
+  则不覆盖。
+
+### [tts] - 语音播报
+
+通过 `sherpa-onnx-offline-tts` **CLI 子进程**合成语音（GPL espeak-ng 依赖
+隔离在子进程内，不进入本二进制），经 `aplay` 播放。TTS 开启时 LLM 回复
+文本会被读出。
+
+```toml
+[tts]
+enabled = false
+binary = "tmp/sherpa-libs/tools-bin/bin/sherpa-onnx-offline-tts"
+model = "models/voice/melo/model.onnx"
+lexicon = "models/voice/melo/lexicon.txt"
+tokens = "models/voice/melo/tokens.txt"
+dict_dir = "models/voice/melo/dict"
+rule_fsts = "models/voice/melo/number.fst,models/voice/melo/date.fst"
+player = "aplay -q"
+```
+
+**字段参考：**
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关。无需 cargo feature。 |
+| `binary` | String | `"tmp/sherpa-libs/tools-bin/bin/sherpa-onnx-offline-tts"` | sherpa-onnx-offline-tts 二进制路径（另行从 k2-fsa release 下载）。 |
+| `model` / `lexicon` / `tokens` / `dict_dir` | String | `models/voice/melo/…` | vits-melo-tts-zh_en 音色资产。 |
+| `rule_fsts` | String | `"…/number.fst,…/date.fst"` | 数字/日期归一化 FST（逗号连接）。 |
+| `player` | String | `"aplay -q"` | 播放命令；留空 = 仅合成（不外放）。 |
+
+### [vlm] - 告警画面图像描述
+
+事件触发的告警画面"发生了什么"描述，使用视觉-语言模型（Qwen3-VL，经
+llama.cpp mtmd）。视觉告警边沿被接受后，触发帧 JPEG 异步送描述，结果以
+`alarm_description` SSE 事件送出——告警本身绝不延迟。需要 `llm` 构建
+特性（AVX2 档 CPU）。
+
+```toml
+[vlm]
+enabled = false
+model_path = "models/vlm/qwen3-vl-2b-instruct-q4_k_m.gguf"
+mmproj_path = "models/vlm/mmproj-qwen3-vl-2b-instruct-q8_0.gguf"
+n_ctx = 2048
+n_threads = 2
+max_tokens = 100
+prompt = "这是安防摄像头的告警画面。请用一句中文描述画面里发生了什么。"
+```
+
+**字段参考：**
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关（需 `llm` 构建特性 + AVX2）。 |
+| `model_path` | String | `"models/vlm/qwen3-vl-2b-instruct-q4_k_m.gguf"` | 文本模型 GGUF。 |
+| `mmproj_path` | String | `"models/vlm/mmproj-qwen3-vl-2b-instruct-q8_0.gguf"` | 视觉投影器（mmproj）GGUF。 |
+| `n_ctx` | u32 | `2048` | 上下文窗口（仅图像就占约 1k 位置）。 |
+| `n_threads` | u32 | `2` | CPU 线程数。 |
+| `max_tokens` | u32 | `100` | 每次描述的生成上限。 |
+| `prompt` | String | 中文安防措辞指令 | 提供给模型的指令；要求一句话作答。 |
+
+**注意事项：**
+
+- **单飞调度**：同时只跑一个描述，两次描述起点之间有 120 秒下限——检测
+  抖动不会把 VLM 负载堆到小主机上。
+- 与 `[llm]` 共享同一 llama.cpp 后端实例与内存 guardrail。
+
+### [ocr] - 文字识别
+
+端侧 OCR（PP-OCR v4 检测 + v5 识别，中英），经 `POST /api/ocr` 暴露
+（JPEG body → `{"items":[{text,score,bbox}]}`），能力位 `ocr`。
+
+```toml
+[ocr]
+enabled = false
+det_path = "models/ocr/ch_PP-OCRv4_det_infer.onnx"
+rec_path = "models/ocr/ppocrv5_mobile_rec.onnx"
+dict_path = "models/ocr/ppocrv5_dict.txt"
+max_side = 960
+det_threshold = 0.3
+```
+
+**字段参考：**
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关。 |
+| `det_path` | String | `"models/ocr/ch_PP-OCRv4_det_infer.onnx"` | DBNet 文本检测模型。 |
+| `rec_path` | String | `"models/ocr/ppocrv5_mobile_rec.onnx"` | CRNN 文本识别模型。 |
+| `dict_path` | String | `"models/ocr/ppocrv5_dict.txt"` | 识别字典（随 git 分发）。 |
+| `max_side` | u32 | `960` | 送检测器的图像最长边（32 的倍数）。 |
+| `det_threshold` | f32 | `0.3` | DBNet 二值化阈值。 |
+
+### 每相机流配置键（Web UI / API）
+
+部分相机选项是每相机的 JSON 配置（在"相机"视图或 `PUT /api/cameras/{id}`
+设置），不在 TOML——典型是 `substream`（`{enabled, width, height, fps,
+bitrate}`，SPEC 附录 A #20）：低分辨率 H.264 副码流，经 `stream.sub.mse`、
+RTSP `/live/{id}/sub` 挂载点与 ONVIF `sub` profile 暴露。在下次流
+（重）启动时生效。
+
 ### [database] - SQLite 数据库
 
 配置用于摄像头设置、协议配置、会话和用户的 SQLite 数据库路径。
@@ -360,6 +587,8 @@ path = "~/.local/share/mibee-eye/mibee_eye.db"
 - **日志级别**：observability.log_level 必须是以下之一：trace、debug、info、warn、error
 - **录制路径**：recording.path 不得为空
 - **录制段**：recording.segment_duration_secs 必须 > 0
+- **声音事件**：audio_ai.threshold 必须在 (0, 1] 内，classes 不得为空，
+  cooldown_secs 必须 > 0（如果启用）
 
 ## 示例
 

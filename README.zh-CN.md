@@ -20,6 +20,9 @@
 - **本地采集** — 摄像头通过 V4L2（Linux）/ MSMF（Windows），麦克风通过 ALSA / WASAPI
 - **对外协议** — RTSP 服务端（客户端拉流）、RTMP 推流、ONVIF 设备端点、GB/T 28181 设备注册（全部默认关闭，通过 Web 界面启用）
 - **GB/T 28181-2022 设备面** — 告警事件（SSE `alarm` + Alarm NOTIFY，AI 上升沿 + 冷却）、DeviceControl（IFrameCmd 强制关键帧、RecordCmd 录像门）、优雅注销（REGISTER Expires: 0）、静态 MobilePosition 上报、DeviceConfig FrameMirror 运行时镜像、SIP-Date 校时观察——全部随共享库 gb28181-rs 提供
+- **端侧智能（全部故障开放、主动开启）** — 视觉目标检测（NanoDet）实时叠加框；声音事件检测（YAMNet）发出 `source: "audio"` 告警（投票平滑 + 逐类冷却）；用户绘制入侵/越线区域 + ByteTrack 子集跟踪（`zone_event` SSE）；OCR（PP-OCR v4/v5，`POST /api/ocr`）——SPEC 附录 A #21
+- **语音交互** — 唤醒词小蜜蜂（sherpa-onnx zipformer KWS）→ 离线 paraformer 中文转写 → 本地 LLM 回复（llama.cpp + Qwen3 GGUF）→ TTS 播报（sherpa-onnx CLI 子进程，GPL 隔离）；`voice_transcript` / `chat_reply` SSE——SPEC 附录 A #22
+- **告警智能** — 告警画面的视觉-语言描述（Qwen3-VL 经 llama.cpp mtmd），异步 `alarm_description` SSE，绝不延迟告警本身；单飞调度 + 描述间隔下限
 - **H.264 / H.265** — 手写 NAL 单元解析器、关键帧检测、SPS/PPS 提取
 - **MiBee NVR 集成** — REST API 客户端、摄像头同步、SSE 事件流
 - **Web 界面** — Axum REST API + 嵌入式 SPA、TLS 通过 rustls、基于会话的身份认证、双语（zh-CN / en-US）、日/夜间主题
@@ -210,6 +213,7 @@ cp config.toml config.local.toml
 
 完整文档请参阅 [docs/zh/](docs/zh/)：
 
+- [用户手册](docs/zh/user-guide.md) — Web 界面与 AI 功能的日常使用
 - [快速入门](docs/zh/getting-started.md)
 - [安装指南](docs/zh/installation.md)
 - [配置说明](docs/zh/configuration.md)

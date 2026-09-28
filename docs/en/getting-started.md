@@ -87,10 +87,18 @@ The web UI provides:
 - **Bilingual support**: zh-CN / en-US language toggle (persisted to user settings)
 - **Day/night theme**: System-preference auto-detect, manual toggle (persisted to user settings)
 - **Camera management**: Add, remove, and configure local webcam capture
-- **Stream controls**: Start/stop streams, monitor status
-- **Protocol configuration**: RTSP, RTMP push, ONVIF, GB28181 (all default-OFF, enable per-stream via UI)
+- **Stream controls**: Start/stop streams, monitor status, main/sub stream quality
+- **Live AI overlays**: detection boxes (NanoDet) and your saved zones drawn over the picture
+- **Zones editor**: draw intrusion / tripwire regions directly on the frozen frame
+- **Chat panel**: talk to the on-device LLM (capability `chat`)
+- **Alarm toasts**: visual / sound / zone alarms, VLM descriptions and voice transcripts in real time
+- **Protocol configuration**: RTSP, RTMP push, ONVIF, GB28181 (all default-OFF, hot-toggled via UI)
 - **Local recording**: MP4 segment archive with auto-prune
-- **Settings**: Rate limiting, device enumeration, and more
+- **Settings**: Unified config editor, device enumeration, and more
+
+The UI is capability-gated: it shows exactly what this build and its model
+files support. See the [User Guide](user-guide.md) for a walkthrough of
+every panel and the AI features.
 
 ## Product Scope
 
@@ -107,6 +115,7 @@ For authoritative product positioning, see [POSITIONING.md](../POSITIONING.md).
 
 Continue with these resources:
 
+- [User Guide](user-guide.md) - Using the web UI and the AI features day to day
 - [Installation Guide](installation.md) - Detailed installation instructions
 - [Configuration Guide](configuration.md) - Advanced configuration options
 - [API Reference](api.md) - Complete API documentation
