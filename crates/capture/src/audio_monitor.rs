@@ -109,15 +109,24 @@ impl AudioMonitor {
         // config we picked must belong to a live device handle.
         let dev = resolve_device(&self.device_name)?;
         let supported = pick_config(&dev).0;
-        let mut stream_config: StreamConfig = supported.config();
+        let stream_config: StreamConfig = supported.config();
         // Widen the device period deliberately: old onboard codecs
         // (ALC269-class) overrun their tiny default buffers whenever
         // inference threads preempt the audio callback on weak CPUs.
         // 2048 frames ≈ 46 ms at 44.1 kHz — latency is irrelevant to a
         // ≥ 32 ms-chunk classifier/wake-word stream, dropped audio is not.
-        if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
-            stream_config.buffer_size = cpal::BufferSize::Fixed(2048u32.clamp(*min, *max));
-        }
+        //
+        // The enumerated range can lie: PipeWire-era ALSA plugins advertise
+        // a wide range but enforce the current quantum at open time, so the
+        // preferred request may be rejected outright — fall back to the
+        // device default (which the device picks within its true
+        // constraints) instead of losing sound for the whole run.
+        let preferred =
+            if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
+                Some(cpal::BufferSize::Fixed(2048u32.clamp(*min, *max)))
+            } else {
+                None
+            };
         let channels = supported.channels();
         let sample_rate = supported.sample_rate();
         let format = supported.sample_format();
@@ -131,64 +140,86 @@ impl AudioMonitor {
                 debug!("audio monitor: raw queue full, dropping callback");
             }
         };
-        let stream = match format {
-            SampleFormat::F32 => dev
-                .build_input_stream(
-                    stream_config,
-                    {
-                        let tx = raw_tx.clone();
-                        move |data: &[f32], _| send_mono(data, &tx)
-                    },
-                    |err| warn!("audio monitor error (f32): {err}"),
-                    None,
-                )
-                .context("failed to build audio monitor stream (f32)")?,
-            SampleFormat::I16 => dev
-                .build_input_stream(
-                    stream_config,
-                    {
-                        let tx = raw_tx.clone();
-                        move |data: &[i16], _| {
-                            let f: Vec<f32> = data.iter().map(|&s| s as f32 / 32_768.0).collect();
-                            send_mono(&f, &tx);
-                        }
-                    },
-                    |err| warn!("audio monitor error (i16): {err}"),
-                    None,
-                )
-                .context("failed to build audio monitor stream (i16)")?,
-            SampleFormat::U16 => dev
-                .build_input_stream(
-                    stream_config,
-                    {
-                        let tx = raw_tx.clone();
-                        move |data: &[u16], _| {
-                            let f: Vec<f32> = data
-                                .iter()
-                                .map(|&s| (s as f32 - 32_768.0) / 32_768.0)
-                                .collect();
-                            send_mono(&f, &tx);
-                        }
-                    },
-                    |err| warn!("audio monitor error (u16): {err}"),
-                    None,
-                )
-                .context("failed to build audio monitor stream (u16)")?,
-            SampleFormat::I8 => dev
-                .build_input_stream(
-                    stream_config,
-                    {
-                        let tx = raw_tx.clone();
-                        move |data: &[i8], _| {
-                            let f: Vec<f32> = data.iter().map(|&s| f32::from(s) / 128.0).collect();
-                            send_mono(&f, &tx);
-                        }
-                    },
-                    |err| warn!("audio monitor error (i8): {err}"),
-                    None,
-                )
-                .context("failed to build audio monitor stream (i8)")?,
-            other => bail!("audio monitor: unsupported sample format {other:?}"),
+        let build_stream = |buffer_size: cpal::BufferSize| -> Result<cpal::Stream> {
+            let mut cfg = stream_config;
+            cfg.buffer_size = buffer_size;
+            let stream = match format {
+                SampleFormat::F32 => dev
+                    .build_input_stream(
+                        cfg,
+                        {
+                            let tx = raw_tx.clone();
+                            move |data: &[f32], _| send_mono(data, &tx)
+                        },
+                        |err| warn!("audio monitor error (f32): {err}"),
+                        None,
+                    )
+                    .context("failed to build audio monitor stream (f32)")?,
+                SampleFormat::I16 => dev
+                    .build_input_stream(
+                        cfg,
+                        {
+                            let tx = raw_tx.clone();
+                            move |data: &[i16], _| {
+                                let f: Vec<f32> =
+                                    data.iter().map(|&s| s as f32 / 32_768.0).collect();
+                                send_mono(&f, &tx);
+                            }
+                        },
+                        |err| warn!("audio monitor error (i16): {err}"),
+                        None,
+                    )
+                    .context("failed to build audio monitor stream (i16)")?,
+                SampleFormat::U16 => dev
+                    .build_input_stream(
+                        cfg,
+                        {
+                            let tx = raw_tx.clone();
+                            move |data: &[u16], _| {
+                                let f: Vec<f32> = data
+                                    .iter()
+                                    .map(|&s| (s as f32 - 32_768.0) / 32_768.0)
+                                    .collect();
+                                send_mono(&f, &tx);
+                            }
+                        },
+                        |err| warn!("audio monitor error (u16): {err}"),
+                        None,
+                    )
+                    .context("failed to build audio monitor stream (u16)")?,
+                SampleFormat::I8 => dev
+                    .build_input_stream(
+                        cfg,
+                        {
+                            let tx = raw_tx.clone();
+                            move |data: &[i8], _| {
+                                let f: Vec<f32> =
+                                    data.iter().map(|&s| f32::from(s) / 128.0).collect();
+                                send_mono(&f, &tx);
+                            }
+                        },
+                        |err| warn!("audio monitor error (i8): {err}"),
+                        None,
+                    )
+                    .context("failed to build audio monitor stream (i8)")?,
+                other => bail!("audio monitor: unsupported sample format {other:?}"),
+            };
+            Ok(stream)
+        };
+        let stream = match preferred {
+            Some(preferred) => match build_stream(preferred) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        error = format!("{e:#}"),
+                        "audio monitor: period request rejected — falling back to the device default"
+                    );
+                    build_stream(cpal::BufferSize::Default)
+                        .context("failed to build audio monitor stream (device default)")?
+                }
+            },
+            None => build_stream(cpal::BufferSize::Default)
+                .context("failed to build audio monitor stream (device default)")?,
         };
         stream
             .play()

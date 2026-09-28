@@ -15,6 +15,7 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 
 pub mod ai_models;
+pub mod audio_records;
 pub mod cameras;
 pub mod capabilities;
 pub mod chat;

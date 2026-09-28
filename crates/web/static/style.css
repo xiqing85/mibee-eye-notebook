@@ -1769,3 +1769,43 @@ input[type="range"]::-moz-range-thumb {
   margin-top: var(--space-sm);
 }
 .chat-input-row input { flex: 1; }
+
+/* ===== Hearing records view (audio_records, SPEC appendix A #24) ===== */
+.records-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+.records-toolbar select {
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--text);
+}
+.records-toolbar .btn-small:last-child { margin-left: auto; }
+.record-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: .82rem;
+}
+.record-row:last-child { border-bottom: none; }
+.record-time { flex: none; color: var(--text-faint); font-size: .72rem; }
+.record-kind {
+  flex: none;
+  font-size: .68rem;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+}
+.record-kind.kind-sound { color: var(--accent-text); background: var(--accent-bg); border-color: var(--accent-border); }
+.record-kind.kind-voice { color: #8a6d1f; background: rgba(214, 168, 54, .14); border-color: rgba(214, 168, 54, .4); }
+.record-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.record-keyword { color: var(--text-faint); font-size: .72rem; }
+.record-score { flex: none; color: var(--text-faint); font-size: .72rem; }
+.record-empty { padding: var(--space-md) 0; color: var(--text-faint); font-size: .8rem; text-align: center; }

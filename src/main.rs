@@ -447,24 +447,46 @@ async fn main() -> anyhow::Result<()> {
     }
     let mut _audio_monitor = None;
     if audio_ai_engine.is_active() || voice_engine.is_active() {
-        match capture::audio_monitor::AudioMonitor::open(&config.audio_ai.device) {
-            Ok(mut monitor) => match monitor.start() {
-                Ok((rx, _tx)) => {
-                    if audio_ai_engine.is_active() {
-                        audio_ai_engine.spawn_worker(rx.resubscribe());
+        // Boot-time races (audio service still registering the source, a
+        // restart racing the previous instance's device release) used to
+        // kill sound for the whole run on a single lost open — retry with a
+        // bound instead. The full error chain is logged: the top-level
+        // context alone says "i16", the cause says why.
+        let mut opened = None;
+        for attempt in 1..=10 {
+            match capture::audio_monitor::AudioMonitor::open(&config.audio_ai.device) {
+                Ok(mut monitor) => match monitor.start() {
+                    Ok((rx, _tx)) => {
+                        opened = Some((monitor, rx));
+                        break;
                     }
-                    if voice_engine.is_active() {
-                        voice_engine.spawn_worker(rx.resubscribe());
-                    }
-                    _audio_monitor = Some(monitor);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "audio_ai: monitor failed to start (sound events paused)")
-                }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "audio_ai: input device unavailable (sound events paused)")
+                    Err(e) => tracing::warn!(
+                        attempt,
+                        error = format!("{e:#}"),
+                        "audio monitor: start failed"
+                    ),
+                },
+                Err(e) => tracing::warn!(
+                    attempt,
+                    error = format!("{e:#}"),
+                    "audio monitor: open failed"
+                ),
             }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        match opened {
+            Some((monitor, rx)) => {
+                if audio_ai_engine.is_active() {
+                    audio_ai_engine.spawn_worker(rx.resubscribe());
+                }
+                if voice_engine.is_active() {
+                    voice_engine.spawn_worker(rx.resubscribe());
+                }
+                _audio_monitor = Some(monitor);
+            }
+            None => tracing::warn!(
+                "audio monitor: giving up after retries (sound events + wake word paused)"
+            ),
         }
     }
     // Sound events ride the same alarm pipeline as visual detections: SSE
@@ -477,10 +499,26 @@ async fn main() -> anyhow::Result<()> {
         let bridge_tx = event_tx.clone();
         let notifier_slot = Arc::clone(&notifier_slot);
         let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
+        let records_pool = pool.clone();
         tokio::spawn(async move {
             loop {
                 match sound_events.recv().await {
                     Ok(ev) => {
+                        // Persistent hearing record (SPEC appendix A #24) —
+                        // fail-open: a DB hiccup never touches the alarm
+                        // pipeline.
+                        if let Err(e) = web::db::insert_hearing_record(
+                            &records_pool,
+                            "sound",
+                            &ev.class,
+                            Some(ev.score as f64),
+                            "",
+                            ev.timestamp_ms as i64,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %e, "hearing record: insert failed");
+                        }
                         let _ = bridge_tx.send(web::routes::events::CameraEvent::Alarm {
                             camera_id: "0".to_string(),
                             targets: 1,
@@ -624,10 +662,24 @@ async fn main() -> anyhow::Result<()> {
         let mut voice_events = voice_engine.subscribe_events();
         let bridge_tx = event_tx.clone();
         let chat_for_voice = chat_engine.clone();
+        let records_pool = pool.clone();
         tokio::spawn(async move {
             loop {
                 match voice_events.recv().await {
                     Ok(ev) => {
+                        // Persistent hearing record (SPEC appendix A #24).
+                        if let Err(e) = web::db::insert_hearing_record(
+                            &records_pool,
+                            "voice",
+                            &ev.transcript,
+                            None,
+                            &ev.keyword,
+                            ev.timestamp_ms as i64,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %e, "hearing record: insert failed");
+                        }
                         let _ = bridge_tx.send(web::routes::events::CameraEvent::VoiceTranscript {
                             keyword: ev.keyword,
                             transcript: ev.transcript.clone(),

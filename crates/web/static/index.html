@@ -73,6 +73,7 @@
         <button class="nav-tab hidden" data-view="cameras"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg><span data-i18n="cameras">Cameras</span></button>
         <button class="nav-tab" data-view="settings"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7.5M16.5 7H20M4 17h3.5M12.5 17H20"/><circle cx="14" cy="7" r="2.3"/><circle cx="10" cy="17" r="2.3"/></svg><span data-i18n="settings">Settings</span></button>
         <button class="nav-tab" data-view="status"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h3.5L9 5.5l4.5 13L16 12h5"/></svg><span data-i18n="status">Status</span></button>
+        <button class="nav-tab hidden" data-view="records"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.5h9.5L19 8v12.5H5z"/><path d="M8 11h8M8 14.5h8M8 18h5"/></svg><span data-i18n="records">Records</span></button>
         <button class="nav-tab hidden" data-view="devices"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 10.5h4M10 13.5h4M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="devices">Devices</span></button>
       </nav>
       <div class="nav-tools">
@@ -94,6 +95,7 @@
       <button class="nav-tab hidden" data-view="cameras"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg><span data-i18n="cameras">Cameras</span></button>
       <button class="nav-tab" data-view="settings"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7.5M16.5 7H20M4 17h3.5M12.5 17H20"/><circle cx="14" cy="7" r="2.3"/><circle cx="10" cy="17" r="2.3"/></svg><span data-i18n="settings">Settings</span></button>
       <button class="nav-tab" data-view="status"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h3.5L9 5.5l4.5 13L16 12h5"/></svg><span data-i18n="status">Status</span></button>
+      <button class="nav-tab hidden" data-view="records"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.5h9.5L19 8v12.5H5z"/><path d="M8 11h8M8 14.5h8M8 18h5"/></svg><span data-i18n="records">Records</span></button>
       <button class="nav-tab hidden" data-view="devices"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 10.5h4M10 13.5h4M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="devices">Devices</span></button>
     </nav>
 
@@ -346,6 +348,26 @@
       <div class="card">
         <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="hostCaps">Host capabilities</span></h3>
         <div class="readings" id="device-caps"></div>
+      </div>
+    </div>
+
+    <!-- ===== View: Hearing records (audio_records capability only) ===== -->
+    <div id="view-records" class="view">
+      <div class="view-head">
+        <h2 data-i18n="recordsTitle">Hearing records</h2>
+        <p class="view-desc" data-i18n="recordsDesc"></p>
+      </div>
+      <div class="card">
+        <div class="live-toolbar records-toolbar">
+          <select id="records-kind" aria-label="Kind">
+            <option value="" data-i18n="recordsKindAll">All kinds</option>
+            <option value="sound" data-i18n="recordsKindSound">Sound events</option>
+            <option value="voice" data-i18n="recordsKindVoice">Voice transcripts</option>
+          </select>
+          <button type="button" id="records-refresh" class="btn-small" data-i18n="recordsRefresh">Refresh</button>
+          <button type="button" id="records-clear" class="btn-small" data-i18n="recordsClear">Clear all</button>
+        </div>
+        <div id="records-list"></div>
       </div>
     </div>
   </div>

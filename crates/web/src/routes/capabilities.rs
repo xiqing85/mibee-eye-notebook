@@ -105,6 +105,10 @@ pub async fn get_capabilities(
         // Always-on sound-event detection + voice-presence signal
         // (SPEC appendix A notebook dialect; fail-open like `ai`).
         "audio_ai": audio_ai.is_active(),
+        // Persistent hearing records (`GET/DELETE /api/audio/records`,
+        // SPEC appendix A #24): anything the audio engines recognize
+        // lands as a queryable text record.
+        "audio_records": audio_records_capable(audio_ai.is_active(), voice.is_active()),
         // User-drawn intrusion/tripwire zones (`GET/PUT
         // /api/cameras/{id}/zones`); events require AI tracking.
         "zones": ai.is_active(),
@@ -209,5 +213,28 @@ mod tests {
         // No active streams → substream capability false (SPEC appendix
         // A #20: it follows an active substream pipeline, not the config).
         assert_eq!(json["substream"], serde_json::json!(false));
+        // Neither audio engine active (default engines: no models in
+        // tests, fail-open) → no hearing-records capability.
+        assert_eq!(json["audio_records"], serde_json::json!(false));
+    }
+}
+
+/// SPEC appendix A #24: the hearing-records surface (`GET/DELETE
+/// /api/audio/records`) exists when either audio engine is active — the
+/// device can hear through sound events or the voice loop alike.
+fn audio_records_capable(audio_ai_active: bool, voice_active: bool) -> bool {
+    audio_ai_active || voice_active
+}
+
+#[cfg(test)]
+mod audio_records_tests {
+    use super::audio_records_capable;
+
+    #[test]
+    fn audio_records_capability_follows_any_active_audio_engine() {
+        assert!(!audio_records_capable(false, false));
+        assert!(audio_records_capable(true, false));
+        assert!(audio_records_capable(false, true));
+        assert!(audio_records_capable(true, true));
     }
 }

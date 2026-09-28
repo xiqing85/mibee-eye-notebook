@@ -35,6 +35,7 @@ mibee-eye 是一台带可选端侧智能的本地采集设备。每项智能功�
 | `ai` | 视觉目标检测（NanoDet）——检测叠加框、`/api/detections`、`ai_detection` 事件 |
 | `zones` | 用户绘制入侵/越线区域 + 基于跟踪的 `zone_event`（依赖 `ai`） |
 | `audio_ai` | 声音事件检测（YAMNet）——`source: "audio"` 的 `alarm` 事件 |
+| `audio_records` | 持久听觉记录——**记录**视图与 `GET /api/audio/records` |
 | `voice` | 唤醒词 + 离线语音转写——`voice_transcript` 事件 |
 | `chat` | 本地 LLM 对话——对话面板与 `POST /api/chat` |
 | `vlm` | 告警画面图像描述——`alarm_description` 事件 |
@@ -118,6 +119,14 @@ LLM **在设备本地运行**（llama.cpp + Qwen3），不向任何云服务发�
 
 GB28181 启用且平台已订阅时，同一条被接受的告警还会以 GB Alarm NOTIFY
 转发（Method 5 / Type 2 / Priority 4）。
+
+### 听觉记录
+
+听觉面识别到的一切都会写入**持久文本记录**（能力位 `audio_records`）：
+每条触发的声音事件（类别名与得分）、每次语音交互（唤醒词与完整转写）。
+打开 Web 界面的**记录**视图浏览——最新在前、可按类型筛选、一键清空。
+程序可经 `GET /api/audio/records` 读取同一份日志（`DELETE` 清空）。日志
+保留最近 1000 条；记录跨重启保存。
 
 声音事件检测与语音监听**只在配置中显式开启后才运行**——麦克风是隐私敏感
 输入，所有监听类功能一律默认关闭、主动开启。
@@ -221,6 +230,7 @@ mibee-eye --selftest-ocr page.jpg        # OCR：识别文字
 | 区域事件从不触发 | 区域依赖 `ai`（跟踪）。确认检测框本来就有、相机在运行、区域确实覆盖目标会经过的位置。 |
 | LLM 回复很慢 | 小主机跑 GGUF 推理就是慢；默认 Qwen3-0.6B Q8_0 在现代笔记本上短回复需数秒。可调低 `max_tokens`、换 Q4_K_M 量化，或把 LLM 挪到更快的主机。 |
 | 声音告警频繁误报 | 调高 `audio_ai.threshold`、缩短 `classes` 列表，或加大 `cooldown_secs`。 |
+| 记录视图没有内容 | 该能力位需要音频引擎活跃（`audio_ai` 或 `voice`）。而且记录只在引擎运行期间累积——引擎没在跑的时段不会留下任何痕迹。 |
 | 机器负载高时 `POST /api/chat` 超时 | 多个重型引擎会争抢 CPU。推理线程数已自动设上限（`OMP_NUM_THREADS` = 核数/2，最高 4）；关闭其他引擎或升级主机。 |
 
 其余问题从日志入手（`RUST_LOG=info` 或服务 journal）——每个引擎启动时

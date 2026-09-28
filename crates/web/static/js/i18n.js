@@ -96,6 +96,13 @@ const DICT = {
     firmware: '固件版本', vendor: '厂商',
     recordingService: '录像服务', gb28181Service: 'GB28181',
     stateOn: '运行中', stateOff: '已停止',
+    // Records view (hearing records, SPEC appendix A #24)
+    records: '记录', recordsTitle: '听觉记录', recordsDesc: '设备听到的声音类别与语音转写（持久保存，最新在前，封顶 1000 条）',
+    recordsKindAll: '全部类型', recordsKindSound: '声音事件', recordsKindVoice: '语音转写',
+    recordsRefresh: '刷新', recordsClear: '清空全部', recordsClearConfirm: '确定清空全部听觉记录？此操作不可恢复。',
+    recordsEmpty: '暂无记录 — 设备听到声音或语音交互后会出现在这里',
+    recordsLoadFailed: '记录加载失败',
+    recordsSound: '声音', recordsVoice: '语音',
     // Devices view
     devicesTitle: '主机设备', devicesDesc: '主机上的视频 / 音频采集设备', videoDevices: '视频设备', audioDevices: '音频设备',
     formats: '支持格式', useAsCamera: '用作相机', noDevices: '未发现设备',
@@ -248,6 +255,13 @@ const DICT = {
     firmware: 'Firmware', vendor: 'Vendor',
     recordingService: 'Recording', gb28181Service: 'GB28181',
     stateOn: 'On', stateOff: 'Off',
+    // Records view (hearing records, SPEC appendix A #24)
+    records: 'Records', recordsTitle: 'Hearing records', recordsDesc: 'Sound classes and voice transcripts the device heard (persisted, newest first, capped at 1000)',
+    recordsKindAll: 'All kinds', recordsKindSound: 'Sound events', recordsKindVoice: 'Voice transcripts',
+    recordsRefresh: 'Refresh', recordsClear: 'Clear all', recordsClearConfirm: 'Clear every hearing record? This cannot be undone.',
+    recordsEmpty: 'No records yet — sound events and voice interactions will appear here',
+    recordsLoadFailed: 'Failed to load records',
+    recordsSound: 'Sound', recordsVoice: 'Voice',
     // Devices view
     devicesTitle: 'Host Devices', devicesDesc: 'Video / audio capture devices on this host', videoDevices: 'Video devices', audioDevices: 'Audio devices',
     formats: 'Formats', useAsCamera: 'Use as camera', noDevices: 'No devices found',

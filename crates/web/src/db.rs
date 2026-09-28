@@ -21,6 +21,108 @@ pub struct CameraRow {
     pub offline_since: Option<String>,
 }
 
+/// One persisted hearing record (SPEC appendix A #24): what an audio engine
+/// recognized, as text. `kind` is `"sound"` (YAMNet class in `text`, voted
+/// score in `score`) or `"voice"` (transcript in `text`, wake word in
+/// `keyword`).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HearingRecord {
+    pub id: i64,
+    pub kind: String,
+    pub text: String,
+    pub score: Option<f64>,
+    pub keyword: String,
+    pub timestamp_ms: i64,
+}
+
+/// FIFO cap applied on every insert so a chatty microphone can never grow
+/// the table without bound.
+pub const HEARING_RECORDS_CAP: i64 = 1000;
+
+/// Persist one hearing record. Fail-open at the call site: a full or busy
+/// database must never take the audio pipeline down, so callers log the
+/// error and move on.
+pub async fn insert_hearing_record(
+    pool: &SqlitePool,
+    kind: &str,
+    text: &str,
+    score: Option<f64>,
+    keyword: &str,
+    timestamp_ms: i64,
+) -> Result<()> {
+    let mut tx = pool.begin().await.context("hearing record: begin")?;
+    sqlx::query("INSERT INTO hearing_records (kind, text, score, keyword, timestamp_ms) VALUES (?1, ?2, ?3, ?4, ?5)")
+        .bind(kind)
+        .bind(text)
+        .bind(score)
+        .bind(keyword)
+        .bind(timestamp_ms)
+        .execute(&mut *tx)
+        .await
+        .context("hearing record: insert")?;
+    sqlx::query(&format!(
+        "DELETE FROM hearing_records WHERE id NOT IN \
+         (SELECT id FROM hearing_records ORDER BY id DESC LIMIT {HEARING_RECORDS_CAP})"
+    ))
+    .execute(&mut *tx)
+    .await
+    .context("hearing record: prune")?;
+    tx.commit().await.context("hearing record: commit")
+}
+
+/// List hearing records, newest first. `kind` filters when given (must be
+/// `"sound"` or `"voice"`; anything else is treated as no filter).
+pub async fn list_hearing_records(
+    pool: &SqlitePool,
+    limit: i64,
+    kind: Option<&str>,
+) -> Result<Vec<HearingRecord>> {
+    let limit = limit.clamp(1, 500);
+    let rows: Vec<(i64, String, String, Option<f64>, String, i64)> =
+        if matches!(kind, Some("sound") | Some("voice")) {
+            sqlx::query_as(
+                "SELECT id, kind, text, score, keyword, timestamp_ms \
+             FROM hearing_records WHERE kind = ?1 ORDER BY timestamp_ms DESC, id DESC LIMIT ?2",
+            )
+            .bind(kind)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .context("hearing record: list")?
+        } else {
+            sqlx::query_as(
+                "SELECT id, kind, text, score, keyword, timestamp_ms \
+             FROM hearing_records ORDER BY timestamp_ms DESC, id DESC LIMIT ?1",
+            )
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+            .context("hearing record: list")?
+        };
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, kind, text, score, keyword, timestamp_ms)| HearingRecord {
+                id,
+                kind,
+                text,
+                score,
+                keyword,
+                timestamp_ms,
+            },
+        )
+        .collect())
+}
+
+/// Delete every hearing record; returns the number of rows removed.
+pub async fn clear_hearing_records(pool: &SqlitePool) -> Result<usize> {
+    let result = sqlx::query("DELETE FROM hearing_records")
+        .execute(pool)
+        .await
+        .context("hearing record: clear")?;
+    Ok(result.rows_affected() as usize)
+}
+
 /// Initialize the SQLite pool at `path` with WAL mode and busy timeout.
 ///
 /// This creates an async SqlitePool for web CRUD operations.
@@ -1022,5 +1124,109 @@ mod tests {
         assert_eq!(bytes, 500);
         assert_eq!(frames, 10);
         assert_eq!(errors, 1);
+    }
+
+    #[tokio::test]
+    async fn hearing_records_table_created_by_migration() {
+        let pool = test_pool().await;
+        let tables: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            tables.contains(&"hearing_records".to_string()),
+            "hearing_records table should exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn hearing_record_insert_and_list_roundtrip() {
+        let pool = test_pool().await;
+        insert_hearing_record(&pool, "sound", "Dog", Some(0.62), "", 1_000)
+            .await
+            .unwrap();
+        insert_hearing_record(&pool, "voice", "今天天气怎么样", None, "小蜜蜂", 2_000)
+            .await
+            .unwrap();
+
+        let rows = list_hearing_records(&pool, 100, None).await.unwrap();
+        assert_eq!(rows.len(), 2, "both records listed");
+        // Newest first.
+        assert_eq!(rows[0].kind, "voice");
+        assert_eq!(rows[0].text, "今天天气怎么样");
+        assert_eq!(rows[0].keyword, "小蜜蜂");
+        assert_eq!(rows[0].score, None);
+        assert_eq!(rows[1].kind, "sound");
+        assert_eq!(rows[1].text, "Dog");
+        assert_eq!(rows[1].score, Some(0.62));
+        assert_eq!(rows[1].keyword, "");
+    }
+
+    #[tokio::test]
+    async fn hearing_record_kind_filter_and_limit() {
+        let pool = test_pool().await;
+        for i in 0..5 {
+            insert_hearing_record(&pool, "sound", "Dog", Some(0.5), "", i * 10)
+                .await
+                .unwrap();
+            insert_hearing_record(&pool, "voice", "你好", None, "小蜜蜂", i * 10 + 5)
+                .await
+                .unwrap();
+        }
+
+        let sounds = list_hearing_records(&pool, 100, Some("sound"))
+            .await
+            .unwrap();
+        assert_eq!(sounds.len(), 5);
+        assert!(sounds.iter().all(|r| r.kind == "sound"));
+
+        let voices = list_hearing_records(&pool, 2, Some("voice")).await.unwrap();
+        assert_eq!(voices.len(), 2, "limit applies within the filter");
+        assert_eq!(voices[0].timestamp_ms, 45, "newest voice record first");
+
+        // Unknown kind values are treated as "no filter", not an error.
+        let all = list_hearing_records(&pool, 100, Some("bogus"))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn hearing_record_fifo_cap_prunes_oldest() {
+        let pool = test_pool().await;
+        for i in 0..(HEARING_RECORDS_CAP + 50) {
+            insert_hearing_record(&pool, "sound", "Knock", Some(0.4), "", i)
+                .await
+                .unwrap();
+        }
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM hearing_records")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, HEARING_RECORDS_CAP, "table stays at the FIFO cap");
+        let oldest: i64 = sqlx::query_scalar("SELECT MIN(timestamp_ms) FROM hearing_records")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(oldest, 50, "the oldest 50 rows were pruned");
+    }
+
+    #[tokio::test]
+    async fn hearing_record_clear_removes_everything() {
+        let pool = test_pool().await;
+        insert_hearing_record(&pool, "sound", "Glass", Some(0.9), "", 7)
+            .await
+            .unwrap();
+        insert_hearing_record(&pool, "voice", "在吗", None, "小蜜蜂", 8)
+            .await
+            .unwrap();
+        let removed = clear_hearing_records(&pool).await.unwrap();
+        assert_eq!(removed, 2);
+        let rows = list_hearing_records(&pool, 100, None).await.unwrap();
+        assert!(rows.is_empty());
+        // Clearing an empty table is a harmless 0.
+        let removed = clear_hearing_records(&pool).await.unwrap();
+        assert_eq!(removed, 0);
     }
 }

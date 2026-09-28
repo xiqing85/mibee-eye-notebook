@@ -110,6 +110,8 @@ instead of pretending.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/chat` | Local LLM dialogue: `{"text","history":[{role,content}]}` → `{"reply"}` (capability `chat`; voice-loop replies also arrive as `chat_reply` SSE) |
+| GET | `/api/audio/records` | Hearing records (capability `audio_records`): `{"records":[{id, kind:"sound"\|"voice", text, score, keyword, timestamp_ms}]}`, newest first; `?limit=N` (default 100, max 500), `?kind=sound\|voice` |
+| DELETE | `/api/audio/records` | Clear every record → `{"applied":"immediate","removed":N}` |
 | POST | `/api/ocr` | Body = raw JPEG bytes → `{"items":[{text, score, bbox}]}` (capability `ocr`) |
 | GET/PUT | `/api/cameras/{id}/zones` | See the Cameras table above |
 | GET | `/api/ai/models` | Detection model store: available/active models |
