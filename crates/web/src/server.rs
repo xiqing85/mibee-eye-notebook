@@ -193,6 +193,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // AI detections (SPEC v1 §4.6 + per-camera multi-camera dialect)
         .route("/api/ocr", post(routes::ocr::run_ocr))
         .route("/api/chat", post(routes::chat::chat))
+        .route(
+            "/api/audio/records",
+            get(routes::audio_records::list_records).delete(routes::audio_records::clear_records),
+        )
         .route("/api/cameras/{id}/zones", get(crate::zones::get_zones))
         .route("/api/cameras/{id}/zones", put(crate::zones::put_zones))
         .route("/api/detections", get(routes::detections::get_detections))

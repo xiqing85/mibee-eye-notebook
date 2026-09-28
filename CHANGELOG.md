@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hearing dead for a whole run after one lost monitor build**: the audio
+  monitor is now opened with a bounded retry (3 s × 10) at startup, and when
+  the device rejects the widened 2048-frame period (PipeWire-era ALSA
+  plugins enforce the current quantum — observed `341..=342` frames), the
+  monitor falls back to the device default instead of pausing sound events
+  and the wake word until the next restart. Full error chains are logged.
 - llama-cpp-2 batch-relative logits indexing (prompt decode vs generation
   step); `«think»` blocks stripped from replies; one shared llama.cpp
   backend instance instead of per-engine loads.

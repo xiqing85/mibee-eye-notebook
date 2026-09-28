@@ -38,6 +38,7 @@ web UI reads it on load and renders exactly what this device can do:
 | `ai` | Visual object detection (NanoDet) — detection overlay, `/api/detections`, `ai_detection` events |
 | `zones` | User-drawn intrusion/tripwire zones with tracking-based `zone_event`s (requires `ai`) |
 | `audio_ai` | Sound-event detection (YAMNet) — `alarm` events with `source: "audio"` |
+| `audio_records` | Persistent hearing records — the **Records** view and `GET /api/audio/records` |
 | `voice` | Wake word + offline speech-to-text — `voice_transcript` events |
 | `chat` | Local LLM dialogue — the chat panel and `POST /api/chat` |
 | `vlm` | Alarm-frame image descriptions — `alarm_description` events |
@@ -139,6 +140,16 @@ notification, attributed to the alarm it belongs to.
 
 If GB28181 is enabled and a platform subscribed, the same accepted alarms are
 also forwarded as GB Alarm NOTIFY messages (method 5 / type 2 / priority 4).
+
+### Hearing records
+
+Everything the hearing surface recognizes is also written to a **persistent
+text record** (capability `audio_records`): every fired sound event (its
+class name and score) and every voice interaction (the wake word and the
+full transcript). Open the **Records** view in the web UI to browse them —
+newest first, filterable by kind, with a clear-all button. Programs can read
+the same log via `GET /api/audio/records` (and wipe it with `DELETE`). The
+log keeps the most recent 1000 entries; records survive restarts.
 
 Sound-event detection and voice listening only run when you explicitly
 enable them in the configuration — the microphone is privacy-sensitive
@@ -250,6 +261,7 @@ fails with the engine's error when files or features are missing.
 | Zone events never fire | Zones require `ai` (tracking). Check that detection boxes appear at all, that the camera is running, and that the zone really intersects where objects move. |
 | LLM reply takes very long | Small hosts are slow at GGUF inference; the default Qwen3-0.6B Q8_0 targets a few seconds per short reply on a modern laptop. Lower `max_tokens`, use a Q4_K_M quant, or move the LLM to a faster host. |
 | Sound alarms fire constantly | Raise `audio_ai.threshold`, shorten the `classes` list, or increase `cooldown_secs`. |
+| Records view shows nothing | Its capability needs an active audio engine (`audio_ai` or `voice`). Records also only accumulate while the engine runs — past moments without a running engine leave no trace. |
 | `POST /api/chat` times out while the machine is loaded | Several heavy engines can contend for CPU. Inference threads are capped automatically (`OMP_NUM_THREADS` = cores/2, max 4); close other engines or upgrade the host. |
 
 For everything else, start with the logs (`RUST_LOG=info` or the service
