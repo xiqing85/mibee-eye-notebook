@@ -68,7 +68,7 @@ lockout after repeated failures.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/status` | device_name / model / vendor / firmware / uptime / cameras |
-| GET | `/api/capabilities` | SPEC superset (`multi_camera`, `camera_management`, `camera_control`, `devices`, `mjpeg`, `mse`, `events`, `config_apply`, …) plus the host hardware probe extension fields `system` and `recommended_profiles` |
+| GET | `/api/capabilities` | SPEC superset (`multi_camera`, `camera_management`, `camera_control`, `devices`, `mjpeg`, `mse`, `events`, `config_apply`, …) plus the device-intelligence booleans `ai` / `zones` / `audio_ai` / `voice` / `chat` / `vlm` / `ocr` / `substream`, the host hardware probe extension fields `system` and `recommended_profiles`, and `events` extended with the capability-gated names |
 
 ### Cameras (SPEC §4)
 
@@ -81,6 +81,9 @@ lockout after repeated failures.
 | GET | `/api/cameras/{id}/snapshot` | JPEG snapshot |
 | GET | `/api/cameras/{id}/live` | MJPEG multipart stream |
 | GET | `/api/cameras/{id}/stream.mse` | Chunked fMP4 stream for MSE playback |
+| GET | `/api/cameras/{id}/stream.sub.mse` | Low-resolution substream (per-camera `config.substream`; advertised via `capabilities.substream`) |
+| GET | `/api/cameras/{id}/zones` | Saved zones: `{"zones":[{name, kind:"intrusion"\|"line_cross", points:[[x,y]…], dwell_secs}], "applied":"immediate"}` (capability `zones`) |
+| PUT | `/api/cameras/{id}/zones` | Replace the zone list — body is a **bare array** of zones; structural validation (intrusion ≥ 3 points, line exactly 2) |
 
 ### Configuration (SPEC §5)
 
@@ -96,7 +99,23 @@ This replaces the former `GET/PUT /api/settings` and the per-protocol
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"`, `targets`, `timestamp` epoch-ms) |
+| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"` or `"audio"`, `targets` / `class` + `score`, `timestamp` epoch-ms), `zone_event` (`{camera_id, zone, event, track_id, label, timestamp}`), `voice_transcript` (`{keyword, transcript, timestamp}`), `chat_reply` (`{source, reply, timestamp}`), `alarm_description` (`{camera_id, alarm_timestamp, description, elapsed_s}`). Each capability-gated event is only emitted while its engine is active. |
+
+### On-device intelligence (device extension)
+
+All endpoints below are capability-gated: the engine answers honestly when
+inactive (`{"enabled": false}` shapes / `not_implemented`-class errors)
+instead of pretending.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/chat` | Local LLM dialogue: `{"text","history":[{role,content}]}` → `{"reply"}` (capability `chat`; voice-loop replies also arrive as `chat_reply` SSE) |
+| POST | `/api/ocr` | Body = raw JPEG bytes → `{"items":[{text, score, bbox}]}` (capability `ocr`) |
+| GET/PUT | `/api/cameras/{id}/zones` | See the Cameras table above |
+| GET | `/api/ai/models` | Detection model store: available/active models |
+| POST | `/api/ai/models/{id}/activate` | Activate an uploaded model |
+| POST | `/api/ai/models` | Upload a model archive |
+| DELETE | `/api/ai/models/{id}` | Delete an uploaded model |
 
 ### Devices (SPEC §4.8)
 

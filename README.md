@@ -18,6 +18,9 @@ Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqin
 - **Local capture** — webcam via V4L2 (Linux) / MSMF (Windows), microphone via ALSA / WASAPI
 - **Outbound protocols** — RTSP server (clients pull), RTMP push, ONVIF device endpoint, GB/T 28181 device registration (all default-OFF, enabled via Web UI)
 - **GB/T 28181-2022 device surface** — alarm events (SSE `alarm` + Alarm NOTIFY, AI rising-edge with cooldown), DeviceControl (IFrameCmd force-keyframe, RecordCmd recording gate), graceful deregistration (REGISTER Expires: 0), static MobilePosition reporting, DeviceConfig FrameMirror runtime mirroring, SIP-Date drift observation, Catalog/DeviceInfo/keepalive per the shared gb28181-rs library
+- **On-device intelligence (all fail-open, opt-in)** — visual object detection (NanoDet) with a live overlay; sound-event detection (YAMNet) emitting `source: "audio"` alarms with vote smoothing and per-class cooldowns; user-drawn intrusion/tripwire zones with ByteTrack-subset tracking (`zone_event` SSE); OCR (PP-OCR v4/v5, `POST /api/ocr`) — SPEC appendix A #21
+- **Voice interaction** — wake word 小蜜蜂 (sherpa-onnx zipformer KWS) → offline paraformer zh transcription → local LLM reply (llama.cpp + Qwen3 GGUF) → TTS playback (sherpa-onnx CLI subprocess, GPL isolated); `voice_transcript` / `chat_reply` SSE — SPEC appendix A #22
+- **Alarm intelligence** — vision-language descriptions of alarm frames (Qwen3-VL via llama.cpp mtmd) as async `alarm_description` SSE, never delaying the alarm; single-flight scheduling with an inter-description floor
 - **H.264 / H.265** — hand-written NAL unit parser, keyframe detection, SPS/PPS extraction
 - **MiBee NVR integration** — REST API client, camera sync, SSE event stream
 - **Web UI** — Axum REST API + embedded SPA, TLS via rustls, session-based auth, bilingual (zh-CN / en-US), day/night theme
@@ -211,6 +214,7 @@ Default ports: web UI `8443` (TLS), RTSP `8554`, RTMP `1935`.
 
 Full documentation is available under [docs/en/](docs/en/):
 
+- [User Guide](docs/en/user-guide.md) — using the web UI and the AI features
 - [Getting Started](docs/en/getting-started.md)
 - [Installation](docs/en/installation.md)
 - [Configuration](docs/en/configuration.md)

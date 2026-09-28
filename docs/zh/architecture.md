@@ -251,6 +251,35 @@ udev netlink 监听器（`crates/capture/src/hotplug.rs`）检测 ADD/REMOVE 事
 - **W3C TraceContext**：`traceparent` 头提取（入站，Axum 中间件）+ 注入（出站 HTTP）。
 - **远程日志推送**：可选的 `tracing-loki` 层（故障开放 — 无法连接的端点仅记录警告）。
 
+### 端侧智能（AI 扩展）
+
+全部引擎位于 `crates/streaming`，由 cargo feature 门控，共用同一契约：
+**配置主动开启（默认关）、加载故障开放、能力位如实通告**——模型或
+feature 缺失只把能力位从 `/api/capabilities` 与界面移除，绝不拖垮服务。
+
+- **视觉检测**（`ai`）：NanoDet-Plus 对采集帧推理；上升沿驱动 SPEC §6
+  `alarm` SSE + GB Alarm NOTIFY；叠加框经 `/api/detections` 与
+  `ai_detection` 事件到达界面。
+- **跟踪 + 区域**（`zones`）：ByteTrack 子集跟踪器骑在检测结果上（零额外
+  推理）；用户绘制的入侵/越线区域（`GET/PUT /api/cameras/{id}/zones`）
+  产生 `zone_event` SSE 事件。
+- **声音事件**（`audio_ai`，YAMNet）：麦克风滚动 0.96 秒窗口、3 票平滑与
+  逐类冷却；被接受的边沿发出 `source: "audio"` 的 `alarm`；Silero-VAD
+  语音存在标志供语音环路消费。
+- **语音交互**（`voice`，sherpa-onnx）：流式 zipformer KWS 唤醒词（小蜜蜂）
+  → 采集 `capture_secs` 音频 → 离线 paraformer 中文转写 →
+  `voice_transcript` SSE。
+- **本地 LLM 对话**（`chat`，llama.cpp + Qwen3 GGUF）：`POST /api/chat`、
+  Web 对话面板与语音环路回复（`chat_reply` SSE）；贪心解码、`/no_think`、
+  内存 guardrail、`OMP_NUM_THREADS` 自动设上限。
+- **告警画面描述**（`vlm`，Qwen3-VL 经 llama.cpp mtmd）：被接受的视觉告警
+  的触发帧 JPEG 异步送描述——单飞调度 + 120 秒间隔下限，检测抖动不会堆叠
+  推理——结果以 `alarm_description` SSE 落地。
+- **TTS**（`[tts]`）：`sherpa-onnx-offline-tts` CLI 子进程（GPL espeak-ng
+  隔离在本二进制之外）读出 LLM 回复。
+- **OCR**（`ocr`，PP-OCR v4 检测 + v5 识别）：`POST /api/ocr`
+  （JPEG 进，带得分与框的文本项出）。
+
 ## 设计决策
 
 ### 手写协议

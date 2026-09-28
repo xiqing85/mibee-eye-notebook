@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- nothing yet
+### Added
+
+- **Sound events, tracking + zones, OCR** (SPEC appendix A #21): constant
+  microphone listening with YAMNet classification (3-vote smoothing,
+  per-class cooldown, Silero-VAD voice presence) emitting `source: "audio"`
+  alarms; a ByteTrack-subset tracker over the visual detections with
+  user-drawn intrusion/tripwire zones (`GET/PUT /api/cameras/{id}/zones`,
+  `zone_event` SSE); PP-OCR v4/v5 text recognition (`POST /api/ocr`). All
+  opt-in `[audio_ai]` / `[ocr]` config, fail-open.
+- **Voice interaction closed loop** (SPEC appendix A #22): wake word 小蜜蜂
+  (sherpa-onnx zipformer KWS) → `capture_secs` of audio → offline
+  paraformer zh transcription (`voice_transcript` SSE) → local LLM reply
+  (`chat_reply` SSE) → TTS playback via the `sherpa-onnx-offline-tts` CLI
+  subprocess (GPL espeak-ng isolated outside this binary). Requires the
+  `voice` cargo feature; opt-in `[voice]` / `[llm]` / `[tts]` config.
+- **Local LLM dialogue**: `POST /api/chat` (`{"text","history"}` →
+  `{"reply"}`) plus the web chat panel, llama.cpp + Qwen3 GGUF, greedy
+  decoding with `/no_think`.
+- **Alarm-frame descriptions** (SPEC appendix A #23): Qwen3-VL (llama.cpp
+  mtmd) describes the triggering JPEG of each accepted visual alarm —
+  asynchronous `alarm_description` SSE that never delays the alarm;
+  single-flight scheduler with a 120 s inter-description floor so flapping
+  detectors cannot stack inference. Opt-in `[vlm]` config, `llm` feature,
+  memory guardrail before load.
+- `--selftest-audio/-ocr/-voice/-llm/-tts/-vlm` offline one-shot CLI
+  self-tests (JSON result per engine) and `models/README.md` documenting the
+  untracked model assets.
+- Documentation: new bilingual **User Guide** (`docs/{en,zh}/user-guide.md`)
+  and on-device-intelligence sections across configuration / API /
+  architecture / installation / getting-started docs and both READMEs.
+
+### Changed
+
+- Inference thread pools are auto-capped (`OMP_NUM_THREADS` = cores/2, max 4)
+  unless the environment sets it; llama.cpp is linked with minimal features
+  (its `common`/`android-shared-stdcxx` features abort at static init when
+  sherpa-onnx is also linked).
+- ALSA capture requests a 2048-frame period clamped to the device range —
+  eliminates xruns on small laptop codecs when inference threads preempt the
+  audio callback.
+
+### Fixed
+
+- llama-cpp-2 batch-relative logits indexing (prompt decode vs generation
+  step); `«think»` blocks stripped from replies; one shared llama.cpp
+  backend instance instead of per-engine loads.
+- Zones PUT accepts the bare zone array the API contract specifies (the
+  shared frontend sent a wrapped object; mock leniency had masked it).
+- CI feature matrix covers `no-ai` / `voice` / `llm` / `voice+llm` / `vlm`
+  builds (vlm-gated mtmd code and audio_ai no-ai hygiene regressions).
 
 ## [0.4.0] — 2026-09-27
 

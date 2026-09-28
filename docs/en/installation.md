@@ -147,6 +147,34 @@ cargo run -- --reset-password
 - `--config, -c`: Path to config file (default: `config.toml`)
 - `--db-path, -d`: Path to SQLite database (default: `mibee_eye.db`)
 - `--reset-password`: Reset password for a user (prompts for credentials)
+- `--selftest-audio <wav>` / `--selftest-ocr <image>` / `--selftest-voice <wav>` / `--selftest-llm <prompt>` / `--selftest-tts <text>` / `--selftest-vlm <jpeg>`: offline one-shot self-tests — run the corresponding engine's full pipeline once and print a JSON result (see the [user guide](user-guide.md#verifying-a-feature-offline-self-tests))
+
+## AI Model Assets
+
+The AI engines load their models from `models/` at startup. These files are
+**not tracked in git** — download them at deploy time. Without them the
+service runs fine with the corresponding capabilities simply off (fail-open).
+
+[`models/README.md`](../../models/README.md) is the authoritative table of
+sources, sizes and licenses. Summary:
+
+| Path | Purpose | Size |
+|------|---------|------|
+| `models/nanodet-m.onnx` | visual object detection | ~10 MB |
+| `models/audio/yamnet.onnx`, `models/audio/silero_vad.onnx` | sound events, voice presence | ~18 MB |
+| `models/voice/kws/*`, `models/voice/paraformer/*` | wake word + ASR (sherpa-onnx releases) | ~250 MB |
+| `models/voice/melo/*` | TTS voice (k2-fsa `vits-melo-tts-zh_en`) | ~165 MB |
+| `models/llm/qwen3-0.6b-q8_0.gguf` | local chat LLM (ModelScope `Qwen/Qwen3-0.6B-GGUF`) | ~640 MB |
+| `models/vlm/*.gguf` (text + mmproj) | alarm-frame descriptions (ModelScope `Qwen/Qwen3-VL-2B-Instruct-GGUF`) | ~1.5 GB |
+| `models/ocr/*.onnx` | PP-OCR detector + recognizer | ~21 MB |
+
+Build-time notes:
+
+- The `voice` feature needs the sherpa-onnx **static libraries** — download
+  the k2-fsa release `sherpa-onnx-v1.13.8-linux-x64-static-lib.tar.bz2` and
+  build with `SHERPA_ONNX_LIB_DIR=<extracted>/lib`.
+- The `llm`/`vlm` features require an **AVX2-class CPU**; Sandy Bridge and
+  older hosts must build voice-only (`cargo build --release --features voice`).
 
 ## Configuration File
 

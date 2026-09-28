@@ -64,7 +64,7 @@ Cookie 会话 + CSRF 双提交：
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/status` | device_name / model / vendor / firmware / uptime / cameras |
-| GET | `/api/capabilities` | 规范超集（`multi_camera`、`camera_management`、`camera_control`、`devices`、`mjpeg`、`mse`、`events`、`config_apply` 等）+ 主机硬件探测扩展字段 `system`、`recommended_profiles` |
+| GET | `/api/capabilities` | 规范超集（`multi_camera`、`camera_management`、`camera_control`、`devices`、`mjpeg`、`mse`、`events`、`config_apply` 等）+ 端侧智能布尔位 `ai` / `zones` / `audio_ai` / `voice` / `chat` / `vlm` / `ocr` / `substream` + 主机硬件探测扩展字段 `system`、`recommended_profiles`，`events` 追加按能力门控的事件名 |
 
 ### 相机（规范 §4）
 
@@ -77,6 +77,9 @@ Cookie 会话 + CSRF 双提交：
 | GET | `/api/cameras/{id}/snapshot` | JPEG 快照 |
 | GET | `/api/cameras/{id}/live` | MJPEG 多部分流 |
 | GET | `/api/cameras/{id}/stream.mse` | MSE 播放的 chunked fMP4 流 |
+| GET | `/api/cameras/{id}/stream.sub.mse` | 低分辨率子码流（每相机 `config.substream`；经 `capabilities.substream` 通告） |
+| GET | `/api/cameras/{id}/zones` | 已存区域：`{"zones":[{name, kind:"intrusion"\|"line_cross", points:[[x,y]…], dwell_secs}], "applied":"immediate"}`（能力位 `zones`） |
+| PUT | `/api/cameras/{id}/zones` | 整体替换区域列表——body 为**裸数组**；结构校验（入侵 ≥ 3 点、越线恰 2 点） |
 
 ### 配置（规范 §5）
 
@@ -91,7 +94,22 @@ Cookie 会话 + CSRF 双提交：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"`、`targets`、`timestamp` 毫秒时间戳） |
+| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"` 或 `"audio"`、`targets` / `class` + `score`、`timestamp` 毫秒时间戳）、`zone_event`（`{camera_id, zone, event, track_id, label, timestamp}`）、`voice_transcript`（`{keyword, transcript, timestamp}`）、`chat_reply`（`{source, reply, timestamp}`）、`alarm_description`（`{camera_id, alarm_timestamp, description, elapsed_s}`）。按能力门控的事件只在对应引擎活跃时送出。 |
+
+### 端侧智能（设备扩展）
+
+以下端点全部按能力位门控：引擎未激活时如实作答（`{"enabled": false}` 形态
+/ `not_implemented` 类错误），绝不假装成功。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/chat` | 本地 LLM 对话：`{"text","history":[{role,content}]}` → `{"reply"}`（能力位 `chat`；语音环路的回复另经 `chat_reply` SSE 送出） |
+| POST | `/api/ocr` | body = JPEG 原始字节 → `{"items":[{text, score, bbox}]}`（能力位 `ocr`） |
+| GET/PUT | `/api/cameras/{id}/zones` | 见上方相机表 |
+| GET | `/api/ai/models` | 检测模型库：可用/激活模型列表 |
+| POST | `/api/ai/models/{id}/activate` | 激活已上传模型 |
+| POST | `/api/ai/models` | 上传模型包 |
+| DELETE | `/api/ai/models/{id}` | 删除已上传模型 |
 
 ### 主机设备（规范 §4.8）
 

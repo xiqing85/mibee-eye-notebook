@@ -143,6 +143,33 @@ cargo run -- --reset-password
 - `--config, -c`：配置文件路径（默认：`config.toml`）
 - `--db-path, -d`：SQLite 数据库路径（默认：`mibee_eye.db`）
 - `--reset-password`：重置用户密码（提示输入凭据）
+- `--selftest-audio <wav>` / `--selftest-ocr <image>` / `--selftest-voice <wav>` / `--selftest-llm <prompt>` / `--selftest-tts <text>` / `--selftest-vlm <jpeg>`：离线一次性自检——完整跑一遍对应引擎管线并输出 JSON 结果（见[用户手册](user-guide.md#离线自检)）
+
+## AI 模型资产
+
+AI 引擎在启动时从 `models/` 目录加载模型。这些文件**不进 git**——部署时
+下载。缺失时服务照常运行，对应能力位只是保持关闭（fail-open）。
+
+[`models/README.md`](../../models/README.md) 是来源、体积与许可的权威
+表格。概要：
+
+| 路径 | 用途 | 体积 |
+|------|------|------|
+| `models/nanodet-m.onnx` | 视觉目标检测 | ~10 MB |
+| `models/audio/yamnet.onnx`、`models/audio/silero_vad.onnx` | 声音事件、语音存在 | ~18 MB |
+| `models/voice/kws/*`、`models/voice/paraformer/*` | 唤醒词 + 转写（sherpa-onnx releases） | ~250 MB |
+| `models/voice/melo/*` | TTS 音色（k2-fsa `vits-melo-tts-zh_en`） | ~165 MB |
+| `models/llm/qwen3-0.6b-q8_0.gguf` | 本地对话 LLM（ModelScope `Qwen/Qwen3-0.6B-GGUF`） | ~640 MB |
+| `models/vlm/*.gguf`（文本 + mmproj） | 告警画面描述（ModelScope `Qwen/Qwen3-VL-2B-Instruct-GGUF`） | ~1.5 GB |
+| `models/ocr/*.onnx` | PP-OCR 检测 + 识别 | ~21 MB |
+
+构建期注意：
+
+- `voice` feature 需要 sherpa-onnx **静态库**——下载 k2-fsa release
+  `sherpa-onnx-v1.13.8-linux-x64-static-lib.tar.bz2`，以
+  `SHERPA_ONNX_LIB_DIR=<解压目录>/lib` 构建。
+- `llm`/`vlm` feature 需要 **AVX2 档 CPU**；Sandy Bridge 及更老主机只能
+  构建 voice-only（`cargo build --release --features voice`）。
 
 ## 配置文件
 
