@@ -1809,3 +1809,4 @@ input[type="range"]::-moz-range-thumb {
 .record-keyword { color: var(--text-faint); font-size: .72rem; }
 .record-score { flex: none; color: var(--text-faint); font-size: .72rem; }
 .record-empty { padding: var(--space-md) 0; color: var(--text-faint); font-size: .8rem; text-align: center; }
+.records-toolbar .btn-small { white-space: nowrap; }
