@@ -52,6 +52,15 @@ struct Args {
     selftest_vlm: Option<String>,
 }
 
+/// VLM description scheduler state: single-flight flag + last-start
+/// watermark (floor below). See the alarm hook in main for the rationale.
+static VLM_DESC_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static VLM_DESC_LAST_START: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Minimum spacing between description starts — a description takes
+/// 35–60 s of near-full CPU; this keeps headroom for everything else.
+const VLM_DESC_MIN_INTERVAL_MS: u64 = 120_000;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Cap the OpenMP pool before any ORT session spawns it (hosts like
@@ -305,35 +314,71 @@ async fn main() -> anyhow::Result<()> {
                             // VLM description of the triggering frame (SPEC
                             // appendix A #23): the alarm never waits for it —
                             // the description arrives as its own SSE event.
+                            // Single-flight + a floor between starts: a
+                            // flickering false-positive detection fires rising
+                            // edges every cooldown (30 s) while one
+                            // description takes 35–60 s — without the guard
+                            // they stack into concurrent contexts that
+                            // saturate the CPU (and can OOM-abort the
+                            // process). New triggers during a run or inside
+                            // the floor are dropped, not queued.
                             if vlm_engine.is_active()
                                 && let Some(jpeg) = ev.jpeg.clone()
                             {
-                                let vlm = Arc::clone(&vlm_engine);
-                                let tx = bridge_tx.clone();
-                                let camera_id = sig.camera_id.clone();
-                                let alarm_ts = sig.timestamp_ms;
-                                tokio::task::spawn_blocking(move || {
-                                    let started = std::time::Instant::now();
-                                    match vlm.describe_jpeg(&jpeg) {
-                                        Ok(description) => {
-                                            let _ = tx.send(
-                                                web::routes::events::CameraEvent::AlarmDescription {
-                                                    camera_id,
-                                                    alarm_timestamp_ms: alarm_ts,
-                                                    description,
-                                                    elapsed_s: (started.elapsed().as_secs_f64()
-                                                        * 100.0)
-                                                        .round()
-                                                        / 100.0,
-                                                },
-                                            );
+                                if VLM_DESC_IN_FLIGHT
+                                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                                {
+                                    // Another description is still running —
+                                    // drop this frame (never queue).
+                                    tracing::debug!(
+                                        "vlm: description in flight — alarm frame skipped"
+                                    );
+                                } else if now_ms.saturating_sub(
+                                    VLM_DESC_LAST_START.load(std::sync::atomic::Ordering::SeqCst),
+                                ) < VLM_DESC_MIN_INTERVAL_MS
+                                {
+                                    // Release OUR acquisition only (a run we
+                                    // just prevented, not someone else's).
+                                    VLM_DESC_IN_FLIGHT
+                                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                                    tracing::debug!(
+                                        "vlm: description throttled — alarm frame skipped"
+                                    );
+                                } else {
+                                    VLM_DESC_LAST_START
+                                        .store(now_ms, std::sync::atomic::Ordering::SeqCst);
+                                    let vlm = Arc::clone(&vlm_engine);
+                                    let tx = bridge_tx.clone();
+                                    let camera_id = sig.camera_id.clone();
+                                    let alarm_ts = sig.timestamp_ms;
+                                    tokio::task::spawn_blocking(move || {
+                                        let started = std::time::Instant::now();
+                                        let result = vlm.describe_jpeg(&jpeg);
+                                        VLM_DESC_IN_FLIGHT
+                                            .store(false, std::sync::atomic::Ordering::SeqCst);
+                                        match result {
+                                            Ok(description) => {
+                                                let _ = tx.send(
+                                                    web::routes::events::CameraEvent::AlarmDescription {
+                                                        camera_id,
+                                                        alarm_timestamp_ms: alarm_ts,
+                                                        description,
+                                                        elapsed_s: (started
+                                                            .elapsed()
+                                                            .as_secs_f64()
+                                                            * 100.0)
+                                                            .round()
+                                                            / 100.0,
+                                                    },
+                                                );
+                                            }
+                                            Err(e) => tracing::warn!(
+                                                error = %e,
+                                                "vlm: description failed"
+                                            ),
                                         }
-                                        Err(e) => tracing::warn!(
-                                            error = %e,
-                                            "vlm: description failed"
-                                        ),
-                                    }
-                                });
+                                    });
+                                }
                             }
                             // ONVIF MotionAlarm rides the same accepted
                             // edge (no NVR subscribed = no-op).
