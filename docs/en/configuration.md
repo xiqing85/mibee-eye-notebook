@@ -416,12 +416,16 @@ num_threads = 1
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Master switch (requires the `voice` build feature). |
 | `kws_encoder` / `kws_decoder` / `kws_joiner` / `kws_tokens` | String | `models/voice/kws/…` | Zipformer transducer KWS model trio + tokens. |
-| `keywords_file` | String | `"models/voice/kws/keywords.txt"` | Keywords file, one `word :boost #threshold` per line. Default list includes 小蜜蜂. |
+| `keywords_file` | String | `"models/voice/kws/keywords.txt"` | Keywords file — one keyword per line, `tokens… @display-name` (zh-en phoneme model, e.g. `x iǎo m ì f ēng @小蜜蜂`). |
 | `keywords_threshold` | f32 | `0.25` | Wake sensitivity — lower fires more easily. |
 | `keywords_score` | f32 | `1.0` | Minimum score for an accepted wake. |
-| `paraformer_model` / `paraformer_tokens` | String | `models/voice/paraformer/…` | Offline paraformer zh int8 recognizer. |
-| `capture_secs` | u32 | `4` | Seconds of audio captured after a wake word before transcription. |
+| `paraformer_model` / `paraformer_tokens` | String | `models/voice/paraformer/…` | Offline paraformer checkpoint. Default is the zh build (Mandarin + embedded English); **for Cantonese/Mandarin/English use the trilingual build** (`models/voice/paraformer-trilingual/…`, 234MB, Apache-2.0, see `models/README.md`). |
+| `capture_secs` | u32 | `4` | Seconds of audio captured after a wake word. |
 | `num_threads` | i32 | `1` | Inference threads (target hosts are small). |
+| `speaker_embedding_model` | String | `models/voice/speaker/campplus.onnx` | Speaker-embedding model (3D-Speaker CAM++ zh_en). **A missing file only disables voiceprint features** — wake + ASR keep working. |
+| `speaker_verify` | bool | `false` | Voiceprint gate: wake words must match an enrolled speaker before the capture window opens (fail-open with a one-time WARN when no profiles exist). |
+| `speaker_threshold` | f32 | `0.55` | Cosine-similarity threshold (CAM++ typical 0.5–0.6; calibrate on the target mic). |
+| `verify_window_secs` | f32 | `2.0` | Ring-buffer seconds of pre-wake audio the gate embeds (must cover the wake-word utterance). |
 
 **Notes:**
 
@@ -466,6 +470,32 @@ no_think = true
   RAM (fail-open).
 - Inference thread pools are capped automatically (`OMP_NUM_THREADS` =
   cores/2, max 4) unless the environment already sets it.
+
+### [decision] - Voice decision assist (Laya typed decisions)
+
+One local typed-intent decision (answer/device/ignore) over each voice
+transcript before any local-LLM tokens are spent; `ignore` skips the
+auto-reply. Needs the `[ai]` runtime (onnxruntime) and a laya
+multilingual ONNX checkpoint (see `models/README.md`).
+
+```toml
+[decision]
+enabled = false
+model_path = "models/decision/laya_multilingual.int8.onnx"
+tokenizer_path = "models/decision/tokenizer.json"
+config_path = "models/decision/laya_config.json"
+min_confidence = 0.35
+num_threads = 1
+```
+
+| Key | Type | Default | Notes |
+|------|------|---------|------|
+| `enabled` | bool | `false` | Master switch. |
+| `model_path` | String | `models/decision/laya_multilingual.int8.onnx` | laya ONNX checkpoint (int8 export recommended). |
+| `tokenizer_path` | String | `models/decision/tokenizer.json` | The checkpoint's HuggingFace tokenizer. |
+| `config_path` | String | `models/decision/laya_config.json` | json carrying `max_len`/`head_max_len`/calibration; safe defaults when absent. |
+| `min_confidence` | f32 | `0.35` | Decisions below this are ignored (fail-open to the old behavior). |
+| `num_threads` | u16 | `1` | Inference threads. |
 
 ### [tts] - Text-to-Speech Playback
 

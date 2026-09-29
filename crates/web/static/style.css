@@ -1810,3 +1810,37 @@ input[type="range"]::-moz-range-thumb {
 .record-score { flex: none; color: var(--text-faint); font-size: .72rem; }
 .record-empty { padding: var(--space-md) 0; color: var(--text-faint); font-size: .8rem; text-align: center; }
 .records-toolbar .btn-small { white-space: nowrap; }
+
+/* Voiceprint speakers card (SPEC appendix A #25) */
+.speaker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  margin: 0 8px 8px 0;
+  border: 1px solid var(--border, #444);
+  border-radius: 14px;
+  background: var(--card-bg, #1c1c22);
+}
+.speaker-chip .speaker-name { font-weight: 600; }
+.speaker-chip .speaker-samples { opacity: 0.65; }
+.speaker-chip .speaker-del {
+  border: none;
+  background: none;
+  color: var(--danger, #e5484d);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 13px;
+}
+.record-kind.kind-speaker {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+#speaker-name {
+  min-width: 180px;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #444);
+  border-radius: 6px;
+  background: var(--input-bg, transparent);
+  color: inherit;
+}

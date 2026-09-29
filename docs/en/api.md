@@ -99,7 +99,7 @@ This replaces the former `GET/PUT /api/settings` and the per-protocol
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"` or `"audio"`, `targets` / `class` + `score`, `timestamp` epoch-ms), `zone_event` (`{camera_id, zone, event, track_id, label, timestamp}`), `voice_transcript` (`{keyword, transcript, timestamp}`), `chat_reply` (`{source, reply, timestamp}`), `alarm_description` (`{camera_id, alarm_timestamp, description, elapsed_s}`). Each capability-gated event is only emitted while its engine is active. |
+| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"` or `"audio"`, `targets` / `class` + `score`, `timestamp` epoch-ms), `zone_event` (`{camera_id, zone, event, track_id, label, timestamp}`), `voice_transcript` (`{keyword, transcript, speaker, timestamp}` — `speaker` is the best-matching enrolled voiceprint, "" when unknown), `chat_reply` (`{source, reply, timestamp}`), `voice_decision` (`{camera_id, transcript, choice, confidence, act_probability, timestamp}` — the intent decision over a voice transcript), `alarm_description` (`{camera_id, alarm_timestamp, description, elapsed_s}`). Each capability-gated event is only emitted while its engine is active. |
 
 ### On-device intelligence (device extension)
 
@@ -110,8 +110,13 @@ instead of pretending.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/chat` | Local LLM dialogue: `{"text","history":[{role,content}]}` → `{"reply"}` (capability `chat`; voice-loop replies also arrive as `chat_reply` SSE) |
-| GET | `/api/audio/records` | Hearing records (capability `audio_records`): `{"records":[{id, kind:"sound"\|"voice", text, score, keyword, timestamp_ms}]}`, newest first; `?limit=N` (default 100, max 500), `?kind=sound\|voice` |
+| GET | `/api/audio/records` | Hearing records (capability `audio_records`): `{"records":[{id, kind:"sound"\|"voice", text, score, keyword, speaker, timestamp_ms}]}`, newest first; `?limit=N` (default 100, max 500), `?kind=sound\|voice` |
 | DELETE | `/api/audio/records` | Clear every record → `{"applied":"immediate","removed":N}` |
+| GET | `/api/voice/speakers` | Voiceprint profiles (capability `voice_speakers`, **no side effects**) → `{"speakers":[{id,name,dim,count,created_at}], "enrollment":{name,collected,needed}\|null, "capable":bool}` |
+| POST | `/api/voice/speakers` | Begin enrollment: body `{"name", "utterances"?(default 3, 1..=10)}` — the next `utterances` wake words each collect one embedding sample (poll GET for progress); already-enrolled name → 400 |
+| POST | `/api/voice/speakers/commit` | Persist a completed session → `{"enrolled","samples","dim"}`; incomplete → 400 |
+| POST | `/api/voice/speakers/cancel` | Abandon the in-flight enrollment |
+| DELETE | `/api/voice/speakers/{name}` | Delete a profile (memory + DB; unknown name → 404) |
 | POST | `/api/ocr` | Body = raw JPEG bytes → `{"items":[{text, score, bbox}]}` (capability `ocr`) |
 | GET/PUT | `/api/cameras/{id}/zones` | See the Cameras table above |
 | GET | `/api/ai/models` | Detection model store: available/active models |

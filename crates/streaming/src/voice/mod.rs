@@ -6,10 +6,24 @@
 //! same [`VoiceEvent`]. The engine is fail-open (missing models or a build
 //! without the `voice` feature leave it inactive) and reuses the always-on
 //! 16 kHz monitor stream, so it never touches the audio hardware itself.
+//!
+//! Optional speaker features (voiceprint) sit on the same loop:
+//! - **Verification gate** — with `speaker_verify` and enrolled profiles,
+//!   a wake word only opens the capture window for a *known* speaker: the
+//!   embedding of the last `verify_window_secs` of audio (the wake-word
+//!   utterance itself) must match an enrolled profile above
+//!   `speaker_threshold`. Strangers are logged and dropped. This is a
+//!   convenience filter, **not** a security boundary — short-utterance
+//!   voiceprints are forgiving, and a household member with a similar
+//!   voice may pass.
+//! - **Record tagging** — every completed interaction is attributed to the
+//!   best-matching enrolled speaker (empty string when nobody matches).
+//! - **Enrollment** — a session collects `needed` wake-word utterances
+//!   through the normal KWS path; the embeddings are handed to the host
+//!   for persistence (see [`VoiceEngine::take_completed_enrollment`]).
 
 use capture::audio_monitor::AudioChunk;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "voice")]
 use std::sync::Arc;
 #[cfg(feature = "voice")]
 use std::time::Duration;
@@ -29,6 +43,10 @@ pub struct VoiceEvent {
     pub transcript: String,
     /// Unix epoch milliseconds captured at fire time.
     pub timestamp_ms: u64,
+    /// Best-matching enrolled speaker for the utterance ("" = unknown /
+    /// no speaker model / no match above threshold).
+    #[serde(default)]
+    pub speaker: String,
 }
 
 /// `[voice]` configuration section.
@@ -41,7 +59,8 @@ pub struct VoiceConfig {
     pub kws_decoder: String,
     pub kws_joiner: String,
     pub kws_tokens: String,
-    /// Keywords file (`word :boost #threshold` per line).
+    /// Keywords file — one keyword per line, `tokens… @display-name`
+    /// (zh-en phoneme model: `x iǎo m ì f ēng @小蜜蜂`).
     pub keywords_file: String,
     /// Wake-word sensitivity: lower threshold = easier to fire.
     pub keywords_threshold: f32,
@@ -53,6 +72,17 @@ pub struct VoiceConfig {
     pub capture_secs: u32,
     /// Inference threads (the target hosts are small).
     pub num_threads: i32,
+    /// Speaker-embedding model (3D-Speaker CAM++ ONNX). The file being
+    /// absent only disables the speaker features — KWS + ASR keep working.
+    pub speaker_embedding_model: String,
+    /// Gate wake words on a known speaker (needs enrolled profiles).
+    pub speaker_verify: bool,
+    /// Cosine-similarity threshold for verify/search (typical 0.5–0.6 for
+    /// CAM++; calibrate on the target microphone).
+    pub speaker_threshold: f32,
+    /// Seconds of pre-wake audio kept in the ring buffer for the
+    /// verification embedding (must cover the wake-word utterance).
+    pub verify_window_secs: f32,
 }
 
 impl Default for VoiceConfig {
@@ -70,6 +100,10 @@ impl Default for VoiceConfig {
             paraformer_tokens: "models/voice/paraformer/tokens.txt".into(),
             capture_secs: 4,
             num_threads: 1,
+            speaker_embedding_model: "models/voice/speaker/campplus.onnx".into(),
+            speaker_verify: false,
+            speaker_threshold: 0.55,
+            verify_window_secs: 2.0,
         }
     }
 }
@@ -79,6 +113,72 @@ impl Default for VoiceConfig {
 struct VoiceInternals {
     kws: Arc<sherpa_onnx::KeywordSpotter>,
     recognizer: Arc<sherpa_onnx::OfflineRecognizer>,
+    /// Speaker-embedding extractor; `None` (missing model file) keeps KWS +
+    /// ASR alive and only disables the speaker features.
+    embed: Option<Arc<sherpa_onnx::SpeakerEmbeddingExtractor>>,
+}
+
+/// Host-visible snapshot of an in-flight enrollment session.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EnrollmentStatus {
+    pub name: String,
+    pub collected: u32,
+    pub needed: u32,
+}
+
+/// One in-flight enrollment: wake-word utterances collected so far.
+#[cfg(feature = "voice")]
+#[derive(Debug, Clone)]
+struct EnrollmentSession {
+    name: String,
+    needed: u32,
+    embeddings: Vec<Vec<f32>>,
+}
+
+/// Enrolled speaker profiles + in-flight enrollment. The sherpa manager
+/// is created lazily once the embedding dimension is known (extractor
+/// loaded, or the first persisted profile loaded at boot).
+struct SpeakerRegistry {
+    #[cfg(feature = "voice")]
+    dim: i32,
+    #[cfg(feature = "voice")]
+    manager: Option<sherpa_onnx::SpeakerEmbeddingManager>,
+    #[cfg(feature = "voice")]
+    enrollment: Option<EnrollmentSession>,
+}
+
+impl SpeakerRegistry {
+    #[cfg(feature = "voice")]
+    fn new(dim: i32) -> Self {
+        Self {
+            dim,
+            manager: None,
+            enrollment: None,
+        }
+    }
+
+    /// The dimension-less registry used by inactive/non-voice engines.
+    #[cfg(feature = "voice")]
+    fn empty() -> Self {
+        Self::new(0)
+    }
+
+    #[cfg(not(feature = "voice"))]
+    fn empty() -> Self {
+        Self {}
+    }
+
+    /// Get (or create) the sherpa manager for the current dimension.
+    #[cfg(feature = "voice")]
+    fn manager(&mut self) -> Option<&sherpa_onnx::SpeakerEmbeddingManager> {
+        if self.dim <= 0 {
+            return None;
+        }
+        if self.manager.is_none() {
+            self.manager = sherpa_onnx::SpeakerEmbeddingManager::create(self.dim);
+        }
+        self.manager.as_ref()
+    }
 }
 
 /// Process-wide voice engine.
@@ -91,6 +191,10 @@ pub struct VoiceEngine {
     event_tx: broadcast::Sender<VoiceEvent>,
     #[cfg(feature = "voice")]
     internals: Option<VoiceInternals>,
+    /// Enrolled speaker profiles + enrollment session (shared with the
+    /// wake-word worker and the web routes).
+    #[cfg_attr(not(feature = "voice"), allow(dead_code))]
+    speakers: Arc<std::sync::Mutex<SpeakerRegistry>>,
 }
 
 impl VoiceEngine {
@@ -104,15 +208,19 @@ impl VoiceEngine {
                 info!(
                     keyword_file = %config.keywords_file,
                     capture_secs = config.capture_secs,
+                    speaker_model = %config.speaker_embedding_model,
+                    speaker_features = internals.embed.is_some(),
                     "voice: engine loaded"
                 );
                 let (event_tx, _) = broadcast::channel(16);
+                let dim = internals.embed.as_ref().map_or(0, |e| e.dim());
                 Self {
                     config: config.clone(),
                     active: true,
                     inactive_reason: String::new(),
                     event_tx,
                     internals: Some(internals),
+                    speakers: Arc::new(std::sync::Mutex::new(SpeakerRegistry::new(dim))),
                 }
             }
             #[cfg(not(feature = "voice"))]
@@ -127,6 +235,7 @@ impl VoiceEngine {
                     event_tx,
                     #[cfg(feature = "voice")]
                     internals: None,
+                    speakers: Arc::new(std::sync::Mutex::new(SpeakerRegistry::empty())),
                 }
             }
         }
@@ -145,9 +254,19 @@ impl VoiceEngine {
             warn!(error = %e, "voice: paraformer unavailable (voice stays disabled, fail-open)");
             anyhow::anyhow!("paraformer model unavailable (see startup log)")
         })?;
+        // Speaker embedding is an optional add-on: a missing file only
+        // disables the speaker features (verify gate, tagging, enrollment).
+        let embed = build_speaker_extractor(config)
+            .map_err(|e| {
+                warn!(error = %e, "voice: speaker embedding unavailable (speaker features off)");
+                e
+            })
+            .map(Arc::new)
+            .ok();
         Ok(VoiceInternals {
             kws: Arc::new(kws),
             recognizer: Arc::new(recognizer),
+            embed,
         })
     }
 
@@ -177,6 +296,218 @@ impl VoiceEngine {
         self.event_tx.subscribe()
     }
 
+    // -- Speaker (voiceprint) API -----------------------------------------
+    // All methods are available in every build; without the `voice`
+    // feature (or without the embedding model file) they report an empty
+    // registry and refuse enrollment, fail-open like the rest of the
+    // engine.
+
+    /// Whether speaker features are usable (embedding model loaded).
+    #[must_use]
+    pub fn speaker_capable(&self) -> bool {
+        #[cfg(feature = "voice")]
+        {
+            self.internals.as_ref().is_some_and(|i| i.embed.is_some())
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            false
+        }
+    }
+
+    /// Embedding dimension of the loaded speaker model (0 when incapable).
+    #[must_use]
+    pub fn speaker_dim(&self) -> i32 {
+        #[cfg(feature = "voice")]
+        {
+            self.speakers.lock().expect("speaker registry lock").dim
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            0
+        }
+    }
+
+    /// Register persisted profiles at boot; returns how many loaded.
+    /// Profiles whose dimension disagrees with the model are skipped.
+    pub fn load_speakers(&self, profiles: &[(String, Vec<Vec<f32>>)]) -> usize {
+        #[cfg(feature = "voice")]
+        {
+            if !self.speaker_capable() {
+                return 0;
+            }
+            let mut reg = self.speakers.lock().expect("speaker registry lock");
+            let mut loaded = 0;
+            for (name, embeddings) in profiles {
+                if embeddings.is_empty() || embeddings.iter().flatten().count() == 0 {
+                    continue;
+                }
+                let dim = embeddings[0].len() as i32;
+                if reg.dim == 0 {
+                    reg.dim = dim;
+                }
+                if dim != reg.dim {
+                    warn!(speaker = %name, dim, expected = reg.dim, "voice: profile dim mismatch, skipped");
+                    continue;
+                }
+                if reg.manager().is_some_and(|m| m.add_list(name, embeddings)) {
+                    loaded += 1;
+                }
+            }
+            if loaded > 0 {
+                info!(count = loaded, "voice: speaker profiles loaded");
+            }
+            loaded
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            let _ = profiles;
+            0
+        }
+    }
+
+    /// Names of the enrolled speakers.
+    #[must_use]
+    pub fn list_speakers(&self) -> Vec<String> {
+        #[cfg(feature = "voice")]
+        {
+            self.speakers
+                .lock()
+                .expect("speaker registry lock")
+                .manager
+                .as_ref()
+                .map_or_else(
+                    Vec::new,
+                    sherpa_onnx::SpeakerEmbeddingManager::get_all_speakers,
+                )
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// Remove an enrolled profile (in-memory; persistence is the host's).
+    /// Returns whether the name existed.
+    pub fn remove_speaker(&self, name: &str) -> bool {
+        #[cfg(feature = "voice")]
+        {
+            self.speakers
+                .lock()
+                .expect("speaker registry lock")
+                .manager
+                .as_mut()
+                .is_some_and(|m| m.remove(name))
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            let _ = name;
+            false
+        }
+    }
+
+    /// Start an enrollment session: the next `needed` wake words are
+    /// collected as voiceprint samples instead of interactions.
+    pub fn begin_enrollment(&self, name: &str, needed: u32) -> Result<(), String> {
+        #[cfg(feature = "voice")]
+        {
+            if !self.speaker_capable() {
+                return Err("speaker model unavailable (voice.speaker_embedding_model)".into());
+            }
+            if name.trim().is_empty() || name.len() > 32 {
+                return Err("speaker name must be 1..=32 bytes".into());
+            }
+            if !(1..=10).contains(&needed) {
+                return Err("utterances must be 1..=10".into());
+            }
+            let mut reg = self.speakers.lock().expect("speaker registry lock");
+            if reg.enrollment.is_some() {
+                return Err("an enrollment session is already in progress".into());
+            }
+            if reg.manager.as_ref().is_some_and(|m| m.contains(name)) {
+                return Err(format!("speaker {name:?} already enrolled"));
+            }
+            reg.enrollment = Some(EnrollmentSession {
+                name: name.trim().to_string(),
+                needed,
+                embeddings: Vec::new(),
+            });
+            info!(speaker = name, needed, "voice: enrollment session started");
+            Ok(())
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            let _ = (name, needed);
+            Err("built without the `voice` feature".into())
+        }
+    }
+
+    /// Snapshot of the in-flight enrollment (for polling).
+    #[must_use]
+    pub fn enrollment_status(&self) -> Option<EnrollmentStatus> {
+        #[cfg(feature = "voice")]
+        {
+            self.speakers
+                .lock()
+                .expect("speaker registry lock")
+                .enrollment
+                .as_ref()
+                .map(|s| EnrollmentStatus {
+                    name: s.name.clone(),
+                    collected: s.embeddings.len() as u32,
+                    needed: s.needed,
+                })
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            None
+        }
+    }
+
+    /// Hand out a completed enrollment: registers the profile in memory
+    /// and returns the collected embeddings for persistence. `None` while
+    /// incomplete or absent.
+    pub fn take_completed_enrollment(&self) -> Option<(String, Vec<Vec<f32>>)> {
+        #[cfg(feature = "voice")]
+        {
+            let mut reg = self.speakers.lock().expect("speaker registry lock");
+            let done = reg
+                .enrollment
+                .as_ref()
+                .is_some_and(|s| s.embeddings.len() >= s.needed as usize);
+            if !done {
+                return None;
+            }
+            let session = reg.enrollment.take().expect("checked above");
+            if reg
+                .manager()
+                .is_some_and(|m| m.add_list(&session.name, &session.embeddings))
+            {
+                info!(speaker = %session.name, count = session.embeddings.len(), "voice: enrollment complete");
+                Some((session.name, session.embeddings))
+            } else {
+                // Registration failed (e.g. dim drift) — drop the session
+                // so the host can retry cleanly.
+                None
+            }
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            None
+        }
+    }
+
+    /// Abandon the in-flight enrollment, if any.
+    pub fn cancel_enrollment(&self) {
+        #[cfg(feature = "voice")]
+        {
+            let mut reg = self.speakers.lock().expect("speaker registry lock");
+            if let Some(s) = reg.enrollment.take() {
+                info!(speaker = %s.name, "voice: enrollment cancelled");
+            }
+        }
+    }
+
     /// Spawn the monitor-consuming worker (no-op when inactive).
     pub fn spawn_worker(
         &self,
@@ -188,13 +519,20 @@ impl VoiceEngine {
         let Some(internals) = self.internals.as_ref().map(|i| VoiceInternals {
             kws: Arc::clone(&i.kws),
             recognizer: Arc::clone(&i.recognizer),
+            embed: i.embed.clone(),
         }) else {
             return tokio::spawn(async {});
         };
         #[cfg(feature = "voice")]
         {
             let capture_secs = self.config.capture_secs;
+            let verify = self.config.speaker_verify;
+            let threshold = self.config.speaker_threshold;
+            let ring_cap = ((self.config.verify_window_secs.max(1.0)
+                * capture::audio_monitor::TARGET_RATE as f32) as usize)
+                .max(16_000);
             let event_tx = self.event_tx.clone();
+            let speakers = Arc::clone(&self.speakers);
             info!("voice: wake-word worker started");
             tokio::spawn(async move {
                 // The KWS stream is single-owner; the decode loop runs on
@@ -203,11 +541,16 @@ impl VoiceEngine {
                 let mut captured: Vec<f32> = Vec::new();
                 let mut keyword_pending: Option<String> = None;
                 let mut capture_deadline = tokio::time::Instant::now();
+                // Pre-wake ring for the verification embedding; a latch so
+                // the armed-but-nobody-enrolled fail-open logs once.
+                let mut ring = SampleRing::new(ring_cap);
+                let mut warned_no_profiles = false;
                 loop {
                     match rx.recv().await {
                         Ok(chunk) => {
                             let samples: Vec<f32> =
                                 chunk.samples.iter().map(|&s| s as f32 / 32_768.0).collect();
+                            ring.push(&samples);
                             if let Some(keyword) = &keyword_pending {
                                 captured.extend_from_slice(&samples);
                                 if tokio::time::Instant::now() >= capture_deadline {
@@ -215,18 +558,38 @@ impl VoiceEngine {
                                     let recognizer = Arc::clone(&internals.recognizer);
                                     let waveform = std::mem::take(&mut captured);
                                     let tx = event_tx.clone();
+                                    let embed = internals.embed.clone();
+                                    let speakers = Arc::clone(&speakers);
+                                    let threshold = threshold;
                                     tokio::task::spawn_blocking(move || {
                                         let text = transcribe(&recognizer, &waveform);
+                                        // Attribute the interaction to the best
+                                        // matching enrolled speaker ("" when
+                                        // unknown or no speaker model).
+                                        let speaker = embed
+                                            .as_ref()
+                                            .and_then(|e| {
+                                                let emb = compute_embedding(e, &waveform)?;
+                                                speakers
+                                                    .lock()
+                                                    .expect("speaker registry lock")
+                                                    .manager
+                                                    .as_ref()
+                                                    .and_then(|m| m.search(&emb, threshold))
+                                            })
+                                            .unwrap_or_default();
                                         let now_ms = unix_now_ms();
                                         info!(
                                             keyword = %keyword,
                                             chars = text.chars().count(),
+                                            speaker = %speaker,
                                             "voice: transcript"
                                         );
                                         let _ = tx.send(VoiceEvent {
                                             keyword,
                                             transcript: text,
                                             timestamp_ms: now_ms,
+                                            speaker,
                                         });
                                     });
                                     keyword_pending = None;
@@ -243,6 +606,88 @@ impl VoiceEngine {
                                 info!(keyword = %hit.keyword, "voice: wake word detected");
                                 internals.kws.reset(&kws_stream);
                                 captured.clear();
+
+                                // Enrollment has priority: the wake-word
+                                // utterance becomes a voiceprint sample
+                                // instead of an interaction. Once the session
+                                // is full, extra wake words are ignored until
+                                // the host commits or cancels.
+                                let enrolling = speakers
+                                    .lock()
+                                    .expect("speaker registry lock")
+                                    .enrollment
+                                    .as_ref()
+                                    .is_some_and(enrollment_accepts);
+                                if enrolling {
+                                    if let Some(embed) = &internals.embed {
+                                        let snapshot = ring.snapshot();
+                                        let embed = Arc::clone(embed);
+                                        let speakers = Arc::clone(&speakers);
+                                        let collected = tokio::task::spawn_blocking(
+                                            move || -> Option<usize> {
+                                                let emb = compute_embedding(&embed, &snapshot)?;
+                                                let mut reg =
+                                                    speakers.lock().expect("speaker registry lock");
+                                                let session = reg.enrollment.as_mut()?;
+                                                session.embeddings.push(emb);
+                                                Some(session.embeddings.len())
+                                            },
+                                        )
+                                        .await
+                                        .ok()
+                                        .flatten();
+                                        if let Some(n) = collected {
+                                            info!(
+                                                samples = n,
+                                                "voice: enrollment sample collected"
+                                            );
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                // Verification gate: with profiles enrolled,
+                                // only a known speaker opens the capture.
+                                if verify {
+                                    let profiles = speakers
+                                        .lock()
+                                        .expect("speaker registry lock")
+                                        .manager
+                                        .as_ref()
+                                        .map_or(0, |m| m.num_speakers());
+                                    if profiles == 0 {
+                                        if !warned_no_profiles {
+                                            warned_no_profiles = true;
+                                            warn!(
+                                                "voice: speaker_verify armed but no profiles \
+                                                 enrolled — allowing wake (fail-open)"
+                                            );
+                                        }
+                                    } else if let Some(embed) = &internals.embed {
+                                        let snapshot = ring.snapshot();
+                                        let embed = Arc::clone(embed);
+                                        let speakers = Arc::clone(&speakers);
+                                        let matched = tokio::task::spawn_blocking(
+                                            move || -> Option<String> {
+                                                let emb = compute_embedding(&embed, &snapshot)?;
+                                                speakers
+                                                    .lock()
+                                                    .expect("speaker registry lock")
+                                                    .manager
+                                                    .as_ref()
+                                                    .and_then(|m| m.search(&emb, threshold))
+                                            },
+                                        )
+                                        .await
+                                        .ok()
+                                        .flatten();
+                                        if !wake_gate_allows(true, matched.as_deref()) {
+                                            info!("voice: wake word rejected (unknown speaker)");
+                                            continue;
+                                        }
+                                    }
+                                }
+
                                 keyword_pending = Some(hit.keyword);
                                 capture_deadline = tokio::time::Instant::now()
                                     + Duration::from_secs(u64::from(capture_secs.max(1)));
@@ -273,6 +718,89 @@ fn transcribe(recognizer: &sherpa_onnx::OfflineRecognizer, waveform: &[f32]) -> 
     stream.accept_waveform(16_000, waveform);
     recognizer.decode(&stream);
     stream.get_result().map(|r| r.text).unwrap_or_default()
+}
+
+/// Load the optional speaker-embedding extractor (CAM++ class ONNX).
+#[cfg(feature = "voice")]
+fn build_speaker_extractor(
+    config: &VoiceConfig,
+) -> anyhow::Result<sherpa_onnx::SpeakerEmbeddingExtractor> {
+    use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
+    let path = &config.speaker_embedding_model;
+    if !std::path::Path::new(path).exists() {
+        anyhow::bail!("speaker embedding model not found: {path}");
+    }
+    let cfg = SpeakerEmbeddingExtractorConfig {
+        model: Some(path.clone()),
+        num_threads: config.num_threads,
+        debug: false,
+        provider: Some("cpu".into()),
+    };
+    SpeakerEmbeddingExtractor::create(&cfg)
+        .ok_or_else(|| anyhow::anyhow!("SpeakerEmbeddingExtractor::create failed"))
+}
+
+/// Embed one 16 kHz mono clip; `None` when the clip is too short for the
+/// model's minimum window.
+#[cfg(feature = "voice")]
+fn compute_embedding(
+    extractor: &sherpa_onnx::SpeakerEmbeddingExtractor,
+    samples: &[f32],
+) -> Option<Vec<f32>> {
+    let stream = extractor.create_stream()?;
+    stream.accept_waveform(16_000, samples);
+    if !extractor.is_ready(&stream) {
+        return None;
+    }
+    extractor.compute(&stream)
+}
+
+/// Gate semantics: with verification armed, a wake word only opens the
+/// capture window for a speaker matched above the threshold. Kept as a
+/// pure function so the fail-closed-by-default rule stays testable.
+#[cfg_attr(not(feature = "voice"), allow(dead_code))]
+fn wake_gate_allows(verify_armed: bool, matched: Option<&str>) -> bool {
+    !verify_armed || matched.is_some()
+}
+
+/// Whether an in-flight enrollment still accepts wake-word samples — it
+/// stops at `needed` so extra wake words between completion and the host's
+/// commit cannot inflate the sample count (regression: the workstation
+/// acoustic E2E caught a 4th sample landing after a 3-sample session).
+#[cfg(feature = "voice")]
+fn enrollment_accepts(session: &EnrollmentSession) -> bool {
+    session.embeddings.len() < session.needed as usize
+}
+
+/// Fixed-capacity ring holding the most recent `cap` samples — the pre-wake
+/// window the verification embedding is computed over.
+#[cfg_attr(not(feature = "voice"), allow(dead_code))]
+#[derive(Debug)]
+pub(crate) struct SampleRing {
+    buf: Vec<f32>,
+    cap: usize,
+}
+
+#[cfg_attr(not(feature = "voice"), allow(dead_code))]
+impl SampleRing {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    pub(crate) fn push(&mut self, samples: &[f32]) {
+        self.buf.extend_from_slice(samples);
+        let overflow = self.buf.len().saturating_sub(self.cap);
+        if overflow > 0 {
+            self.buf.drain(0..overflow);
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<f32> {
+        self.buf.clone()
+    }
 }
 
 #[cfg(feature = "voice")]
@@ -356,6 +884,15 @@ pub fn selftest_voice(path: &str) -> anyhow::Result<serde_json::Value> {
     {
         config.keywords_threshold = t;
     }
+    // Optional overrides so one binary can self-test alternative ASR
+    // checkpoints (e.g. the trilingual zh-cantonese-en paraformer)
+    // without touching the on-disk config.
+    if let Ok(m) = std::env::var("VOICE_SELFTEST_PARAFORMER") {
+        config.paraformer_model = m;
+    }
+    if let Ok(t) = std::env::var("VOICE_SELFTEST_PARAFORMER_TOKENS") {
+        config.paraformer_tokens = t;
+    }
     #[cfg(feature = "voice")]
     {
         let kws = build_kws(&config)?;
@@ -428,6 +965,10 @@ mod tests {
         assert!(c.kws_tokens.contains("kws"));
         assert_eq!(c.capture_secs, 4);
         assert!((c.keywords_threshold - 0.25).abs() < f32::EPSILON);
+        assert!(!c.speaker_verify, "speaker gate is opt-in");
+        assert!((c.speaker_threshold - 0.55).abs() < f32::EPSILON);
+        assert!((c.verify_window_secs - 2.0).abs() < f32::EPSILON);
+        assert!(c.speaker_embedding_model.contains("speaker"));
     }
 
     #[test]
@@ -444,5 +985,121 @@ mod tests {
             ..VoiceConfig::default()
         });
         assert!(!e.is_active(), "missing models must not fake activity");
+    }
+
+    #[test]
+    fn inactive_engine_speaker_api_is_inert() {
+        let e = VoiceEngine::from_config(&VoiceConfig::default());
+        assert!(!e.speaker_capable());
+        assert_eq!(e.speaker_dim(), 0);
+        assert!(e.list_speakers().is_empty());
+        assert!(e.enrollment_status().is_none());
+        assert!(e.take_completed_enrollment().is_none());
+        assert!(!e.remove_speaker("nobody"));
+        assert_eq!(e.load_speakers(&[("a".into(), vec![vec![0.1; 4]])]), 0);
+        assert!(e.begin_enrollment("a", 3).is_err());
+        // cancel must not panic on an absent session
+        e.cancel_enrollment();
+    }
+
+    #[test]
+    fn voice_event_speaker_field_defaults_on_deserialize() {
+        // Old payloads (pre-speaker) still deserialize with "" — the SSE
+        // shape only ever grows additively.
+        let ev: VoiceEvent =
+            serde_json::from_str(r#"{"keyword":"小蜜蜂","transcript":"你好","timestamp_ms":1}"#)
+                .unwrap();
+        assert_eq!(ev.speaker, "");
+        let round: VoiceEvent = serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
+        assert_eq!(round, ev);
+    }
+
+    #[test]
+    fn wake_gate_fails_closed_when_armed() {
+        assert!(wake_gate_allows(false, None), "unarmed lets everyone in");
+        assert!(wake_gate_allows(false, Some("owner")));
+        assert!(
+            wake_gate_allows(true, Some("owner")),
+            "armed + match passes"
+        );
+        assert!(
+            !wake_gate_allows(true, None),
+            "armed without a match must reject"
+        );
+    }
+
+    #[test]
+    fn sample_ring_keeps_the_newest_window() {
+        let mut ring = SampleRing::new(4);
+        assert!(ring.snapshot().is_empty());
+        ring.push(&[1.0, 2.0]);
+        ring.push(&[3.0, 4.0]);
+        assert_eq!(ring.snapshot(), vec![1.0, 2.0, 3.0, 4.0]);
+        ring.push(&[5.0, 6.0]);
+        assert_eq!(ring.snapshot().len(), 4, "capacity is enforced");
+        assert_eq!(ring.snapshot(), vec![3.0, 4.0, 5.0, 6.0], "oldest evicted");
+        // A single oversized push still clamps to the tail.
+        ring.push(&[7.0, 8.0, 9.0, 10.0, 11.0]);
+        assert_eq!(ring.snapshot(), vec![8.0, 9.0, 10.0, 11.0]);
+    }
+
+    /// Synthetic-vector semantics of the sherpa manager — no model files
+    /// needed, so this pins the add/search/verify usage the worker relies
+    /// on (runs on `--features voice` builds).
+    #[cfg(feature = "voice")]
+    #[test]
+    fn speaker_manager_synthetic_semantics() {
+        let dim = 8;
+        let Some(m) = sherpa_onnx::SpeakerEmbeddingManager::create(dim) else {
+            panic!("manager create failed");
+        };
+        let owner: Vec<f32> = {
+            let mut v = vec![0.1; dim as usize];
+            v[0] = 1.0;
+            v
+        };
+        let stranger: Vec<f32> = {
+            let mut v = vec![0.1; dim as usize];
+            v[1] = 1.0;
+            v
+        };
+        assert!(m.add_list("owner", &[owner.clone(), owner.clone()]));
+        // Near-identical vector matches above a lenient threshold…
+        let near: Vec<f32> = owner.iter().map(|x| x * 1.01).collect();
+        assert_eq!(m.search(&near, 0.9).as_deref(), Some("owner"));
+        assert!(m.verify("owner", &near, 0.9));
+        // …an orthogonal vector does not…
+        assert_eq!(m.search(&stranger, 0.9), None);
+        assert!(!m.verify("owner", &stranger, 0.9));
+        // …and removing the profile drops it from search.
+        assert!(m.remove("owner"));
+        assert_eq!(m.search(&near, 0.9), None);
+        // Dimension mismatch is rejected, not crashed.
+        assert_eq!(m.search(&[0.5; 4], 0.9), None);
+    }
+
+    /// Enrollment validation on a capable-shaped registry: name/utterance
+    /// bounds are enforced before any audio flows.
+    #[cfg(feature = "voice")]
+    #[test]
+    fn enrollment_session_validation() {
+        let s = EnrollmentSession {
+            name: "owner".into(),
+            needed: 2,
+            embeddings: vec![vec![0.25; 4]],
+        };
+        assert_eq!(s.embeddings.len(), 1);
+        let status = EnrollmentStatus {
+            name: s.name.clone(),
+            collected: s.embeddings.len() as u32,
+            needed: s.needed,
+        };
+        assert_eq!(status.collected, 1);
+        assert_eq!(status.needed, 2);
+        // Full sessions stop accepting; short ones accept.
+        assert!(enrollment_accepts(&s));
+        let mut full = s.clone();
+        full.embeddings.push(vec![0.25; 4]);
+        assert!(!enrollment_accepts(&full), "no samples past `needed`");
     }
 }

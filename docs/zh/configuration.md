@@ -405,18 +405,26 @@ num_threads = 1
 |------|------|---------|------|
 | `enabled` | bool | `false` | 主开关（需 `voice` 构建特性）。 |
 | `kws_encoder` / `kws_decoder` / `kws_joiner` / `kws_tokens` | String | `models/voice/kws/…` | Zipformer transducer KWS 模型三件套 + tokens。 |
-| `keywords_file` | String | `"models/voice/kws/keywords.txt"` | 关键词文件，每行 `词 :boost #threshold`。默认表含 小蜜蜂。 |
+| `keywords_file` | String | `"models/voice/kws/keywords.txt"` | 关键词文件，每行 `音素串 @显示名`（zh-en 音素模型，如 `x iǎo m ì f ēng @小蜜蜂`）。 |
 | `keywords_threshold` | f32 | `0.25` | 唤醒灵敏度——越低越容易触发。 |
 | `keywords_score` | f32 | `1.0` | 接受唤醒的最低得分。 |
-| `paraformer_model` / `paraformer_tokens` | String | `models/voice/paraformer/…` | 离线 paraformer 中文 int8 转写模型。 |
+| `paraformer_model` / `paraformer_tokens` | String | `models/voice/paraformer/…` | 离线 paraformer 转写模型。缺省为中文版（普通话+嵌入英文）；**粤语/普通话/英语请换三语版**（`models/voice/paraformer-trilingual/…`，234MB，Apache-2.0，见 `models/README.md`）。 |
 | `capture_secs` | u32 | `4` | 唤醒词识别后采集音频的秒数。 |
 | `num_threads` | i32 | `1` | 推理线程数（目标主机较小）。 |
+| `speaker_embedding_model` | String | `models/voice/speaker/campplus.onnx` | 说话人声纹嵌入模型（3D-Speaker CAM++ zh_en）。**文件缺失只禁用声纹特性**，唤醒+转写照常。 |
+| `speaker_verify` | bool | `false` | 声纹验证门控：开启后唤醒词须匹配已注册说话人才开采集窗（无注册档案时 fail-open 放行并 WARN 一次）。 |
+| `speaker_threshold` | f32 | `0.55` | 声纹余弦相似度阈值（CAM++ 典型 0.5–0.6，建议按麦克风实测标定）。 |
+| `verify_window_secs` | f32 | `2.0` | 唤醒词验证取样的环形缓冲秒数（须覆盖唤醒词发音时长）。 |
 
 **注意事项：**
 
 - 等待唤醒词期间不录制、不传输任何音频——关键词模型只在本地比对极短的
   音频指纹。
 - `capture_secs` 限定一句话的长度；唤醒词之后再说话。
+- 声纹门控是**便利性过滤，不是安全认证**：短语音（唤醒词 <1s）的声纹判别
+  弱于整句，嗓音相近的家人可能通过——请勿将其作为唯一安全边界。
+- 说话人注册走 Web UI（记录页「说话人声纹」卡片）或 `/api/voice/speakers`
+  端点（见 API 文档）；注册即念 3 遍唤醒词。
 - 外接 USB 麦克风效果远好于笔记本内置麦克风（见
   [用户手册](user-guide.md#故障排查)）。
 
@@ -454,6 +462,31 @@ no_think = true
 - 内存 guardrail：模型超过可用内存 2/3 时拒绝加载（fail-open）。
 - 推理线程池自动设上限（`OMP_NUM_THREADS` = 核数/2，最高 4），环境已设
   则不覆盖。
+
+### [decision] - 语音决策辅助（Laya 类型化决策）
+
+对语音转写先做一次本地类型化意图决策（answer/device/ignore）再决定是否
+花本地 LLM 应答；`ignore` 直接跳过应答。需要 `[ai]` 运行时（onnxruntime），
+模型为 laya 多语 ONNX 检查点（见 `models/README.md`）。
+
+```toml
+[decision]
+enabled = false
+model_path = "models/decision/laya_multilingual.int8.onnx"
+tokenizer_path = "models/decision/tokenizer.json"
+config_path = "models/decision/laya_config.json"
+min_confidence = 0.35
+num_threads = 1
+```
+
+| 键 | 类型 | 缺省 | 说明 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关。 |
+| `model_path` | String | `models/decision/laya_multilingual.int8.onnx` | laya ONNX 检查点（int8 量化版推荐）。 |
+| `tokenizer_path` | String | `models/decision/tokenizer.json` | 检查点配套的 HuggingFace tokenizer。 |
+| `config_path` | String | `models/decision/laya_config.json` | 携带 `max_len`/`head_max_len`/温度校准的 json；缺失则用安全缺省。 |
+| `min_confidence` | f32 | `0.35` | 低于该置信度的决策不采纳（fail-open 维持旧行为）。 |
+| `num_threads` | u16 | `1` | 推理线程。 |
 
 ### [tts] - 语音播报
 

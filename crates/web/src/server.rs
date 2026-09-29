@@ -60,6 +60,8 @@ pub struct AppRouterState {
     pub chat: Arc<streaming::llm::ChatEngine>,
     /// VLM alarm-description engine (inactive without `llm`/models).
     pub vlm: Arc<streaming::vlm::VlmEngine>,
+    /// Laya typed-decision engine (inactive without `ai`/models).
+    pub decision: Arc<streaming::decision::DecisionEngine>,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +159,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let voice = state.voice.clone();
     let chat = state.chat.clone();
     let vlm = state.vlm.clone();
+    let decision = state.decision.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -196,6 +199,23 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route(
             "/api/audio/records",
             get(routes::audio_records::list_records).delete(routes::audio_records::clear_records),
+        )
+        // Voiceprint speaker profiles (SPEC appendix A #25)
+        .route(
+            "/api/voice/speakers",
+            get(routes::voice_speakers::list_speakers).post(routes::voice_speakers::enroll),
+        )
+        .route(
+            "/api/voice/speakers/commit",
+            post(routes::voice_speakers::commit_enrollment),
+        )
+        .route(
+            "/api/voice/speakers/cancel",
+            post(routes::voice_speakers::cancel_enrollment),
+        )
+        .route(
+            "/api/voice/speakers/{name}",
+            axum::routing::delete(routes::voice_speakers::delete_speaker),
         )
         .route("/api/cameras/{id}/zones", get(crate::zones::get_zones))
         .route("/api/cameras/{id}/zones", put(crate::zones::put_zones))
@@ -301,6 +321,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(voice))
         .layer(Extension(chat))
         .layer(Extension(vlm))
+        .layer(Extension(decision))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
         // HSTS
@@ -354,6 +375,9 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         vlm: Arc::new(streaming::vlm::VlmEngine::from_config(
             &streaming::vlm::VlmConfig::default(),
         )),
+        decision: Arc::new(streaming::decision::DecisionEngine::from_config(
+            &streaming::decision::DecisionConfig::default(),
+        )),
     })
 }
 
@@ -405,6 +429,9 @@ pub async fn test_app_with_user() -> Router {
         )),
         vlm: Arc::new(streaming::vlm::VlmEngine::from_config(
             &streaming::vlm::VlmConfig::default(),
+        )),
+        decision: Arc::new(streaming::decision::DecisionEngine::from_config(
+            &streaming::decision::DecisionConfig::default(),
         )),
     })
 }
@@ -596,6 +623,7 @@ pub async fn run(
     voice: Arc<streaming::voice::VoiceEngine>,
     chat: Arc<streaming::llm::ChatEngine>,
     vlm: Arc<streaming::vlm::VlmEngine>,
+    decision: Arc<streaming::decision::DecisionEngine>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -617,6 +645,7 @@ pub async fn run(
         voice,
         chat,
         vlm,
+        decision,
     };
     let app = build_app_with_state(state);
 
@@ -680,6 +709,7 @@ pub async fn run_with_shutdown(
     voice: Arc<streaming::voice::VoiceEngine>,
     chat: Arc<streaming::llm::ChatEngine>,
     vlm: Arc<streaming::vlm::VlmEngine>,
+    decision: Arc<streaming::decision::DecisionEngine>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -703,6 +733,7 @@ pub async fn run_with_shutdown(
         voice,
         chat,
         vlm,
+        decision,
     };
     let app = build_app_with_state(state);
 

@@ -15,7 +15,7 @@ aac = ["dep:fdk-aac"]
 # so deployed binaries are AI-capable; the feature itself is opt-in via the
 # `[ai]` config section. `ort` uses load-dynamic — libonnxruntime.so is only
 # needed at run time when `[ai] enabled = true`.
-ai = ["dep:ort"]
+ai = ["dep:ort", "dep:tokenizers"]
 # Enable Intel/AMD hardware H.264 encoding via libva (VAAPI). Requires libva at
 # build/run time. Off by default — the software (OpenH264) path is always built.
 vaapi = []
@@ -64,6 +64,9 @@ muxide.workspace = true
 fdk-aac = { workspace = true, optional = true }
 turbojpeg = { version = "1.0", optional = true }
 ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic"] }
+# HuggingFace tokenizer (Rust) for the Laya decision checkpoint — pure-Rust
+# loading of tokenizer.json, no Python in sight.
+tokenizers = { version = "0.21", optional = true, default-features = false, features = ["onig"] }
 sherpa-onnx = { version = "=1.13.8", optional = true }
 # default-features off: no openmp (the statically linked sherpa-onnx
 # already embeds its own OpenMP runtime — two static OpenMP copies in one

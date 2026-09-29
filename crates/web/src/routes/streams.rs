@@ -380,6 +380,9 @@ mod tests {
             vlm: Arc::new(streaming::vlm::VlmEngine::from_config(
                 &streaming::vlm::VlmConfig::default(),
             )),
+            decision: Arc::new(streaming::decision::DecisionEngine::from_config(
+                &streaming::decision::DecisionConfig::default(),
+            )),
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),
