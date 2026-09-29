@@ -199,6 +199,16 @@ enabled = false
 # polled; the alarm itself never waits for the description. Requires a
 # `vlm`-feature build and an AVX2-class CPU (llama.cpp GGML kernels) —
 # on weaker hosts leave disabled (fail-open).
+# Decision triage over voice transcripts (Laya typed decisions, SPEC
+# appendix A #26). Requires the [ai] runtime (onnxruntime); off by default.
+[decision]
+enabled = false
+# model_path = "models/decision/laya_multilingual.int8.onnx"
+# tokenizer_path = "models/decision/tokenizer.json"
+# config_path = "models/decision/laya_config.json"
+# min_confidence = 0.35
+# num_threads = 1
+
 [vlm]
 enabled = false
 # model_path = "models/vlm/qwen3-vl-2b-instruct-q4_k_m.gguf"

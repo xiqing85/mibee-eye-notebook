@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Speaker voiceprints** (SPEC appendix A #25): enroll wake-word
+  voiceprints (3D-Speaker CAM++ via sherpa-onnx, zh_en checkpoint),
+  gate wake words on a known speaker (`voice.speaker_verify`, fail-open
+  without profiles), and attribute voice hearing records / SSE
+  `voice_transcript` to the best-matching speaker. New endpoints
+  `GET/POST /api/voice/speakers`, `POST …/commit`, `POST …/cancel`,
+  `DELETE …/{name}`; new table `voice_speakers` (migration 006) +
+  `hearing_records.speaker` column; Records view gains a speakers card
+  and speaker badges. Verified end-to-end acoustically on the
+  workstation (enroll → gate pass → tagging → stranger rejection).
+- **Trilingual ASR** (Cantonese / Mandarin / English): the optional
+  `sherpa-onnx-paraformer-trilingual-zh-cantonese-en` checkpoint
+  (234MB int8, Apache-2.0) drops into `[voice] paraformer_model` —
+  verified on Cantonese and mixed zh-en samples.
+- **Voice decision assist** (SPEC appendix A #26): `[decision]` section
+  runs Laya typed decisions (multilingual ONNX, Apache-2.0) over each
+  transcript before the local LLM answers; `ignore` skips the reply,
+  decisions ride a new `voice_decision` SSE event. Fail-open below
+  `min_confidence` or without models.
+
+### Fixed
+
+- Voice enrollment no longer collects samples past `needed` (extra wake
+  words between completion and commit were inflating the count — caught
+  by the workstation acoustic E2E).
+
 - **Sound events, tracking + zones, OCR** (SPEC appendix A #21): constant
   microphone listening with YAMNet classification (3-vote smoothing,
   per-class cooldown, Silero-VAD voice presence) emitting `source: "audio"`

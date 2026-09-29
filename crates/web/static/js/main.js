@@ -19,7 +19,7 @@ import { refreshCameras, renderCameras, initCameras, stopCameras, announceRecord
 import { loadConfig, initSettings } from './settings.js';
 import { checkApi, refreshStatus, initStatus, startStatusPolling } from './status.js';
 import { renderDevices, initDevices } from './devices.js';
-import { renderRecords, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
+import { renderRecords, renderSpeakers, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
 
 const VIEWS = ['preview', 'cameras', 'settings', 'status', 'records', 'devices'];
 
@@ -47,7 +47,7 @@ export function showView(name) {
   if (name === 'settings') loadConfig();
   if (name === 'status') { checkApi(); refreshStatus(); }
   if (name === 'devices') renderDevices();
-  if (name === 'records') renderRecords();
+  if (name === 'records') { renderRecords(); renderSpeakers(); }
 }
 
 function teardownApp() {

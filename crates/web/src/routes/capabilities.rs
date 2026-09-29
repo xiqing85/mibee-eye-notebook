@@ -48,6 +48,7 @@ pub async fn get_capabilities(
     Extension(ocr): Extension<Arc<streaming::ocr::OcrEngine>>,
     Extension(voice): Extension<Arc<streaming::voice::VoiceEngine>>,
     Extension(chat): Extension<Arc<streaming::llm::ChatEngine>>,
+    Extension(decision): Extension<Arc<streaming::decision::DecisionEngine>>,
     Extension(vlm): Extension<Arc<streaming::vlm::VlmEngine>>,
     Extension(stream_manager): Extension<Arc<crate::stream_manager::StreamManager>>,
     Extension(_protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
@@ -116,8 +117,14 @@ pub async fn get_capabilities(
         "ocr": ocr.is_active(),
         // Wake word + offline transcription (SSE `voice_transcript`).
         "voice": voice.is_active(),
+        // Voiceprint speaker profiles (`/api/voice/speakers`, SPEC
+        // appendix A #25): enroll, verify-gate wake words, tag records.
+        "voice_speakers": voice_speakers_capable(voice.is_active(), voice.speaker_capable()),
         // Local LLM dialogue (`POST /api/chat`).
         "chat": chat.is_active(),
+        // Laya typed-decision triage over voice transcripts (SSE
+        // `voice_decision`, SPEC appendix A #26).
+        "decision": decision.is_active(),
         // VLM alarm-frame descriptions (SSE `alarm_description`).
         "vlm": vlm.is_active(),
         "ai_models": ai_hot_swap,
@@ -194,6 +201,9 @@ mod tests {
             Extension(Arc::new(streaming::llm::ChatEngine::from_config(
                 &streaming::llm::LlmConfig::default(),
             ))),
+            Extension(Arc::new(streaming::decision::DecisionEngine::from_config(
+                &streaming::decision::DecisionConfig::default(),
+            ))),
             Extension(Arc::new(streaming::vlm::VlmEngine::from_config(
                 &streaming::vlm::VlmConfig::default(),
             ))),
@@ -224,6 +234,26 @@ mod tests {
 /// device can hear through sound events or the voice loop alike.
 fn audio_records_capable(audio_ai_active: bool, voice_active: bool) -> bool {
     audio_ai_active || voice_active
+}
+
+/// Voiceprint features need BOTH the wake-word loop and the speaker
+/// embedding model (a missing CAM++ file keeps the capability off while
+/// the rest of voice keeps working).
+fn voice_speakers_capable(voice_active: bool, speaker_model_loaded: bool) -> bool {
+    voice_active && speaker_model_loaded
+}
+
+#[cfg(test)]
+mod voice_speakers_tests {
+    use super::voice_speakers_capable;
+
+    #[test]
+    fn truth_table() {
+        assert!(!voice_speakers_capable(false, false));
+        assert!(!voice_speakers_capable(true, false), "model file required");
+        assert!(!voice_speakers_capable(false, true), "voice loop required");
+        assert!(voice_speakers_capable(true, true));
+    }
 }
 
 #[cfg(test)]

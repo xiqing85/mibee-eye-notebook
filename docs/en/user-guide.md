@@ -40,10 +40,17 @@ web UI reads it on load and renders exactly what this device can do:
 | `audio_ai` | Sound-event detection (YAMNet) — `alarm` events with `source: "audio"` |
 | `audio_records` | Persistent hearing records — the **Records** view and `GET /api/audio/records` |
 | `voice` | Wake word + offline speech-to-text — `voice_transcript` events |
+| `voice_speakers` | speaker voiceprints — enrollment, verify gate, record attribution (below) |
 | `chat` | Local LLM dialogue — the chat panel and `POST /api/chat` |
 | `vlm` | Alarm-frame image descriptions — `alarm_description` events |
 | `ocr` | On-device text recognition — `POST /api/ocr` |
 | `substream` | A low-resolution secondary stream is available on at least one running camera |
+5. With the `decision` capability active, the transcript first passes a
+   **local decision engine** (Laya typed decisions) classifying it as
+   answer / device / ignore — `ignore` (noise, accidental wake) skips the
+   reply, the rest answer as usual; each decision rides a
+   `voice_decision` event.
+
 
 A capability you do not see is a feature that is off, not broken. [Enabling
 the AI features](#enabling-the-ai-features) explains how to turn each one on.
@@ -155,6 +162,33 @@ Sound-event detection and voice listening only run when you explicitly
 enable them in the configuration — the microphone is privacy-sensitive
 input and **every listening feature is opt-in**.
 
+Registered speaker voiceprints also attribute each voice record to the
+best-matching **speaker** (blank when nobody matches).
+
+### Enrolled speakers (voiceprint)
+
+Capability `voice_speakers` (needs the embedding model file, default
+`models/voice/speaker/campplus.onnx`). The **Enrolled speakers** card at
+the top of the Records view:
+
+1. Type a name (e.g. "Alice") and click **Enroll** (3 samples by default).
+2. **Say the wake word 3 times at the device** — each recognized wake word
+   collects one voiceprint sample; the card shows live progress.
+3. The frontend commits automatically when full; the profile persists
+   across restarts.
+
+Deleting / re-enrolling happens in the same card. With
+`voice.speaker_verify = true` the **verification gate** arms: wake words
+must then match an enrolled speaker before the capture window opens — a
+stranger's wake word only logs a line and disturbs nothing. With
+verification armed but no profiles yet the device fails open (one-time
+WARN). The threshold (`speaker_threshold`, default 0.55) can be tuned for
+your microphone.
+
+> **Honest boundary**: the voiceprint gate is a *convenience filter, not a
+> security boundary* — a wake word is short speech, voiceprints are weaker
+> than full sentences, and a household member with a similar voice may
+> pass. Do not treat it as the only security layer.
 ## Talking to the device (voice)
 
 With the `voice` capability enabled the device keeps a wake-word listener on
@@ -163,7 +197,11 @@ keyword model matches tiny audio fingerprints locally):
 
 1. Say the wake word — **小蜜蜂** ("little bee") by default.
 2. The device captures the next few seconds of audio (4 s by default).
-3. The captured audio is transcribed **offline** (paraformer, Chinese).
+3. The captured audio is transcribed **offline** (paraformer; the default
+   checkpoint is Chinese — an optional **trilingual** checkpoint covers
+   **Cantonese / Mandarin / English**, swap the
+   `models/voice/paraformer-trilingual/` file pair, see
+   [Configuration](configuration.md)).
 4. The transcript appears as a `voice_transcript` notification. If the `chat`
    capability is also on, the text is answered by the local LLM; with TTS
    configured the reply is spoken through the speakers as well.

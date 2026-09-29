@@ -317,6 +317,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub tts: streaming::tts::TtsConfig,
 
+    /// Decision triage (`[decision]` section, Laya typed decisions via
+    /// ONNX Runtime). Off by default; rides the `ai` feature's `ort`.
+    #[serde(default)]
+    pub decision: streaming::decision::DecisionConfig,
+
     /// Alarm-image description (`[vlm]` section, Qwen3-VL GGUF via
     /// llama.cpp mtmd). Off by default; workstation-class only.
     #[serde(default)]

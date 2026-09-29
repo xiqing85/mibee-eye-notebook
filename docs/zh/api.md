@@ -94,7 +94,7 @@ Cookie 会话 + CSRF 双提交：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"` 或 `"audio"`、`targets` / `class` + `score`、`timestamp` 毫秒时间戳）、`zone_event`（`{camera_id, zone, event, track_id, label, timestamp}`）、`voice_transcript`（`{keyword, transcript, timestamp}`）、`chat_reply`（`{source, reply, timestamp}`）、`alarm_description`（`{camera_id, alarm_timestamp, description, elapsed_s}`）。按能力门控的事件只在对应引擎活跃时送出。 |
+| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"` 或 `"audio"`、`targets` / `class` + `score`、`timestamp` 毫秒时间戳）、`zone_event`（`{camera_id, zone, event, track_id, label, timestamp}`）、`voice_transcript`（`{keyword, transcript, speaker, timestamp}`——`speaker` 为最优匹配的已注册声纹，未知为空串）、`chat_reply`（`{source, reply, timestamp}`）、`voice_decision`（`{camera_id, transcript, choice, confidence, act_probability, timestamp}`——语音转写的意图决策）、`alarm_description`（`{camera_id, alarm_timestamp, description, elapsed_s}`）。按能力门控的事件只在对应引擎活跃时送出。 |
 
 ### 端侧智能（设备扩展）
 
@@ -105,6 +105,13 @@ Cookie 会话 + CSRF 双提交：
 |------|------|------|
 | POST | `/api/chat` | 本地 LLM 对话：`{"text","history":[{role,content}]}` → `{"reply"}`（能力位 `chat`；语音环路的回复另经 `chat_reply` SSE 送出） |
 | POST | `/api/ocr` | body = JPEG 原始字节 → `{"items":[{text, score, bbox}]}`（能力位 `ocr`） |
+| GET | `/api/audio/records` | 听觉记录（能力位 `audio_records`）：`{"records":[{id, kind:"sound"\|"voice", text, score, keyword, speaker, timestamp_ms}]}`，最新在前；`?limit=N`（缺省 100、上限 500）、`?kind=sound\|voice` 过滤 |
+| DELETE | `/api/audio/records` | 清空全部记录 → `{"applied":"immediate","removed":N}` |
+| GET | `/api/voice/speakers` | 声纹档案列表（能力位 `voice_speakers`，**无副作用**）→ `{"speakers":[{id,name,dim,count,created_at}], "enrollment":{name,collected,needed}\|null, "capable":bool}` |
+| POST | `/api/voice/speakers` | 开始注册：体 `{"name", "utterances"?（缺省 3，1..=10）}`——接下来 `utterances` 次唤醒词各采一条嵌入样本，进度经 GET 轮询；已注册名 400 |
+| POST | `/api/voice/speakers/commit` | 样本集满后持久化并入内存 → `{"enrolled","samples","dim"}`；未集满 400 |
+| POST | `/api/voice/speakers/cancel` | 放弃进行中的注册会话 |
+| DELETE | `/api/voice/speakers/{name}` | 删除声纹档案（内存+数据库；不存在 404） |
 | GET/PUT | `/api/cameras/{id}/zones` | 见上方相机表 |
 | GET | `/api/ai/models` | 检测模型库：可用/激活模型列表 |
 | POST | `/api/ai/models/{id}/activate` | 激活已上传模型 |

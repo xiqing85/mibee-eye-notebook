@@ -269,6 +269,12 @@ async fn main() -> anyhow::Result<()> {
     if !vlm_engine.is_active() {
         tracing::info!(reason = %vlm_engine.inactive_reason(), "vlm: descriptions disabled");
     }
+    let decision_engine = Arc::new(streaming::decision::DecisionEngine::from_config(
+        &config.decision,
+    ));
+    if !decision_engine.is_active() {
+        tracing::info!(reason = %decision_engine.inactive_reason(), "decision: triage disabled");
+    }
 
     // Bridge AI detection events into the SSE event bus (SPEC v1 §6), and
     // fire alarms on detection rising edges (SPEC §6 `alarm` + §9.5.2
@@ -445,6 +451,21 @@ async fn main() -> anyhow::Result<()> {
     if !voice_engine.is_active() {
         tracing::info!(reason = %voice_engine.inactive_reason(), "voice: interaction disabled");
     }
+    // Persisted voiceprint profiles feed the verify gate + record tagging
+    // (SPEC appendix A #25). Corrupt rows are skipped inside the loader.
+    if voice_engine.speaker_capable() {
+        match web::db::load_voice_speaker_embeddings(&pool).await {
+            Ok(profiles) => {
+                let loaded = voice_engine.load_speakers(&profiles);
+                tracing::info!(
+                    loaded,
+                    total = profiles.len(),
+                    "voice: speaker profiles registered"
+                );
+            }
+            Err(e) => tracing::warn!(error = %e, "voice: speaker profile load failed"),
+        }
+    }
     let mut _audio_monitor = None;
     if audio_ai_engine.is_active() || voice_engine.is_active() {
         // Boot-time races (audio service still registering the source, a
@@ -512,6 +533,7 @@ async fn main() -> anyhow::Result<()> {
                             "sound",
                             &ev.class,
                             Some(ev.score as f64),
+                            "",
                             "",
                             ev.timestamp_ms as i64,
                         )
@@ -662,6 +684,7 @@ async fn main() -> anyhow::Result<()> {
         let mut voice_events = voice_engine.subscribe_events();
         let bridge_tx = event_tx.clone();
         let chat_for_voice = chat_engine.clone();
+        let decision_for_voice = decision_engine.clone();
         let records_pool = pool.clone();
         tokio::spawn(async move {
             loop {
@@ -674,6 +697,7 @@ async fn main() -> anyhow::Result<()> {
                             &ev.transcript,
                             None,
                             &ev.keyword,
+                            &ev.speaker,
                             ev.timestamp_ms as i64,
                         )
                         .await
@@ -683,9 +707,63 @@ async fn main() -> anyhow::Result<()> {
                         let _ = bridge_tx.send(web::routes::events::CameraEvent::VoiceTranscript {
                             keyword: ev.keyword,
                             transcript: ev.transcript.clone(),
+                            speaker: ev.speaker.clone(),
                             timestamp_ms: ev.timestamp_ms,
                         });
-                        if chat_for_voice.is_active() && !ev.transcript.trim().is_empty() {
+                        // Decision triage (SPEC appendix A #26): one Laya
+                        // typed decision classifies the transcript before
+                        // any local-LLM tokens are spent. `ignore` skips
+                        // the auto-reply; inactive/low-confidence fails
+                        // open to the previous behavior (always answer).
+                        let mut skip_reply = false;
+                        if decision_for_voice.is_active() && !ev.transcript.trim().is_empty() {
+                            let state_text = format!("用户对家庭摄像头说：「{}」", ev.transcript);
+                            let engine = decision_for_voice.clone();
+                            let transcript_for_decision = ev.transcript.clone();
+                            let tx_for_decision = bridge_tx.clone();
+                            let ts = ev.timestamp_ms;
+                            let decision = tokio::task::spawn_blocking(move || {
+                                engine
+                                    .decide_choice(
+                                        &state_text,
+                                        "这句话属于哪一类意图？",
+                                        &[
+                                            ("answer".into(), "用户在提问或聊天，需要回答".into()),
+                                            ("device".into(), "用户想控制设备或查询状态".into()),
+                                            (
+                                                "ignore".into(),
+                                                "环境噪声、误唤醒或无意义内容".into(),
+                                            ),
+                                        ],
+                                    )
+                                    .map(|d| (d, transcript_for_decision, ts))
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some((d, transcript, ts)) = decision {
+                                tracing::info!(
+                                    choice = %d.label,
+                                    confidence = %d.confidence,
+                                    "decision: voice triage"
+                                );
+                                skip_reply = d.label == "ignore";
+                                let _ = tx_for_decision.send(
+                                    web::routes::events::CameraEvent::VoiceDecision {
+                                        camera_id: "0".to_string(),
+                                        transcript,
+                                        choice: d.label.clone(),
+                                        confidence: d.confidence,
+                                        act_probability: d.act_probability,
+                                        timestamp_ms: ts,
+                                    },
+                                );
+                            }
+                        }
+                        if !skip_reply
+                            && chat_for_voice.is_active()
+                            && !ev.transcript.trim().is_empty()
+                        {
                             let turns = vec![
                                 streaming::llm::ChatTurn {
                                     role: "system".into(),
@@ -1064,6 +1142,7 @@ async fn main() -> anyhow::Result<()> {
         voice_engine,
         chat_engine,
         vlm_engine,
+        decision_engine,
     )
     .await?;
 

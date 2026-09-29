@@ -103,6 +103,15 @@ const DICT = {
     recordsEmpty: '暂无记录 — 设备听到声音或语音交互后会出现在这里',
     recordsLoadFailed: '记录加载失败',
     recordsSound: '声音', recordsVoice: '语音',
+    // Voiceprint speakers (SPEC appendix A #25)
+    speakersTitle: '说话人声纹', speakersDesc: '注册家人的唤醒词声纹：开启验证后，只有已注册的说话人能唤醒语音交互；语音记录会标注说话人',
+    speakersEnroll: '开始注册', speakersCancel: '取消注册',
+    speakersNamePlaceholder: '说话人名字（如：小明）',
+    speakersProgress: '请对着设备说唤醒词：已采集 {collected}/{needed}',
+    speakersEmpty: '暂无已注册说话人', speakersEnrolled: '声纹注册完成',
+    speakersEnrollFailed: '注册启动失败', speakersCommitFailed: '注册保存失败',
+    speakersDeleteConfirm: '删除说话人 {name} 的声纹？',
+    recordSpeaker: '说话人',
     // Devices view
     devicesTitle: '主机设备', devicesDesc: '主机上的视频 / 音频采集设备', videoDevices: '视频设备', audioDevices: '音频设备',
     formats: '支持格式', useAsCamera: '用作相机', noDevices: '未发现设备',
@@ -262,6 +271,15 @@ const DICT = {
     recordsEmpty: 'No records yet — sound events and voice interactions will appear here',
     recordsLoadFailed: 'Failed to load records',
     recordsSound: 'Sound', recordsVoice: 'Voice',
+    // Voiceprint speakers (SPEC appendix A #25)
+    speakersTitle: 'Enrolled speakers', speakersDesc: 'Enroll family wake-word voiceprints: with verification on, only enrolled speakers wake the voice loop; voice records are attributed',
+    speakersEnroll: 'Enroll', speakersCancel: 'Cancel',
+    speakersNamePlaceholder: 'Speaker name (e.g. Alice)',
+    speakersProgress: 'Say the wake word at the device: {collected}/{needed} collected',
+    speakersEmpty: 'No enrolled speakers yet', speakersEnrolled: 'Enrollment complete',
+    speakersEnrollFailed: 'Failed to start enrollment', speakersCommitFailed: 'Failed to save enrollment',
+    speakersDeleteConfirm: 'Delete the voiceprint of {name}?',
+    recordSpeaker: 'Speaker',
     // Devices view
     devicesTitle: 'Host Devices', devicesDesc: 'Video / audio capture devices on this host', videoDevices: 'Video devices', audioDevices: 'Audio devices',
     formats: 'Formats', useAsCamera: 'Use as camera', noDevices: 'No devices found',

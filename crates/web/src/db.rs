@@ -33,6 +33,9 @@ pub struct HearingRecord {
     pub score: Option<f64>,
     pub keyword: String,
     pub timestamp_ms: i64,
+    /// Best-matching enrolled speaker for voice records ("" = unknown;
+    /// sound records always "").
+    pub speaker: String,
 }
 
 /// FIFO cap applied on every insert so a chatty microphone can never grow
@@ -48,14 +51,18 @@ pub async fn insert_hearing_record(
     text: &str,
     score: Option<f64>,
     keyword: &str,
+    speaker: &str,
     timestamp_ms: i64,
 ) -> Result<()> {
     let mut tx = pool.begin().await.context("hearing record: begin")?;
-    sqlx::query("INSERT INTO hearing_records (kind, text, score, keyword, timestamp_ms) VALUES (?1, ?2, ?3, ?4, ?5)")
+    sqlx::query(
+        "INSERT INTO hearing_records (kind, text, score, keyword, speaker, timestamp_ms)          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )
         .bind(kind)
         .bind(text)
         .bind(score)
         .bind(keyword)
+        .bind(speaker)
         .bind(timestamp_ms)
         .execute(&mut *tx)
         .await
@@ -70,6 +77,10 @@ pub async fn insert_hearing_record(
     tx.commit().await.context("hearing record: commit")
 }
 
+/// Row shape fetched for [`HearingRecord`] (sqlx runtime queries decode
+/// into tuples before mapping).
+type HearingRow = (i64, String, String, Option<f64>, String, String, i64);
+
 /// List hearing records, newest first. `kind` filters when given (must be
 /// `"sound"` or `"voice"`; anything else is treated as no filter).
 pub async fn list_hearing_records(
@@ -78,10 +89,10 @@ pub async fn list_hearing_records(
     kind: Option<&str>,
 ) -> Result<Vec<HearingRecord>> {
     let limit = limit.clamp(1, 500);
-    let rows: Vec<(i64, String, String, Option<f64>, String, i64)> =
+    let rows: Vec<HearingRow> =
         if matches!(kind, Some("sound") | Some("voice")) {
             sqlx::query_as(
-                "SELECT id, kind, text, score, keyword, timestamp_ms \
+                "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
              FROM hearing_records WHERE kind = ?1 ORDER BY timestamp_ms DESC, id DESC LIMIT ?2",
             )
             .bind(kind)
@@ -91,7 +102,7 @@ pub async fn list_hearing_records(
             .context("hearing record: list")?
         } else {
             sqlx::query_as(
-                "SELECT id, kind, text, score, keyword, timestamp_ms \
+                "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
              FROM hearing_records ORDER BY timestamp_ms DESC, id DESC LIMIT ?1",
             )
             .bind(limit)
@@ -102,12 +113,13 @@ pub async fn list_hearing_records(
     Ok(rows
         .into_iter()
         .map(
-            |(id, kind, text, score, keyword, timestamp_ms)| HearingRecord {
+            |(id, kind, text, score, keyword, speaker, timestamp_ms)| HearingRecord {
                 id,
                 kind,
                 text,
                 score,
                 keyword,
+                speaker,
                 timestamp_ms,
             },
         )
@@ -121,6 +133,131 @@ pub async fn clear_hearing_records(pool: &SqlitePool) -> Result<usize> {
         .await
         .context("hearing record: clear")?;
     Ok(result.rows_affected() as usize)
+}
+
+// ---------------------------------------------------------------------------
+// Voiceprint speaker profiles (SPEC appendix A notebook dialect #25)
+// ---------------------------------------------------------------------------
+
+/// One enrolled speaker profile row. The embeddings blob itself is decoded
+/// separately via [`load_voice_speaker_embeddings`].
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct VoiceSpeakerRow {
+    pub id: i64,
+    pub name: String,
+    pub dim: i64,
+    pub count: i64,
+    pub created_at: String,
+}
+
+/// Encode enrollment embeddings as the little-endian f32 blob stored in
+/// `voice_speakers.embeddings` (`count` vectors of `dim`, concatenated).
+pub(crate) fn embeddings_to_blob(embeddings: &[Vec<f32>]) -> Vec<u8> {
+    let total: usize = embeddings.iter().map(|v| v.len()).sum();
+    let mut blob = Vec::with_capacity(total * 4);
+    for v in embeddings {
+        for x in v {
+            blob.extend_from_slice(&x.to_le_bytes());
+        }
+    }
+    blob
+}
+
+/// Decode the blob back into vectors; `None` when the byte length
+/// disagrees with the stored `dim`/`count` (a corrupt row).
+pub(crate) fn blob_to_embeddings(blob: &[u8], dim: i64, count: i64) -> Option<Vec<Vec<f32>>> {
+    if dim <= 0 || count <= 0 {
+        return None;
+    }
+    let dim = dim as usize;
+    let count = count as usize;
+    if blob.len() != dim * count * 4 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count);
+    for c in 0..count {
+        let mut v = Vec::with_capacity(dim);
+        for d in 0..dim {
+            let off = (c * dim + d) * 4;
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&blob[off..off + 4]);
+            v.push(f32::from_le_bytes(b));
+        }
+        out.push(v);
+    }
+    Some(out)
+}
+
+/// Upsert one enrolled speaker (embeddings replaced wholesale on conflict).
+pub async fn insert_voice_speaker(
+    pool: &SqlitePool,
+    name: &str,
+    dim: i64,
+    embeddings: &[Vec<f32>],
+) -> Result<()> {
+    let count = embeddings.len() as i64;
+    let blob = embeddings_to_blob(embeddings);
+    sqlx::query(
+        "INSERT INTO voice_speakers (name, dim, count, embeddings) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(name) DO UPDATE SET dim = ?2, count = ?3, embeddings = ?4",
+    )
+    .bind(name)
+    .bind(dim)
+    .bind(count)
+    .bind(&blob)
+    .execute(pool)
+    .await
+    .context("voice speaker: upsert")?;
+    Ok(())
+}
+
+/// Delete an enrolled speaker; returns whether the name existed.
+pub async fn delete_voice_speaker(pool: &SqlitePool, name: &str) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM voice_speakers WHERE name = ?1")
+        .bind(name)
+        .execute(pool)
+        .await
+        .context("voice speaker: delete")?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// List enrolled speakers (metadata only).
+pub async fn list_voice_speakers(pool: &SqlitePool) -> Result<Vec<VoiceSpeakerRow>> {
+    let rows: Vec<(i64, String, i64, i64, String)> =
+        sqlx::query_as("SELECT id, name, dim, count, created_at FROM voice_speakers ORDER BY name")
+            .fetch_all(pool)
+            .await
+            .context("voice speaker: list")?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, dim, count, created_at)| VoiceSpeakerRow {
+            id,
+            name,
+            dim,
+            count,
+            created_at,
+        })
+        .collect())
+}
+
+/// Every profile's decoded embeddings, for the boot-time engine load.
+/// Corrupt rows are skipped with a warning rather than failing the boot.
+pub async fn load_voice_speaker_embeddings(
+    pool: &SqlitePool,
+) -> Result<Vec<(String, Vec<Vec<f32>>)>> {
+    let rows: Vec<(String, i64, i64, Vec<u8>)> =
+        sqlx::query_as("SELECT name, dim, count, embeddings FROM voice_speakers ORDER BY name")
+            .fetch_all(pool)
+            .await
+            .context("voice speaker: load")?;
+    let mut out = Vec::new();
+    for (name, dim, count, blob) in rows {
+        match blob_to_embeddings(&blob, dim, count) {
+            Some(embeddings) => out.push((name, embeddings)),
+            None => tracing::warn!(speaker = %name, "voice speaker: corrupt row skipped"),
+        }
+    }
+    Ok(out)
 }
 
 /// Initialize the SQLite pool at `path` with WAL mode and busy timeout.
@@ -1143,12 +1280,20 @@ mod tests {
     #[tokio::test]
     async fn hearing_record_insert_and_list_roundtrip() {
         let pool = test_pool().await;
-        insert_hearing_record(&pool, "sound", "Dog", Some(0.62), "", 1_000)
+        insert_hearing_record(&pool, "sound", "Dog", Some(0.62), "", "", 1_000)
             .await
             .unwrap();
-        insert_hearing_record(&pool, "voice", "今天天气怎么样", None, "小蜜蜂", 2_000)
-            .await
-            .unwrap();
+        insert_hearing_record(
+            &pool,
+            "voice",
+            "今天天气怎么样",
+            None,
+            "小蜜蜂",
+            "mickey",
+            2_000,
+        )
+        .await
+        .unwrap();
 
         let rows = list_hearing_records(&pool, 100, None).await.unwrap();
         assert_eq!(rows.len(), 2, "both records listed");
@@ -1156,21 +1301,23 @@ mod tests {
         assert_eq!(rows[0].kind, "voice");
         assert_eq!(rows[0].text, "今天天气怎么样");
         assert_eq!(rows[0].keyword, "小蜜蜂");
+        assert_eq!(rows[0].speaker, "mickey");
         assert_eq!(rows[0].score, None);
         assert_eq!(rows[1].kind, "sound");
         assert_eq!(rows[1].text, "Dog");
         assert_eq!(rows[1].score, Some(0.62));
         assert_eq!(rows[1].keyword, "");
+        assert_eq!(rows[1].speaker, "", "sound records carry no speaker");
     }
 
     #[tokio::test]
     async fn hearing_record_kind_filter_and_limit() {
         let pool = test_pool().await;
         for i in 0..5 {
-            insert_hearing_record(&pool, "sound", "Dog", Some(0.5), "", i * 10)
+            insert_hearing_record(&pool, "sound", "Dog", Some(0.5), "", "", i * 10)
                 .await
                 .unwrap();
-            insert_hearing_record(&pool, "voice", "你好", None, "小蜜蜂", i * 10 + 5)
+            insert_hearing_record(&pool, "voice", "你好", None, "小蜜蜂", "", i * 10 + 5)
                 .await
                 .unwrap();
         }
@@ -1196,7 +1343,7 @@ mod tests {
     async fn hearing_record_fifo_cap_prunes_oldest() {
         let pool = test_pool().await;
         for i in 0..(HEARING_RECORDS_CAP + 50) {
-            insert_hearing_record(&pool, "sound", "Knock", Some(0.4), "", i)
+            insert_hearing_record(&pool, "sound", "Knock", Some(0.4), "", "", i)
                 .await
                 .unwrap();
         }
@@ -1215,10 +1362,10 @@ mod tests {
     #[tokio::test]
     async fn hearing_record_clear_removes_everything() {
         let pool = test_pool().await;
-        insert_hearing_record(&pool, "sound", "Glass", Some(0.9), "", 7)
+        insert_hearing_record(&pool, "sound", "Glass", Some(0.9), "", "", 7)
             .await
             .unwrap();
-        insert_hearing_record(&pool, "voice", "在吗", None, "小蜜蜂", 8)
+        insert_hearing_record(&pool, "voice", "在吗", None, "小蜜蜂", "", 8)
             .await
             .unwrap();
         let removed = clear_hearing_records(&pool).await.unwrap();
@@ -1228,5 +1375,70 @@ mod tests {
         // Clearing an empty table is a harmless 0.
         let removed = clear_hearing_records(&pool).await.unwrap();
         assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn voice_speaker_blob_roundtrip_and_shape_guards() {
+        let embeddings = vec![vec![0.25, -1.5, 3.0], vec![1.0, 2.0, 3.0]];
+        let blob = embeddings_to_blob(&embeddings);
+        assert_eq!(blob.len(), 3 * 2 * 4, "3 floats x 2 vectors x 4 bytes");
+        assert_eq!(
+            blob_to_embeddings(&blob, 3, 2).as_deref(),
+            Some(&embeddings[..])
+        );
+        // Wrong byte length never panics — None instead. (2×3 is the
+        // same total length, so it legitimately reshapes.)
+        assert_eq!(blob_to_embeddings(&blob, 4, 2), None);
+        assert_eq!(blob_to_embeddings(&blob, 0, 2), None);
+        assert_eq!(blob_to_embeddings(&blob, 3, -1), None);
+        assert_eq!(blob_to_embeddings(&[], 3, 0), None);
+    }
+
+    #[tokio::test]
+    async fn voice_speaker_crud_roundtrip() {
+        let pool = test_pool().await;
+        let emb = vec![vec![0.5; 192], vec![0.6; 192]];
+        insert_voice_speaker(&pool, "mickey", 192, &emb)
+            .await
+            .unwrap();
+
+        let rows = list_voice_speakers(&pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "mickey");
+        assert_eq!(rows[0].dim, 192);
+        assert_eq!(rows[0].count, 2);
+
+        let loaded = load_voice_speaker_embeddings(&pool).await.unwrap();
+        assert_eq!(loaded, vec![("mickey".to_string(), emb.clone())]);
+
+        // Upsert replaces wholesale.
+        let emb2 = vec![vec![0.7; 192]];
+        insert_voice_speaker(&pool, "mickey", 192, &emb2)
+            .await
+            .unwrap();
+        let loaded = load_voice_speaker_embeddings(&pool).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].1.len(), 1, "re-enrollment replaces samples");
+
+        // Second speaker sorts alongside; delete only removes the named one.
+        insert_voice_speaker(&pool, "alice", 192, &emb)
+            .await
+            .unwrap();
+        assert_eq!(list_voice_speakers(&pool).await.unwrap().len(), 2);
+        assert!(delete_voice_speaker(&pool, "alice").await.unwrap());
+        assert!(!delete_voice_speaker(&pool, "alice").await.unwrap());
+        assert_eq!(list_voice_speakers(&pool).await.unwrap().len(), 1);
+
+        // A corrupt row is skipped, not fatal.
+        sqlx::query("UPDATE voice_speakers SET dim = 7 WHERE name = 'mickey'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            load_voice_speaker_embeddings(&pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

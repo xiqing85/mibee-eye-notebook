@@ -58,6 +58,19 @@ pub enum CameraEvent {
     VoiceTranscript {
         keyword: String,
         transcript: String,
+        /// Best-matching enrolled speaker ("" = unknown) — SPEC appendix A
+        /// #25 additive field.
+        speaker: String,
+        timestamp_ms: u64,
+    },
+    /// One Laya typed decision over a voice transcript (SPEC appendix A
+    /// #26): how the device classified the utterance before answering.
+    VoiceDecision {
+        camera_id: String,
+        transcript: String,
+        choice: String,
+        confidence: f32,
+        act_probability: f32,
         timestamp_ms: u64,
     },
     /// A zone event fired (SPEC appendix A notebook dialect:
@@ -185,11 +198,31 @@ fn event_to_sse(event: CameraEvent) -> Event {
         CameraEvent::VoiceTranscript {
             keyword,
             transcript,
+            speaker,
             timestamp_ms,
         } => Event::default().event("voice_transcript").data(
             serde_json::json!({
                 "keyword": keyword,
                 "transcript": transcript,
+                "speaker": speaker,
+                "timestamp": timestamp_ms,
+            })
+            .to_string(),
+        ),
+        CameraEvent::VoiceDecision {
+            camera_id,
+            transcript,
+            choice,
+            confidence,
+            act_probability,
+            timestamp_ms,
+        } => Event::default().event("voice_decision").data(
+            serde_json::json!({
+                "camera_id": camera_id,
+                "transcript": transcript,
+                "choice": choice,
+                "confidence": confidence,
+                "act_probability": act_probability,
                 "timestamp": timestamp_ms,
             })
             .to_string(),
