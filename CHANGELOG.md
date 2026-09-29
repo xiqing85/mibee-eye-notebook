@@ -1,11 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+Nothing yet.
+
 All notable changes to MiBee-Rec are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-09-29
+
+Capability package: voice/audio expansion (meeting minutes, speaker
+voiceprints, trilingual ASR, Laya decision assist) plus the ONVIF
+capability adoption batch. Version numbering is independent of the Pi
+twins since this release train (撞号 with their v0.5.0 is coincidental
+format alignment).
+
 
 ### Added
 

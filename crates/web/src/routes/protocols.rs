@@ -753,6 +753,26 @@ mod tests {
         assert!(props.contains_key("serial"));
         assert!(props.contains_key("firmware_version"));
         assert!(props.contains_key("events_enabled"));
+        assert!(props.contains_key("media2_enabled"));
+        assert!(props.contains_key("http_digest"));
+        assert!(props.contains_key("ip_filter"));
+        // The security/media2 keys validate through the generic schema
+        // coercion: booleans coerce, the array passes as a string list.
+        let validated = validate_and_coerce(
+            "onvif",
+            &serde_json::json!({
+                "media2_enabled": "false",
+                "http_digest": "true",
+                "ip_filter": ["192.168.1.0/24"],
+            }),
+        )
+        .expect("new onvif keys validate");
+        assert_eq!(validated["media2_enabled"], serde_json::json!(false));
+        assert_eq!(validated["http_digest"], serde_json::json!(true));
+        assert_eq!(
+            validated["ip_filter"],
+            serde_json::json!(["192.168.1.0/24"])
+        );
     }
 
     #[test]

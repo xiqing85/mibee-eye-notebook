@@ -169,6 +169,18 @@ pub fn build_onvif_config_from_json(
         },
         onvif_port: ONVIF_HTTP_PORT,
         events_enabled: get_bool("events_enabled", true),
+        media2_enabled: get_bool("media2_enabled", true),
+        http_digest: get_bool("http_digest", false),
+        ip_filter: db_config
+            .get("ip_filter")
+            .and_then(|v| v.as_array())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
         username: get_str("username", ""),
         password: get_str("password", ""),
         host: advertised_host.to_string(),
@@ -284,6 +296,17 @@ pub struct OnvifRuntimeConfig {
     /// Expose the Pull-Point events service (AI MotionAlarm) while the
     /// ONVIF protocol runs (onvif-device-rs 0.7 events service).
     pub events_enabled: bool,
+    /// Serve the ver20 Media2 face next to the legacy Media service
+    /// (onvif-device-rs 0.8): `/onvif/media2_service` route + GetServices
+    /// advertisement. Only takes effect while a Media profile is mounted
+    /// (active stream at protocol start).
+    pub media2_enabled: bool,
+    /// Offer HTTP Digest transport auth (RFC 7616 MD5 subset) on the SOAP
+    /// listener alongside WS-Security (onvif-device-rs 0.8 security).
+    pub http_digest: bool,
+    /// IPv4 allow-list (`a.b.c.d[/prefix]`) enforced per connection; empty
+    /// = no filtering.
+    pub ip_filter: Vec<String>,
     pub username: String,
     pub password: String,
     /// Advertised host for XAddrs / stream URIs.
@@ -402,6 +425,314 @@ impl gb28181_rs::subscribe::MobilePositionSource for StaticPositionSource {
             direction: String::new(),
             altitude: "0".to_string(),
         })
+    }
+}
+
+// ── ONVIF wiring (onvif-rs 0.8 capability batch) ─────────────────────────────
+
+/// Mount the full ONVIF SOAP face onto a fresh server: Device service
+/// (identity + user directory + host hooks + security seams), the
+/// shared-store Media family, the ver20 Media2 face, and the Imaging
+/// service.
+///
+/// Extracted from [`ProtocolRuntime::start_onvif`] so the SOAP wiring is
+/// testable on an ephemeral listener (the runtime path additionally binds
+/// the fixed 8080 port and pairs WS-Discovery).
+///
+/// Registration order is load-bearing for the shared action names
+/// (onvif-rs `GetServiceCapabilities` note): Media registers first, then
+/// Imaging — whose shape router (VideoSourceToken / `timg:` requests)
+/// falls back to the media capabilities answer for plain bodies. PTZ is
+/// deliberately NOT registered (no motors on a notebook).
+fn mount_onvif_services(
+    mut soap: onvif_device_rs::OnvifServer,
+    config: &OnvifRuntimeConfig,
+    device_ip: &str,
+    media: Option<onvif_device_rs::media::SharedMediaConfig>,
+    force_idr: Arc<AtomicBool>,
+    streams: &Arc<StreamManager>,
+    ip_filter: Option<onvif_device_rs::device::IpFilterState>,
+) -> anyhow::Result<(
+    onvif_device_rs::OnvifServer,
+    Option<Arc<onvif_device_rs::events::EventsService>>,
+)> {
+    // Pull-Point events: the publish seam must be taken before start.
+    let events = config.events_enabled.then(|| soap.enable_events());
+
+    // The same shared IP-filter state backs the connection gate and the
+    // SOAP-side view (the library's one-store contract).
+    if let Some(state) = &ip_filter {
+        soap = soap.with_ip_filter(Arc::clone(state));
+    }
+
+    let media2_mount = config.media2_enabled && media.is_some();
+
+    // onvif-device-rs 0.6 fail-closes on placeholder identity (its
+    // issue #20); the DB-backed defaults are real values, so an error
+    // here aborts the protocol start with the library's reason.
+    let mut device_svc = onvif_device_rs::device::DeviceServiceHandlers::new(
+        config.device.clone(),
+        config.onvif_port,
+        device_ip.to_string(),
+    )?
+    // Advertise each service exactly when its routes are served — the
+    // pairs must not disagree. (PTZ: never registered — a notebook has
+    // no motors; the historical default-true advertisement was a lie.)
+    .with_events_support(config.events_enabled)
+    .with_media_support(media.is_some())
+    .with_ptz_support(false)
+    .with_media2_support(media2_mount)
+    .with_hooks(Arc::new(OnvifDeviceHooks::new(Arc::clone(streams))))
+    .with_users(vec![(
+        onvif_wsdl_username(config),
+        "Administrator".to_string(),
+    )])?;
+    if let Some(state) = ip_filter {
+        device_svc = device_svc.with_ip_filter(state);
+    }
+    // AccessPolicy seam with the default empty policy: Get answers the
+    // empty blob (identical bytes to no state at all), Set stays refused
+    // until this product decides to accept policies.
+    device_svc = device_svc.with_access_policy(Arc::new(std::sync::RwLock::new(Vec::new())));
+    let device_svc = Arc::new(device_svc);
+
+    for action in [
+        "GetSystemDateAndTime",
+        "GetDeviceInformation",
+        "GetCapabilities",
+        "GetServices",
+        "GetScopes",
+        // 0.8 additions: user directory + host-hook effects.
+        "GetUsers",
+        "GetSystemLog",
+        "GetSystemSupportInformation",
+        "SetSystemDateAndTime",
+        "SystemReboot",
+        "SetSystemFactoryDefault",
+        // Security view (read-only; the mutating ops stay unregistered so
+        // runtime state cannot drift from the DB config).
+        "GetIPAddressFilter",
+        "GetAccessPolicy",
+    ] {
+        soap.register_handler(
+            action,
+            Box::new(onvif_device_rs::device::DeviceHandler(Arc::clone(
+                &device_svc,
+            ))),
+        );
+    }
+    // Pre-auth actions per ONVIF Core spec (discovery + clock sync
+    // happen before clients can compute WS-Security digests).
+    for action in ["GetSystemDateAndTime", "GetCapabilities", "GetServices"] {
+        soap.register_anonymous_action(action);
+    }
+
+    // Media family through the 0.8 shared store (byte-identical answers
+    // to the historical standalone handlers, now plus the encoder
+    // configuration family, SetSynchronizationPoint, and the empty
+    // audio/OSD sets). The keyframe hook fires the SAME IFrameCmd latch
+    // the GB28181 control handler uses — one IDR seam for both protocols.
+    if let Some(store) = media {
+        let hook: Option<Arc<dyn Fn() + Send + Sync>> = Some({
+            let force_idr = Arc::clone(&force_idr);
+            Arc::new(move || force_idr.store(true, Ordering::SeqCst))
+        });
+        onvif_device_rs::media::register_media_actions(&mut soap, Arc::clone(&store), hook.clone());
+        if media2_mount {
+            soap.enable_media2(store, hook);
+        }
+    }
+
+    // Imaging last (see the order note above): fixed-focus notebook
+    // webcam — standard params answer fixed neutral values, focus Move
+    // acks, unknown names refuse honestly.
+    onvif_device_rs::imaging::register_imaging_actions(&mut soap, Arc::new(FixedFocusImaging));
+
+    Ok((soap, events))
+}
+
+/// Username advertised through the ONVIF user directory (GetUsers): the
+/// DB-configured WS username, or the product default `admin` (SPEC §2's
+/// empty→admin rule) when unset.
+fn onvif_wsdl_username(config: &OnvifRuntimeConfig) -> String {
+    if config.username.is_empty() {
+        "admin".to_string() // hardcode-ok: SPEC §2 empty→admin 产品回退默认，非部署值
+    } else {
+        config.username.clone()
+    }
+}
+
+/// Host-side effects for the ONVIF Device service write operations
+/// (onvif-rs [`DeviceHooks`]): observation-only. This product never lets
+/// a SOAP peer re-clock, reboot, or factory-reset the machine — those
+/// controls live behind the authenticated Web UI.
+struct OnvifDeviceHooks {
+    streams: Arc<StreamManager>,
+}
+
+/// Process start marker for the uptime line in the hook summaries
+/// (best-effort: captured at the first ONVIF start, monotonic thereafter).
+fn process_start() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}
+
+impl OnvifDeviceHooks {
+    fn new(streams: Arc<StreamManager>) -> Self {
+        Self { streams }
+    }
+
+    /// One honest line of active-stream state for the text summaries.
+    fn active_streams_line(&self) -> String {
+        match self.streams.try_active_camera_ids() {
+            Some(ids) if ids.is_empty() => "active streams: none".to_string(),
+            Some(ids) => format!("active streams: {} ({})", ids.len(), ids.join(", ")),
+            None => "active streams: unavailable (busy)".to_string(),
+        }
+    }
+}
+
+impl onvif_device_rs::DeviceHooks for OnvifDeviceHooks {
+    fn set_date_time(&self, utc: (i32, i32, i32, i32, i32, i32), tz: &str) {
+        tracing::warn!(
+            year = utc.0,
+            month = utc.1,
+            day = utc.2,
+            hour = utc.3,
+            minute = utc.4,
+            second = utc.5,
+            tz = %tz,
+            "ONVIF SetSystemDateAndTime observed — observation only, the system clock is not adjusted"
+        );
+    }
+
+    fn reboot(&self) {
+        tracing::warn!(
+            "ONVIF SystemReboot requested — refused (reboot control lives in the Web UI)"
+        );
+    }
+
+    fn factory_default(&self, hard: bool) {
+        tracing::warn!(
+            hard,
+            "ONVIF SetSystemFactoryDefault requested — refused (this device is never wiped over SOAP)"
+        );
+    }
+
+    fn system_log(&self) -> String {
+        format!(
+            "mibee-eye {} (mibee-eye-notebook)\nuptime: {}s\n{}",
+            env!("CARGO_PKG_VERSION"),
+            process_start().elapsed().as_secs(),
+            self.active_streams_line(),
+        )
+    }
+
+    fn support_info(&self) -> String {
+        format!(
+            "product: mibee-eye-notebook\nversion: {}\nuptime_secs: {}\n{}",
+            env!("CARGO_PKG_VERSION"),
+            process_start().elapsed().as_secs(),
+            self.active_streams_line(),
+        )
+    }
+}
+
+/// Fixed-focus notebook webcam as an onvif-rs
+/// [`ImagingParams`](onvif_device_rs::imaging::ImagingParams): the
+/// camera's exposure/WB are UVC-auto and no V4L2 controls are wired at
+/// this product layer, so the four standard names answer a fixed neutral
+/// value (documented as not host-backed) and writes acknowledge within
+/// the normalized [0,1] contract. Unknown names are honestly
+/// `InvalidName`. Focus Move acks (no motor); modes report AUTO (the
+/// trait defaults).
+struct FixedFocusImaging;
+
+/// The standard imaging parameter names the service queries; anything
+/// else is not a camera parameter this product knows.
+const FIXED_IMAGING_PARAMS: [&str; 4] = ["Brightness", "Contrast", "Saturation", "Sharpness"];
+
+impl onvif_device_rs::imaging::ImagingParams for FixedFocusImaging {
+    fn get_param(&self, name: &str) -> Result<f64, onvif_device_rs::imaging::ImagingParamError> {
+        if FIXED_IMAGING_PARAMS.contains(&name) {
+            Ok(0.5)
+        } else {
+            Err(onvif_device_rs::imaging::ImagingParamError::InvalidName(
+                name.to_string(),
+            ))
+        }
+    }
+
+    fn set_param(
+        &self,
+        name: &str,
+        value: f64,
+    ) -> Result<(), onvif_device_rs::imaging::ImagingParamError> {
+        if !FIXED_IMAGING_PARAMS.contains(&name) {
+            return Err(onvif_device_rs::imaging::ImagingParamError::InvalidName(
+                name.to_string(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&value) {
+            return Err(onvif_device_rs::imaging::ImagingParamError::OutOfRange {
+                value,
+                min: 0.0,
+                max: 1.0,
+            });
+        }
+        tracing::info!(
+            param = name,
+            value,
+            "ONVIF imaging set acknowledged (fixed-focus camera, no host control wired)"
+        );
+        Ok(())
+    }
+}
+
+/// Parse the DB `ip_filter` allow-list (`a.b.c.d` / `a.b.c.d/nn`) into
+/// the library's IP filter. Empty input — or entries that all fail to
+/// parse (each WARNs and is skipped) — yields the disabled filter, so a
+/// malformed config can never lock the SOAP listener shut.
+fn parse_ip_filter_entries(entries: &[String]) -> onvif_device_rs::device::IpFilter {
+    use onvif_device_rs::device::{IpEntry, IpFilter, IpFilterMode};
+
+    if entries.is_empty() {
+        return IpFilter::disabled();
+    }
+    let mut parsed = Vec::new();
+    for entry in entries {
+        let (addr, prefix_str) = match entry.split_once('/') {
+            Some((addr, prefix)) => (addr, prefix),
+            None => (entry.as_str(), "32"),
+        };
+        let prefix_len = match prefix_str.parse::<u8>() {
+            Ok(p) if p <= 32 => p,
+            _ => {
+                tracing::warn!(
+                    entry = %entry,
+                    "ONVIF ip_filter entry has an invalid prefix — skipped"
+                );
+                continue;
+            }
+        };
+        match addr.parse::<std::net::Ipv4Addr>() {
+            Ok(ip) => parsed.push(IpEntry {
+                ipv4: ip.to_string(),
+                prefix_len,
+            }),
+            Err(_) => tracing::warn!(
+                entry = %entry,
+                "ONVIF ip_filter entry is not an IPv4 address — skipped"
+            ),
+        }
+    }
+    if parsed.is_empty() {
+        return IpFilter::disabled();
+    }
+    IpFilter {
+        enabled: true,
+        mode: IpFilterMode::Allow,
+        entries: parsed,
     }
 }
 
@@ -549,62 +880,25 @@ impl ProtocolRuntime {
         };
 
         // SOAP server: Device service (identity) + Media service (when a
-        // stream is advertised).
+        // stream is advertised) + Media2 + Imaging + the 0.8 security
+        // seams — mounted by the shared builder below (also the test
+        // surface for the SOAP face).
         // An empty password is this product's "auth off" setting (the ONVIF
         // toggle itself lives behind the authenticated settings page), so
         // opt into the library's fail-closed no-auth escape hatch.
-        let mut soap = onvif_device_rs::OnvifServer::new(&onvif_device_rs::OnvifConfig {
+        let soap = onvif_device_rs::OnvifServer::new(&onvif_device_rs::OnvifConfig {
             port: config.onvif_port,
             username: config.username.clone(),
             password: config.password.clone(),
             allow_no_auth: config.password.is_empty(),
+            http_digest: config.http_digest,
             ..Default::default()
         });
 
-        // Pull-Point events (onvif-device-rs 0.7): the publish seam must
-        // be taken before start. The shared slot lets the AI alarm
-        // bridge publish MotionAlarms while the protocol is up; None
-        // while disabled by config or stopped.
-        let events = config.events_enabled.then(|| soap.enable_events());
-        *self
-            .onvif_events_slot
-            .lock()
-            .expect("onvif events slot lock") = events;
-
-        // onvif-device-rs 0.6 fail-closes on placeholder identity (its
-        // issue #20); the DB-backed defaults are real values, so an error
-        // here aborts the protocol start with the library's reason.
-        let device_svc = Arc::new(
-            // Advertise the events service exactly when its routes are
-            // served (enable_events above) — the pair must not disagree.
-            onvif_device_rs::device::DeviceServiceHandlers::new(
-                config.device.clone(),
-                config.onvif_port,
-                device_ip.clone(),
-            )?
-            .with_events_support(config.events_enabled),
-        );
-        for action in [
-            "GetSystemDateAndTime",
-            "GetDeviceInformation",
-            "GetCapabilities",
-            "GetServices",
-            "GetScopes",
-        ] {
-            soap.register_handler(
-                action,
-                Box::new(onvif_device_rs::device::DeviceHandler(Arc::clone(
-                    &device_svc,
-                ))),
-            );
-        }
-        // Pre-auth actions per ONVIF Core spec (discovery + clock sync
-        // happen before clients can compute WS-Security digests).
-        for action in ["GetSystemDateAndTime", "GetCapabilities", "GetServices"] {
-            soap.register_anonymous_action(action);
-        }
-
-        if let Some(stream_path) = stream_path.clone() {
+        // Media profile store: the shared, mutable onvif-rs 0.8 store —
+        // both the Media1 family and the Media2 face read (and
+        // SetVideoEncoderConfiguration writes) through it.
+        let media_store = if let Some(stream_path) = &stream_path {
             let mut media = onvif_device_rs::media::OnvifMediaConfig::new(
                 config.camera_width,
                 config.camera_height,
@@ -613,7 +907,7 @@ impl ProtocolRuntime {
                 config.rtsp_port,
                 device_ip.clone(),
             );
-            media.stream_path = stream_path;
+            media.stream_path = stream_path.clone();
             // Substream profile (SPEC appendix A #20): advertised after the
             // primary when the first active camera runs with a substream;
             // GetStreamUri maps its `sub` token to the RTSP /live/{id}/sub
@@ -635,26 +929,45 @@ impl ProtocolRuntime {
                     "ONVIF substream profile advertised"
                 );
             }
-            let media_cfg = Arc::new(media);
-            soap.register_handler(
-                "GetProfiles",
-                Box::new(onvif_device_rs::media::GetProfilesHandler::new(Arc::clone(
-                    &media_cfg,
-                ))),
-            );
-            soap.register_handler(
-                "GetStreamUri",
-                Box::new(onvif_device_rs::media::GetStreamUriHandler::new(
-                    Arc::clone(&media_cfg),
-                )),
-            );
-            soap.register_handler(
-                "GetVideoSources",
-                Box::new(onvif_device_rs::media::GetVideoSourcesHandler::new(
-                    Arc::clone(&media_cfg),
-                )),
-            );
-        }
+            Some(Arc::new(std::sync::RwLock::new(media))
+                as onvif_device_rs::media::SharedMediaConfig)
+        } else {
+            None
+        };
+
+        // Per-connection IP filter (allow-list from the DB config): parsed
+        // BEFORE mounting so the device handlers and the connection gate
+        // hold the SAME shared state (the library's one-store contract).
+        let ip_filter_state: Option<onvif_device_rs::device::IpFilterState> = {
+            let filter = parse_ip_filter_entries(&config.ip_filter);
+            if filter.enabled {
+                tracing::info!(
+                    entries = config.ip_filter.len(),
+                    "ONVIF IP allow-list active"
+                );
+                Some(Arc::new(std::sync::RwLock::new(filter)))
+            } else {
+                None
+            }
+        };
+
+        let (soap, events) = mount_onvif_services(
+            soap,
+            &config,
+            &device_ip,
+            media_store,
+            Arc::clone(&self.force_idr),
+            &stream_manager,
+            ip_filter_state,
+        )?;
+
+        // Pull-Point events (onvif-device-rs 0.7): the shared slot lets
+        // the AI alarm bridge publish MotionAlarms while the protocol is
+        // up; None while disabled by config or stopped.
+        *self
+            .onvif_events_slot
+            .lock()
+            .expect("onvif events slot lock") = events;
 
         let discovery = onvif_device_rs::discovery::DiscoveryServer::with_identity(
             &device_ip,
@@ -1774,5 +2087,721 @@ mod tests {
         assert_eq!(source.subscribers.lock().unwrap().len(), 1);
         source.unsubscribe(sub.id);
         assert_eq!(source.subscribers.lock().unwrap().len(), 0);
+    }
+
+    // ── ONVIF wiring (onvif-rs 0.8 capability batch) ────────────────────
+
+    use onvif_device_rs::device::IpFilterState;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Wrap one action element in a minimal SOAP 1.2 envelope.
+    fn soap_envelope(action_body: &str) -> String {
+        format!(
+            "<soap:Envelope xmlns:soap=\"http://www.w3.org/2003/05/soap-envelope\">\
+             <soap:Body>{action_body}</soap:Body></soap:Envelope>"
+        )
+    }
+
+    /// One HTTP exchange against the mounted SOAP face: POST `body` to
+    /// `path`, read to EOF (the server answers `Connection: close`).
+    /// Returns `(status, www_authenticate, body)`.
+    async fn soap_exchange(
+        addr: std::net::SocketAddr,
+        path: &str,
+        extra_headers: &[(&str, String)],
+        body: &str,
+    ) -> (u16, String, String) {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let mut head = format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\n\
+             Content-Type: application/soap+xml; charset=utf-8\r\n\
+             Content-Length: {}\r\n",
+            body.len(),
+        );
+        for (name, value) in extra_headers {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        head.push_str("\r\n");
+        stream
+            .write_all(head.as_bytes())
+            .await
+            .expect("write request head");
+        stream.write_all(body.as_bytes()).await.expect("write body");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await.expect("read response");
+        let text = String::from_utf8_lossy(&raw).to_string();
+        let (head, resp_body) = text.split_once("\r\n\r\n").unwrap_or((text.as_str(), ""));
+        let status = head
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+        let mut www_auth = String::new();
+        for line in head.lines().skip(1) {
+            if let Some((name, value)) = line.split_once(':')
+                && name.trim().eq_ignore_ascii_case("WWW-Authenticate")
+            {
+                www_auth = value.trim().to_string();
+            }
+        }
+        (status, www_auth, resp_body.to_string())
+    }
+
+    /// A runtime config with real (non-placeholder) identity, empty
+    /// password (the product's auth-off semantic) and overridable fields.
+    fn onvif_test_config() -> OnvifRuntimeConfig {
+        let mut cfg = build_onvif_config_from_json(&serde_json::json!({}), "127.0.0.1");
+        // The probe chain fills a real serial on any host; make the value
+        // independent of the machine running the test.
+        cfg.device.serial_number = "TEST-SERIAL-01".to_string();
+        cfg
+    }
+
+    /// A media store shaped like the product's first-active-stream
+    /// profile (`/live/{camera_id}` RTSP mount).
+    fn test_media_store() -> onvif_device_rs::media::SharedMediaConfig {
+        let mut media = onvif_device_rs::media::OnvifMediaConfig::new(
+            1280,
+            720,
+            25,
+            2_500_000,
+            8554,
+            "127.0.0.1".to_string(),
+        );
+        media.stream_path = "/live/cam-1".to_string();
+        Arc::new(std::sync::RwLock::new(media))
+    }
+
+    /// Mount the SOAP face exactly like `start_onvif` does and serve it
+    /// on an ephemeral listener. Returns the bound address, the server
+    /// handle (shut down on drop) and the events publish seam.
+    #[allow(clippy::type_complexity)]
+    async fn start_mounted_onvif(
+        config: &OnvifRuntimeConfig,
+        media: Option<onvif_device_rs::media::SharedMediaConfig>,
+        force_idr: Arc<AtomicBool>,
+        ip_filter: Option<IpFilterState>,
+    ) -> (
+        std::net::SocketAddr,
+        onvif_device_rs::OnvifServerHandle,
+        Option<Arc<onvif_device_rs::events::EventsService>>,
+    ) {
+        let streams = Arc::new(StreamManager::new());
+        let soap = onvif_device_rs::OnvifServer::new(&onvif_device_rs::OnvifConfig {
+            port: 0,
+            username: config.username.clone(),
+            password: config.password.clone(),
+            allow_no_auth: config.password.is_empty(),
+            http_digest: config.http_digest,
+            ..Default::default()
+        });
+        let (soap, events) = mount_onvif_services(
+            soap,
+            config,
+            "127.0.0.1",
+            media,
+            force_idr,
+            &streams,
+            ip_filter,
+        )
+        .expect("mount_onvif_services");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = soap.start_on(listener).await.expect("start_on");
+        (addr, handle, events)
+    }
+
+    /// Legacy Media face through the 0.8 shared store: GetProfiles and
+    /// GetStreamUri keep their byte-stable NVR shape (MediaUri/Uri) and
+    /// the product's `/live/{camera_id}` RTSP mount.
+    #[tokio::test]
+    async fn onvif_media_face_shape_is_stable() {
+        let (addr, _handle, _) = start_mounted_onvif(
+            &onvif_test_config(),
+            Some(test_media_store()),
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope("<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
+        )
+        .await;
+        assert_eq!(status, 200, "GetProfiles: {body}");
+        assert!(body.contains("GetProfilesResponse"));
+        assert!(body.contains(r#"Profiles token="main""#));
+        assert!(body.contains("VideoSourceConfiguration"));
+        assert!(body.contains("VideoEncoderConfiguration"));
+        assert!(body.contains("<Width>1280</Width>"));
+        assert!(body.contains("<Height>720</Height>"));
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope(
+                "<GetStreamUri xmlns=\"http://www.onvif.org/ver10/media/wsdl\"><ProfileToken>main</ProfileToken></GetStreamUri>",
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "GetStreamUri: {body}");
+        // NVR byte-stability contract: MediaUri → Uri element chain.
+        assert!(body.contains("GetStreamUriResponse"));
+        assert!(body.contains("MediaUri"));
+        assert!(body.contains("<Uri>rtsp://127.0.0.1:8554/live/cam-1</Uri>"));
+    }
+
+    /// No active stream at protocol start → no media profile mounted and
+    /// no Media advertisement (the served routes and GetServices agree).
+    #[tokio::test]
+    async fn onvif_no_media_without_active_stream() {
+        let (addr, _handle, _) = start_mounted_onvif(
+            &onvif_test_config(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope("<GetProfiles xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>"),
+        )
+        .await;
+        assert!(status != 200, "GetProfiles must not answer: {body}");
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope(
+                "<GetServices xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><IncludeCapability>true</IncludeCapability></GetServices>",
+            ),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(!body.contains("ver10/media/wsdl"), "no Media ad: {body}");
+        assert!(!body.contains("ver20/media/wsdl"), "no Media2 ad: {body}");
+        assert!(!body.contains("ptz/wsdl"), "no PTZ ad: {body}");
+        assert!(body.contains("ver10/device/wsdl"));
+        assert!(body.contains("ver10/events/wsdl"));
+    }
+
+    /// Media2 (default on): the `tr2` GetProfiles face on its own route
+    /// and the GetServices advertisement both appear — and both vanish
+    /// when the DB key turns it off.
+    #[tokio::test]
+    async fn onvif_media2_tr2_face_and_advertisement() {
+        let config = onvif_test_config();
+        let (addr, _handle, _) =
+            start_mounted_onvif(&config, Some(test_media_store()), Arc::default(), None).await;
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/media2_service",
+            &[],
+            &soap_envelope("<GetProfiles xmlns=\"http://www.onvif.org/ver20/media/wsdl\"/>"),
+        )
+        .await;
+        assert_eq!(status, 200, "Media2 GetProfiles: {body}");
+        assert!(body.contains("tr2:GetProfilesResponse"));
+        assert!(body.contains("http://www.onvif.org/ver20/media/wsdl"));
+
+        let (_, _, services) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope("<GetServices xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
+        )
+        .await;
+        assert!(services.contains("http://www.onvif.org/ver20/media/wsdl"));
+        assert!(services.contains("/onvif/media2_service"));
+        assert!(services.contains("ver10/media/wsdl"));
+        // PR#66 interop golden: `Service` elements are DIRECT children of
+        // GetServicesResponse — the old `tds:Services` wrapper made strict
+        // clients (onvif-go) parse zero services (library issue #64).
+        assert!(
+            !services.contains("<tds:Services>"),
+            "GetServices must not wrap Service elements: {services}"
+        );
+        assert!(services.contains("<tds:Service>"));
+
+        // DB key off → no route, no advertisement.
+        let mut off = onvif_test_config();
+        off.media2_enabled = false;
+        let (addr, _handle, _) =
+            start_mounted_onvif(&off, Some(test_media_store()), Arc::default(), None).await;
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/media2_service",
+            &[],
+            &soap_envelope("<GetProfiles xmlns=\"http://www.onvif.org/ver20/media/wsdl\"/>"),
+        )
+        .await;
+        assert!(status != 200, "Media2 route must be gone: {body}");
+        let (_, _, services) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope("<GetServices xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
+        )
+        .await;
+        assert!(!services.contains("ver20/media/wsdl"));
+    }
+
+    /// SetSynchronizationPoint (Media1 + Media2 both) fires the shared
+    /// IFrameCmd latch — the SAME Arc the GB28181 control handler uses.
+    #[tokio::test]
+    async fn onvif_set_synchronization_point_fires_idr_latch() {
+        let force_idr = Arc::new(AtomicBool::new(false));
+        let (addr, _handle, _) = start_mounted_onvif(
+            &onvif_test_config(),
+            Some(test_media_store()),
+            Arc::clone(&force_idr),
+            None,
+        )
+        .await;
+
+        for path in ["/onvif/device_service", "/onvif/media2_service"] {
+            force_idr.store(false, Ordering::SeqCst);
+            let (status, _, body) = soap_exchange(
+                addr,
+                path,
+                &[],
+                &soap_envelope(
+                    "<SetSynchronizationPoint xmlns=\"http://www.onvif.org/ver10/media/wsdl\"/>",
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "SetSynchronizationPoint on {path}: {body}");
+            assert!(
+                force_idr.load(Ordering::SeqCst),
+                "IDR latch must fire via {path}"
+            );
+        }
+    }
+
+    /// Imaging face (fixed-focus webcam): GetImagingSettings answers the
+    /// fixed neutral values, Move acks, GetMoveOptions answers ranges.
+    #[tokio::test]
+    async fn onvif_imaging_fixed_focus_face() {
+        let (addr, _handle, _) = start_mounted_onvif(
+            &onvif_test_config(),
+            Some(test_media_store()),
+            Arc::default(),
+            None,
+        )
+        .await;
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope(
+                "<GetImagingSettings xmlns=\"http://www.onvif.org/ver10/imaging/wsdl\"><VideoSourceToken>videoSrc0</VideoSourceToken></GetImagingSettings>",
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "GetImagingSettings: {body}");
+        assert!(body.contains("timg:GetImagingSettingsResponse"));
+        assert!(body.contains("<tt:Brightness Value=\"0.5\"/>"));
+        assert!(body.contains("<tt:Contrast Value=\"0.5\"/>"));
+        assert!(body.contains("<tt:ColorSaturation Value=\"0.5\"/>"));
+        assert!(body.contains("<tt:Exposure>"));
+        assert!(body.contains("<tt:Mode>AUTO</tt:Mode>"));
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope(
+                "<Move xmlns=\"http://www.onvif.org/ver10/imaging/wsdl\"><VideoSourceToken>videoSrc0</VideoSourceToken><Focus><Absolute><Position>0.4</Position><Speed>0.5</Speed></Absolute></Focus></Move>",
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "Move: {body}");
+        assert!(body.contains("timg:MoveResponse"));
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope(
+                "<GetMoveOptions xmlns=\"http://www.onvif.org/ver10/imaging/wsdl\"><VideoSourceToken>videoSrc0</VideoSourceToken></GetMoveOptions>",
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "GetMoveOptions: {body}");
+        assert!(body.contains("timg:GetMoveOptionsResponse"));
+    }
+
+    /// DeviceHooks texts and the GetUsers directory: GetSystemLog answers
+    /// a real application summary (version/uptime/streams), GetUsers
+    /// echoes the configured WS username (default admin) as Administrator.
+    #[tokio::test]
+    async fn onvif_system_log_and_users_directory() {
+        let (addr, _handle, _) = start_mounted_onvif(
+            &onvif_test_config(),
+            Some(test_media_store()),
+            Arc::default(),
+            None,
+        )
+        .await;
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope(
+                "<GetSystemLog xmlns=\"http://www.onvif.org/ver10/device/wsdl\"><LogType>System</LogType></GetSystemLog>",
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "GetSystemLog: {body}");
+        assert!(body.contains("GetSystemLogResponse"));
+        assert!(body.contains("mibee-eye"));
+        assert!(body.contains("uptime"));
+        assert!(body.contains("active streams"));
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope("<GetUsers xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
+        )
+        .await;
+        assert_eq!(status, 200, "GetUsers: {body}");
+        assert!(body.contains("GetUsersResponse"));
+        assert!(body.contains("<tt:Username>admin</tt:Username>"));
+        assert!(body.contains("<tt:UserLevel>Administrator</tt:UserLevel>"));
+    }
+
+    /// GetScopes answers the WSDL `tt:Scope` form (library PR#66 / issue
+    /// #65): `tds:Scopes` entries of ScopeDef + ScopeItem — the built-in
+    /// device scopes report `Fixed`.
+    #[tokio::test]
+    async fn onvif_get_scopes_wdsl_form() {
+        let (addr, _handle, _) = start_mounted_onvif(
+            &onvif_test_config(),
+            Some(test_media_store()),
+            Arc::default(),
+            None,
+        )
+        .await;
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope("<GetScopes xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>"),
+        )
+        .await;
+        assert_eq!(status, 200, "GetScopes: {body}");
+        assert!(body.contains("tds:GetScopesResponse"));
+        assert!(body.contains("<tds:Scopes>"));
+        assert!(body.contains("<tt:ScopeDef>Fixed</tt:ScopeDef>"));
+        assert!(
+            body.contains("<tt:ScopeItem>onvif://www.onvif.org/type/video_encoder</tt:ScopeItem>")
+        );
+        assert!(body.contains("onvif://www.onvif.org/name/"));
+    }
+
+    /// HTTP Digest (DB key `http_digest`): token-less requests get the
+    /// 401 Digest challenge; a correct MD5 response authenticates.
+    #[tokio::test]
+    async fn onvif_http_digest_challenge_and_pass() {
+        use md5::{Digest as _, Md5};
+
+        let md5_hex = |input: &[u8]| {
+            let mut hasher = Md5::new();
+            hasher.update(input);
+            let out = hasher.finalize();
+            out.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+
+        let mut config = onvif_test_config();
+        config.username = "admin".to_string();
+        config.password = "secret".to_string();
+        config.http_digest = true;
+        let (addr, _handle, _) =
+            start_mounted_onvif(&config, Some(test_media_store()), Arc::default(), None).await;
+
+        let get_device_info = || {
+            soap_envelope(
+                "<GetDeviceInformation xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>",
+            )
+        };
+
+        // 1) Token-less → 401 + Digest challenge.
+        let (status, challenge, _) =
+            soap_exchange(addr, "/onvif/device_service", &[], &get_device_info()).await;
+        assert_eq!(status, 401);
+        assert!(challenge.starts_with("Digest "), "got: {challenge}");
+        let challenge_params = challenge
+            .strip_prefix("Digest ")
+            .unwrap_or(challenge.as_str());
+        let param = |key: &str| -> String {
+            challenge_params
+                .split(',')
+                .find_map(|part| {
+                    let (k, v) = part.split_once('=')?;
+                    k.trim()
+                        .eq_ignore_ascii_case(key)
+                        .then(|| v.trim().trim_matches('"').to_string())
+                })
+                .unwrap_or_default()
+        };
+        let nonce = param("nonce");
+        let realm = param("realm");
+        let opaque = param("opaque");
+        assert!(!nonce.is_empty() && !realm.is_empty());
+
+        // 2) RFC 7616 MD5 (qop=auth) response → 200.
+        let uri = "/onvif/device_service";
+        let ha1 = md5_hex(format!("admin:{realm}:secret").as_bytes());
+        let ha2 = md5_hex(format!("POST:{uri}").as_bytes());
+        let cnonce = "0123456789abcdef";
+        let nc = "00000001";
+        let response = md5_hex(format!("{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}").as_bytes());
+        let auth = format!(
+            "Digest username=\"admin\", realm=\"{realm}\", nonce=\"{nonce}\", \
+             uri=\"{uri}\", qop=auth, nc={nc}, cnonce=\"{cnonce}\", \
+             response=\"{response}\", opaque=\"{opaque}\""
+        );
+        let (status, _, body) =
+            soap_exchange(addr, uri, &[("Authorization", auth)], &get_device_info()).await;
+        assert_eq!(status, 200, "digest-authenticated request: {body}");
+        assert!(body.contains("GetDeviceInformationResponse"));
+    }
+
+    /// IP allow-list: a peer outside the configured networks is refused
+    /// 403 before any SOAP processing.
+    #[tokio::test]
+    async fn onvif_ip_filter_refuses_unlisted_peer() {
+        let filter = parse_ip_filter_entries(&["10.0.0.0/8".to_string()]);
+        assert!(filter.enabled);
+        let state: IpFilterState = Arc::new(std::sync::RwLock::new(filter));
+        let (addr, _handle, _) = start_mounted_onvif(
+            &onvif_test_config(),
+            Some(test_media_store()),
+            Arc::default(),
+            Some(state),
+        )
+        .await;
+
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/device_service",
+            &[],
+            &soap_envelope(
+                "<GetDeviceInformation xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>",
+            ),
+        )
+        .await;
+        assert_eq!(status, 403, "unlisted peer must be refused: {body}");
+    }
+
+    /// Events push (wsnt:Subscribe, automatic after enable_events): a
+    /// subscription registers a push consumer, and publishing through the
+    /// AI MotionAlarm seam delivers a wsnt:Notify to the consumer.
+    #[tokio::test]
+    async fn onvif_events_subscribe_push_notify() {
+        let (addr, _handle, events) = start_mounted_onvif(
+            &onvif_test_config(),
+            Some(test_media_store()),
+            Arc::default(),
+            None,
+        )
+        .await;
+        let events = events.expect("events service enabled by default");
+
+        // Push consumer: a one-shot HTTP server capturing the Notify POST.
+        let consumer = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let consumer_addr = consumer.local_addr().expect("consumer addr");
+        let capture = tokio::spawn(async move {
+            let (mut sock, _) = consumer.accept().await.expect("consumer accept");
+            let mut raw = Vec::new();
+            sock.read_to_end(&mut raw).await.expect("consumer read");
+            let text = String::from_utf8_lossy(&raw).to_string();
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            text
+        });
+
+        let subscribe = format!(
+            "<wsnt:Subscribe xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\" \
+             xmlns:wsa=\"http://www.w3.org/2005/08/addressing\">\
+             <wsnt:ConsumerReference><wsa:Address>http://{consumer_addr}/notify</wsa:Address>\
+             </wsnt:ConsumerReference><wsnt:TerminationTime>PT1M</wsnt:TerminationTime>\
+             </wsnt:Subscribe>"
+        );
+        let (status, _, body) = soap_exchange(
+            addr,
+            "/onvif/events_service",
+            &[],
+            &soap_envelope(&subscribe),
+        )
+        .await;
+        assert_eq!(status, 200, "wsnt:Subscribe: {body}");
+        assert!(body.contains("SubscribeResponse"));
+
+        events.publish_event(crate::onvif_alarm::motion_alarm_event("cam-1", 2));
+
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), capture)
+            .await
+            .expect("Notify delivered within timeout")
+            .expect("capture task ok");
+        assert!(
+            delivered.contains("/notify"),
+            "posted to consumer: {delivered}"
+        );
+        assert!(
+            delivered.contains("wsnt:Notify"),
+            "Notify envelope: {delivered}"
+        );
+        assert!(
+            delivered.contains("tns1:VideoSource/MotionAlarm"),
+            "MotionAlarm topic: {delivered}"
+        );
+        assert!(delivered.contains("Name=\"Source\" Value=\"cam-1\""));
+        assert!(delivered.contains("Name=\"State\" Value=\"true\""));
+        assert!(delivered.contains("Name=\"Targets\" Value=\"2\""));
+    }
+
+    /// The new DB keys parse with their documented defaults and explicit
+    /// overrides (`build_onvif_config_from_json`).
+    #[test]
+    fn build_onvif_config_new_security_and_media2_keys() {
+        let default = build_onvif_config_from_json(&serde_json::json!({}), "192.0.2.10");
+        assert!(default.media2_enabled, "media2 defaults on");
+        assert!(!default.http_digest, "digest defaults off");
+        assert!(default.ip_filter.is_empty(), "ip_filter defaults empty");
+
+        let explicit = build_onvif_config_from_json(
+            &serde_json::json!({
+                "media2_enabled": false,
+                "http_digest": true,
+                "ip_filter": ["192.168.1.0/24", "10.1.2.3"],
+            }),
+            "192.0.2.10",
+        );
+        assert!(!explicit.media2_enabled);
+        assert!(explicit.http_digest);
+        assert_eq!(explicit.ip_filter, vec!["192.168.1.0/24", "10.1.2.3"]);
+    }
+
+    /// `parse_ip_filter_entries`: empty → disabled; CIDR and bare IPv4
+    /// parse; malformed entries WARN-and-skip; an all-malformed list
+    /// fails open (disabled), never locks the listener.
+    #[test]
+    fn parse_ip_filter_entries_matrix() {
+        use onvif_device_rs::device::{IpFilter, IpFilterMode};
+
+        assert!(!parse_ip_filter_entries(&[]).enabled);
+
+        let f = parse_ip_filter_entries(&["192.168.1.0/24".to_string()]);
+        assert!(f.enabled);
+        assert_eq!(f.mode, IpFilterMode::Allow);
+        assert_eq!(f.entries.len(), 1);
+        assert_eq!(f.entries[0].ipv4, "192.168.1.0");
+        assert_eq!(f.entries[0].prefix_len, 24);
+        assert!(f.allows_client_ip("192.168.1.55"));
+        assert!(!f.allows_client_ip("192.168.2.1"));
+
+        // Bare address → /32 single host.
+        let f = parse_ip_filter_entries(&["10.1.2.3".to_string()]);
+        assert_eq!(f.entries[0].prefix_len, 32);
+        assert!(f.allows_client_ip("10.1.2.3"));
+        assert!(!f.allows_client_ip("10.1.2.4"));
+
+        // Malformed entries are skipped; prefix > 32 is refused.
+        let f = parse_ip_filter_entries(&[
+            "not-an-ip".to_string(),
+            "10.0.0.0/33".to_string(),
+            "10.0.0.0/8".to_string(),
+        ]);
+        assert!(f.enabled);
+        assert_eq!(f.entries.len(), 1);
+        assert!(f.allows_client_ip("10.9.9.9"));
+
+        // All-malformed → disabled (fail open, documented).
+        let f: IpFilter = parse_ip_filter_entries(&["bogus".to_string()]);
+        assert!(!f.enabled);
+    }
+
+    /// `FixedFocusImaging`: the four standard names answer the neutral
+    /// value; unknown names are honestly InvalidName; writes respect the
+    /// normalized [0,1] contract.
+    #[test]
+    fn fixed_focus_imaging_param_semantics() {
+        use onvif_device_rs::imaging::{
+            FocusMoveCmd, FocusMoveKind, ImagingParamError, ImagingParams,
+        };
+
+        let pm = FixedFocusImaging;
+        for name in FIXED_IMAGING_PARAMS {
+            assert_eq!(pm.get_param(name).unwrap(), 0.5, "{name}");
+            assert!(pm.set_param(name, 0.25).is_ok());
+        }
+        assert!(matches!(
+            pm.get_param("Zoom"),
+            Err(ImagingParamError::InvalidName(ref n)) if n == "Zoom"
+        ));
+        assert!(matches!(
+            pm.set_param("Zoom", 0.5),
+            Err(ImagingParamError::InvalidName(_))
+        ));
+        assert!(matches!(
+            pm.set_param("Brightness", 1.5),
+            Err(ImagingParamError::OutOfRange { .. })
+        ));
+        // Focus Move acks (trait default: no motor), modes report AUTO.
+        pm.focus_move(FocusMoveCmd {
+            kind: FocusMoveKind::Absolute,
+            position: 0.4,
+            speed: 0.5,
+        })
+        .unwrap();
+        assert_eq!(pm.exposure_mode(), "AUTO");
+        assert_eq!(pm.white_balance_mode(), "AUTO");
+    }
+
+    /// DeviceHooks texts carry the real application summary (version,
+    /// uptime, honest stream state) — never empty strings.
+    #[test]
+    fn onvif_device_hooks_summary_texts() {
+        use onvif_device_rs::DeviceHooks as _;
+
+        let hooks = OnvifDeviceHooks::new(Arc::new(StreamManager::new()));
+        let log = hooks.system_log();
+        assert!(log.contains("mibee-eye"));
+        assert!(log.contains("uptime"));
+        assert!(log.contains("active streams: none"));
+        let info = hooks.support_info();
+        assert!(info.contains("mibee-eye-notebook"));
+        assert!(info.contains("active streams: none"));
+    }
+
+    /// The GetUsers username: DB-configured WS username wins; empty falls
+    /// back to the product default admin (SPEC §2's empty→admin rule).
+    #[test]
+    fn onvif_wsdl_username_default_and_override() {
+        let mut config = onvif_test_config();
+        config.username.clear();
+        assert_eq!(onvif_wsdl_username(&config), "admin");
+        config.username = "operator1".to_string();
+        assert_eq!(onvif_wsdl_username(&config), "operator1");
     }
 }

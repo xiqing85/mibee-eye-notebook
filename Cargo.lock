@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "capture"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -3261,7 +3261,7 @@ dependencies = [
 
 [[package]]
 name = "observability"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "opentelemetry",
@@ -3332,13 +3332,14 @@ dependencies = [
 [[package]]
 name = "onvif-device-rs"
 version = "0.8.0"
-source = "git+https://github.com/mickeyzzc/onvif-rs.git?rev=1826726#182672673dea2116e0ad825cb1365ab90263b6aa"
+source = "git+https://github.com/mickeyzzc/onvif-rs.git?rev=02228fd#02228fd0f207b5f8c90bcbf74da5a4e2829b97f9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures-util",
  "hex",
  "log",
+ "md-5",
  "quick-xml",
  "rand 0.8.8",
  "serde",
@@ -3899,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "protocols"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4534,7 +4535,7 @@ dependencies = [
 
 [[package]]
 name = "security"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5129,7 +5130,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "streaming"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -6081,7 +6082,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -6093,6 +6094,7 @@ dependencies = [
  "gb28181-rs",
  "include_dir",
  "libc",
+ "md-5",
  "observability",
  "onvif-device-rs",
  "opentelemetry",
@@ -6192,7 +6194,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
