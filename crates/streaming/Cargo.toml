@@ -75,5 +75,6 @@ llama-cpp-2 = { version = "=0.1.157", optional = true, default-features = false 
 
 [dev-dependencies]
 axum.workspace = true
+toml.workspace = true
 http = "1"
 bytes = "1"

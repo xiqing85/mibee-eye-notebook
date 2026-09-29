@@ -383,6 +383,10 @@ mod tests {
             decision: Arc::new(streaming::decision::DecisionEngine::from_config(
                 &streaming::decision::DecisionConfig::default(),
             )),
+            meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
+                &streaming::meeting::MeetingConfig::default(),
+                &streaming::voice::VoiceConfig::default(),
+            )),
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),

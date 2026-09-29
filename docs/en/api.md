@@ -99,7 +99,7 @@ This replaces the former `GET/PUT /api/settings` and the per-protocol
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"` or `"audio"`, `targets` / `class` + `score`, `timestamp` epoch-ms), `zone_event` (`{camera_id, zone, event, track_id, label, timestamp}`), `voice_transcript` (`{keyword, transcript, speaker, timestamp}` — `speaker` is the best-matching enrolled voiceprint, "" when unknown), `chat_reply` (`{source, reply, timestamp}`), `voice_decision` (`{camera_id, transcript, choice, confidence, act_probability, timestamp}` — the intent decision over a voice transcript), `alarm_description` (`{camera_id, alarm_timestamp, description, elapsed_s}`). Each capability-gated event is only emitted while its engine is active. |
+| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"` or `"audio"`, `targets` / `class` + `score`, `timestamp` epoch-ms), `zone_event` (`{camera_id, zone, event, track_id, label, timestamp}`), `voice_transcript` (`{keyword, transcript, speaker, timestamp}` — `speaker` is the best-matching enrolled voiceprint, "" when unknown), `chat_reply` (`{source, reply, timestamp}`), `voice_decision` (`{camera_id, transcript, choice, confidence, act_probability, timestamp}` — the intent decision over a voice transcript), `alarm_description` (`{camera_id, alarm_timestamp, description, elapsed_s}`), `meeting_state` (`{camera_id:"all", meeting_id, status:"recording"\|"processing"\|"done"\|"failed", timestamp}` — meeting lifecycle, SPEC appendix A #27). Each capability-gated event is only emitted while its engine is active. |
 
 ### On-device intelligence (device extension)
 
@@ -118,6 +118,11 @@ instead of pretending.
 | POST | `/api/voice/speakers/cancel` | Abandon the in-flight enrollment |
 | DELETE | `/api/voice/speakers/{name}` | Delete a profile (memory + DB; unknown name → 404) |
 | POST | `/api/ocr` | Body = raw JPEG bytes → `{"items":[{text, score, bbox}]}` (capability `ocr`) |
+| POST | `/api/meetings/start` | Start a meeting recording (capability `meeting`) → `201 {"id","started_at_ms"}`; already recording → 409; engine inactive → 501. Emits `meeting_state` SSE `{camera_id:"all", meeting_id, status:"recording", timestamp}` |
+| POST | `/api/meetings/{id}/stop` | Stop and trigger the **async** pipeline (diarize → transcribe → punctuate → name → persist) → `{"id","status":"processing"}`; id not the running session → 409; completion arrives via `meeting_state` SSE (`done`/`failed`) |
+| GET | `/api/meetings` | Meeting list (newest first) → `{"meetings":[{id, started_at_ms, ended_at_ms, duration_ms, status:"recording"\|"processing"\|"done"\|"failed", num_speakers, num_segments, audio_path, error}]}` |
+| GET | `/api/meetings/{id}` | Meeting detail → `{"meeting":{…}, "segments":[{start_ms, end_ms, speaker_index, speaker, text}]}` (ordered by start_ms; `speaker` is the matched voiceprint name, "" when anonymous — render "Speaker N" from `speaker_index`) |
+| DELETE | `/api/meetings/{id}` | Delete the meeting, its segments (and any retained audio); unknown id → 404 |
 | GET/PUT | `/api/cameras/{id}/zones` | See the Cameras table above |
 | GET | `/api/ai/models` | Detection model store: available/active models |
 | POST | `/api/ai/models/{id}/activate` | Activate an uploaded model |

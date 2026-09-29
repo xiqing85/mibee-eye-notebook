@@ -23,6 +23,7 @@ pub mod config_api;
 pub mod detections;
 pub mod devices;
 pub mod events;
+pub mod meetings;
 pub mod mse;
 pub mod ocr;
 pub mod protocols;

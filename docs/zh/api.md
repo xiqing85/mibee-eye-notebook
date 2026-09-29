@@ -94,7 +94,7 @@ Cookie 会话 + CSRF 双提交：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"` 或 `"audio"`、`targets` / `class` + `score`、`timestamp` 毫秒时间戳）、`zone_event`（`{camera_id, zone, event, track_id, label, timestamp}`）、`voice_transcript`（`{keyword, transcript, speaker, timestamp}`——`speaker` 为最优匹配的已注册声纹，未知为空串）、`chat_reply`（`{source, reply, timestamp}`）、`voice_decision`（`{camera_id, transcript, choice, confidence, act_probability, timestamp}`——语音转写的意图决策）、`alarm_description`（`{camera_id, alarm_timestamp, description, elapsed_s}`）。按能力门控的事件只在对应引擎活跃时送出。 |
+| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"` 或 `"audio"`、`targets` / `class` + `score`、`timestamp` 毫秒时间戳）、`zone_event`（`{camera_id, zone, event, track_id, label, timestamp}`）、`voice_transcript`（`{keyword, transcript, speaker, timestamp}`——`speaker` 为最优匹配的已注册声纹，未知为空串）、`chat_reply`（`{source, reply, timestamp}`）、`voice_decision`（`{camera_id, transcript, choice, confidence, act_probability, timestamp}`——语音转写的意图决策）、`alarm_description`（`{camera_id, alarm_timestamp, description, elapsed_s}`）、`meeting_state`（`{camera_id:"all", meeting_id, status:"recording"\|"processing"\|"done"\|"failed", timestamp}`——会议生命周期，SPEC 附录 A #27）。按能力门控的事件只在对应引擎活跃时送出。 |
 
 ### 端侧智能（设备扩展）
 
@@ -112,6 +112,11 @@ Cookie 会话 + CSRF 双提交：
 | POST | `/api/voice/speakers/commit` | 样本集满后持久化并入内存 → `{"enrolled","samples","dim"}`；未集满 400 |
 | POST | `/api/voice/speakers/cancel` | 放弃进行中的注册会话 |
 | DELETE | `/api/voice/speakers/{name}` | 删除声纹档案（内存+数据库；不存在 404） |
+| POST | `/api/meetings/start` | 开始会议录音（能力位 `meeting`）→ `201 {"id","started_at_ms"}`；已在录 409；引擎未激活 501。录音中 SSE 发 `meeting_state` `{camera_id:"all", meeting_id, status:"recording", timestamp}` |
+| POST | `/api/meetings/{id}/stop` | 停止并触发**异步**处理管线（分离→转写→标点→打名→入库）→ `{"id","status":"processing"}`；id 非当前会话 409；完成经 `meeting_state` SSE（`done`/`failed`）通知 |
+| GET | `/api/meetings` | 会议列表（倒序）→ `{"meetings":[{id, started_at_ms, ended_at_ms, duration_ms, status:"recording"\|"processing"\|"done"\|"failed", num_speakers, num_segments, audio_path, error}]}` |
+| GET | `/api/meetings/{id}` | 会议详情 → `{"meeting":{…}, "segments":[{start_ms, end_ms, speaker_index, speaker, text}]}`（按 start_ms 升序；`speaker` 为声纹档案命中名，未命中空串——前端以 `speaker_index` 渲染"说话人 N"） |
+| DELETE | `/api/meetings/{id}` | 删除会议记录+分段（及保留的音频文件）；不存在 404 |
 | GET/PUT | `/api/cameras/{id}/zones` | 见上方相机表 |
 | GET | `/api/ai/models` | 检测模型库：可用/激活模型列表 |
 | POST | `/api/ai/models/{id}/activate` | 激活已上传模型 |

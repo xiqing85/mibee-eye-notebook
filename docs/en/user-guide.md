@@ -162,6 +162,37 @@ Sound-event detection and voice listening only run when you explicitly
 enable them in the configuration — the microphone is privacy-sensitive
 input and **every listening feature is opt-in**.
 
+### Meeting mode (local meeting minutes)
+
+Capability `meeting` (needs the `[voice]` ASR models + the pyannote
+segmentation model, default `models/voice/diarization/pyannote.onnx`).
+The **Meeting minutes** card in the Records view:
+
+1. Press **Start meeting** — the device records the microphone into a
+   session WAV (a prominent recording indicator appears; **no audio is
+   recorded at any other time**).
+2. Participants talk normally (Mandarin/Cantonese/English mix fine).
+3. Press **End meeting** — recording stops and the device **offline**
+   runs speaker diarization + per-segment transcription + punctuation
+   restoration, producing labeled minutes (enrolled voiceprints show
+   names, others show "Speaker N").
+4. Processing is asynchronous (roughly 1/10–1/5 of the recording
+   duration); the page refreshes via the `meeting_state` event. Past
+   minutes stay browsable and deletable.
+
+The audio file is **deleted** after processing by default (only the text
+minute remains; `meeting.keep_audio = true` retains it for review). A
+recording auto-stops at `max_duration_secs` (default 2 hours) and feeds
+the same pipeline — no forgotten recordings. Self-test:
+`mibee-eye --selftest-meeting <wav>` diarizes any multi-speaker WAV and
+reports the speaker count and segments.
+
+> **Honest boundary**: diarization is acoustic clustering — family
+> members with similar voices may merge, distinctive voices may split
+> (`meeting.clustering_threshold` is tunable); transcription quality
+> matches the voice pipeline; speaker naming depends on voiceprint vote
+> hits. This is a convenience feature, not precise speaker annotation.
+
 Registered speaker voiceprints also attribute each voice record to the
 best-matching **speaker** (blank when nobody matches).
 

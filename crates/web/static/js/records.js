@@ -1,5 +1,6 @@
 // Hearing records view (extension: audio_records, SPEC appendix A #24)
-// + voiceprint speakers card (SPEC appendix A #25).
+// + voiceprint speakers card (SPEC appendix A #25)
+// + meeting minutes card (SPEC appendix A #27).
 // Persistent text records of what the device heard — sound-event classes
 // and voice-interaction transcripts. Newest first; optional kind filter;
 // clear-all with confirmation. Live refresh rides the existing SSE events
@@ -66,6 +67,7 @@ export function updateRecordsVisibility() {
     tab.classList.toggle('hidden', !show);
   });
   updateSpeakersVisibility();
+  updateMeetingsVisibility();
 }
 
 export function initRecords() {
@@ -79,6 +81,7 @@ export function initRecords() {
   const refresh = $('records-refresh');
   if (refresh) refresh.addEventListener('click', renderRecords);
   initSpeakers();
+  initMeetings();
   const clear = $('records-clear');
   if (clear) {
     clear.addEventListener('click', async () => {
@@ -211,9 +214,214 @@ function updateSpeakersVisibility() {
 // Live refresh while the records view is open: sound alarms and voice
 // transcripts both mean a new record landed.
 export function recordsSseHook(eventName, payload) {
+  if (eventName === 'meeting_state') {
+    // Lifecycle transitions refresh the minutes list and the recording
+    // indicator (restore on recording, clear on stop).
+    setRecordingUi(
+      payload && payload.status === 'recording' ? payload.meeting_id : null,
+      payload ? payload.timestamp : undefined,
+    );
+    renderMeetings();
+    return;
+  }
   const relevant = (eventName === 'alarm' && payload && payload.source === 'audio') ||
     eventName === 'voice_transcript';
   if (!relevant) return;
   const view = $('view-records');
   if (view && view.classList.contains('active')) renderRecords();
+}
+
+// -- Meeting minutes card (SPEC appendix A #27) ---------------------------
+
+let meetingTimer = null;
+let meetingPoll = null;
+const expandedMeetings = new Set();
+
+function fmtDuration(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(total / 60);
+  const sec = total % 60;
+  return m + ':' + String(sec).padStart(2, '0');
+}
+
+function statusLabel(status) {
+  const map = {
+    recording: 'meetingsStatusRecording',
+    processing: 'meetingsStatusProcessing',
+    done: 'meetingsStatusDone',
+    failed: 'meetingsStatusFailed',
+  };
+  return t(map[status] || 'meetingsStatusProcessing');
+}
+
+function speakerLabel(seg) {
+  if (seg.speaker) return seg.speaker;
+  return t('meetingsSpeakerN').replace('{n}', String((seg.speaker_index || 0) + 1));
+}
+
+function setRecordingUi(meetingId, startedAtMs) {
+  const rec = $('meeting-rec');
+  const start = $('meeting-start');
+  const stop = $('meeting-stop');
+  const timer = $('meeting-rec-timer');
+  if (!rec || !start || !stop) return;
+  const active = meetingId !== null && meetingId !== undefined;
+  rec.classList.toggle('hidden', !active);
+  start.classList.toggle('hidden', active);
+  stop.classList.toggle('hidden', !active);
+  if (meetingTimer) { clearInterval(meetingTimer); meetingTimer = null; }
+  if (active && timer) {
+    const started = startedAtMs || Date.now();
+    const tick = () => { timer.textContent = fmtDuration(Date.now() - started); };
+    tick();
+    meetingTimer = setInterval(tick, 1000);
+  }
+}
+
+async function startMeeting() {
+  const r = await api.post('/api/meetings/start', {});
+  if (!r.ok) {
+    toast(t('meetingsStartFailed'), 'error');
+    return;
+  }
+  setRecordingUi(r.data.id, r.data.started_at_ms);
+  renderMeetings();
+}
+
+async function stopMeeting() {
+  const list = await api.get('/api/meetings');
+  const running = list.ok && list.data && list.data.meetings
+    ? list.data.meetings.find((m) => m.status === 'recording') : null;
+  if (!running) {
+    setRecordingUi(null);
+    return;
+  }
+  const r = await api.post('/api/meetings/' + running.id + '/stop', {});
+  if (!r.ok) {
+    toast(t('meetingsStopFailed'), 'error');
+    return;
+  }
+  setRecordingUi(null);
+  renderMeetings();
+}
+
+async function toggleMinutes(id) {
+  if (expandedMeetings.has(id)) expandedMeetings.delete(id);
+  else expandedMeetings.add(id);
+  renderMeetings();
+}
+
+async function renderMeetingDetail(id, container) {
+  const r = await api.get('/api/meetings/' + id);
+  container.innerHTML = '';
+  if (!r.ok || !r.data || !r.data.segments || r.data.segments.length === 0) {
+    container.appendChild(el('div', { className: 'record-empty', textContent: t('meetingsEmpty') }));
+    return;
+  }
+  for (const seg of r.data.segments) {
+    container.appendChild(el('div', { className: 'meeting-seg' }, [
+      el('span', { className: 'record-kind kind-voice', textContent: speakerLabel(seg) }),
+      el('span', { className: 'record-time mono', textContent: fmtDuration(seg.start_ms) + '–' + fmtDuration(seg.end_ms) }),
+      el('span', { className: 'record-text', textContent: seg.text }),
+    ]));
+  }
+}
+
+export async function renderMeetings() {
+  const card = $('meetings-card');
+  if (!card || card.classList.contains('hidden')) return;
+  const listEl = $('meetings-list');
+  if (!listEl) return;
+  const r = await api.get('/api/meetings');
+  if (!r.ok) return;
+  const meetings = r.data && r.data.meetings ? r.data.meetings : [];
+  listEl.innerHTML = '';
+  // Restore the recording indicator for a session started elsewhere.
+  const running = meetings.find((m) => m.status === 'recording');
+  if (running && $('meeting-stop') && $('meeting-stop').classList.contains('hidden')) {
+    setRecordingUi(running.id, running.started_at_ms);
+  }
+  if (meetings.length === 0) {
+    listEl.appendChild(el('div', { className: 'record-empty', textContent: t('meetingsEmpty') }));
+    scheduleProcessingPoll(meetings);
+    return;
+  }
+  for (const m of meetings) {
+    const meta = [];
+    if (typeof m.num_speakers === 'number' && m.num_speakers > 0) {
+      meta.push(t('meetingsSpk').replace('{n}', String(m.num_speakers)));
+    }
+    if (typeof m.num_segments === 'number' && m.num_segments > 0) {
+      meta.push(t('meetingsSegs').replace('{n}', String(m.num_segments)));
+    }
+    if (typeof m.duration_ms === 'number' && m.duration_ms > 0) {
+      meta.push(t('meetingsMins').replace('{n}', String(Math.max(1, Math.round(m.duration_ms / 60000)))));
+    }
+    const isDone = m.status === 'done';
+    const row = el('div', { className: 'meeting-row' }, [
+      el('span', { className: 'record-time mono', textContent: fmtTime(m.started_at_ms) }),
+      el('span', { className: 'record-kind kind-' + (m.status === 'failed' ? 'sound' : 'voice'), textContent: statusLabel(m.status) }),
+      el('span', { className: 'meeting-meta', textContent: meta.join(' · ') }),
+      m.error ? el('span', { className: 'record-score mono', textContent: m.error, title: m.error }) : el('span'),
+      el('span', { className: 'meeting-actions' }, [
+        isDone
+          ? el('button', {
+              type: 'button', className: 'btn-small',
+              textContent: expandedMeetings.has(m.id) ? t('meetingsHide') : t('meetingsShow'),
+              onclick: () => toggleMinutes(m.id),
+            })
+          : el('span'),
+        el('button', {
+          type: 'button', className: 'speaker-del', textContent: '✕',
+          title: t('meetingsDeleteConfirm'),
+          onclick: async () => {
+            const ok = await confirmDlg({ message: t('meetingsDeleteConfirm'), danger: true });
+            if (!ok) return;
+            await api.del('/api/meetings/' + m.id);
+            renderMeetings();
+          },
+        }),
+      ]),
+    ]);
+    listEl.appendChild(row);
+    if (isDone && expandedMeetings.has(m.id)) {
+      const detail = el('div', { className: 'meeting-detail' });
+      listEl.appendChild(detail);
+      renderMeetingDetail(m.id, detail);
+    }
+  }
+  scheduleProcessingPoll(meetings);
+}
+
+// Safety net for the async pipeline when SSE reconnects mid-processing:
+// poll while any meeting is processing and this view is open.
+function scheduleProcessingPoll(meetings) {
+  if (meetingPoll) { clearInterval(meetingPoll); meetingPoll = null; }
+  if (!meetings.some((m) => m.status === 'processing')) return;
+  meetingPoll = setInterval(async () => {
+    const view = $('view-records');
+    if (!view || !view.classList.contains('active')) {
+      clearInterval(meetingPoll);
+      meetingPoll = null;
+      return;
+    }
+    const r = await api.get('/api/meetings');
+    if (!r.ok || !(r.data && r.data.meetings).some((m) => m.status === 'processing')) {
+      clearInterval(meetingPoll);
+      meetingPoll = null;
+      renderMeetings();
+    }
+  }, 4000);
+}
+
+function initMeetings() {
+  const start = $('meeting-start');
+  if (start) start.addEventListener('click', startMeeting);
+  const stop = $('meeting-stop');
+  if (stop) stop.addEventListener('click', stopMeeting);
+}
+
+function updateMeetingsVisibility() {
+  const card = $('meetings-card');
+  if (card) card.classList.toggle('hidden', !hasCap('meeting'));
 }

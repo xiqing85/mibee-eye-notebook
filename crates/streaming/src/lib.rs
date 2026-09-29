@@ -21,6 +21,10 @@ pub mod fmp4;
 pub mod hub;
 /// Local LLM dialogue (llama.cpp; `llm` feature).
 pub mod llm;
+/// On-demand meeting mode (record → diarize → transcribe; SPEC #27).
+/// Recording machinery builds in every feature set; processing needs the
+/// `voice` feature.
+pub mod meeting;
 pub mod mibee;
 #[cfg(feature = "ai")]
 pub mod ocr;

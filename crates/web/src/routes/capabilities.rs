@@ -49,6 +49,7 @@ pub async fn get_capabilities(
     Extension(voice): Extension<Arc<streaming::voice::VoiceEngine>>,
     Extension(chat): Extension<Arc<streaming::llm::ChatEngine>>,
     Extension(decision): Extension<Arc<streaming::decision::DecisionEngine>>,
+    Extension(meeting): Extension<Arc<streaming::meeting::MeetingEngine>>,
     Extension(vlm): Extension<Arc<streaming::vlm::VlmEngine>>,
     Extension(stream_manager): Extension<Arc<crate::stream_manager::StreamManager>>,
     Extension(_protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
@@ -84,6 +85,10 @@ pub async fn get_capabilities(
     }
     if voice.is_active() {
         events.push("voice_transcript");
+    }
+    // Meeting lifecycle (SPEC appendix A #27).
+    if meeting.is_active() {
+        events.push("meeting_state");
     }
     // VLM alarm-frame descriptions (SPEC appendix A #23) ride the visual
     // alarm pipeline asynchronously.
@@ -125,6 +130,9 @@ pub async fn get_capabilities(
         // Laya typed-decision triage over voice transcripts (SSE
         // `voice_decision`, SPEC appendix A #26).
         "decision": decision.is_active(),
+        // On-demand meeting mode (record → diarize → transcribe, SPEC
+        // appendix A #27).
+        "meeting": meeting.is_active(),
         // VLM alarm-frame descriptions (SSE `alarm_description`).
         "vlm": vlm.is_active(),
         "ai_models": ai_hot_swap,
@@ -203,6 +211,10 @@ mod tests {
             ))),
             Extension(Arc::new(streaming::decision::DecisionEngine::from_config(
                 &streaming::decision::DecisionConfig::default(),
+            ))),
+            Extension(Arc::new(streaming::meeting::MeetingEngine::from_config(
+                &streaming::meeting::MeetingConfig::default(),
+                &streaming::voice::VoiceConfig::default(),
             ))),
             Extension(Arc::new(streaming::vlm::VlmEngine::from_config(
                 &streaming::vlm::VlmConfig::default(),

@@ -259,6 +259,185 @@ pub async fn load_voice_speaker_embeddings(
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Meetings (SPEC appendix A #27)
+// ---------------------------------------------------------------------------
+
+/// One meeting recording row.
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow, serde::Serialize)]
+pub struct MeetingRow {
+    pub id: i64,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+    pub duration_ms: Option<i64>,
+    /// `recording` | `processing` | `done` | `failed`.
+    pub status: String,
+    pub num_speakers: Option<i64>,
+    pub num_segments: Option<i64>,
+    pub audio_path: Option<String>,
+    pub error: String,
+}
+
+/// One diarized + transcribed meeting segment.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MeetingSegmentRow {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub speaker_index: i64,
+    /// Enrolled voiceprint name ("" = anonymous cluster).
+    pub speaker: String,
+    pub text: String,
+}
+
+/// Insert a new recording row and return its id.
+pub async fn insert_meeting_started(pool: &SqlitePool, started_at_ms: i64) -> Result<i64> {
+    let row: (i64,) =
+        sqlx::query_as("INSERT INTO meeting_records (started_at_ms) VALUES (?1) RETURNING id")
+            .bind(started_at_ms)
+            .fetch_one(pool)
+            .await
+            .context("meeting: insert started")?;
+    Ok(row.0)
+}
+
+/// Update the status (and error text) of a meeting row.
+pub async fn update_meeting_status(
+    pool: &SqlitePool,
+    id: i64,
+    status: &str,
+    error: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE meeting_records SET status = ?2, error = ?3 WHERE id = ?1")
+        .bind(id)
+        .bind(status)
+        .bind(error)
+        .execute(pool)
+        .await
+        .context("meeting: update status")?;
+    Ok(())
+}
+
+/// Persist the finished pipeline result.
+pub async fn finalize_meeting_done(
+    pool: &SqlitePool,
+    id: i64,
+    ended_at_ms: i64,
+    duration_ms: i64,
+    num_speakers: i64,
+    audio_path: &str,
+    segments: &[streaming::meeting::TranscriptSegment],
+) -> Result<()> {
+    let mut tx = pool.begin().await.context("meeting: begin finalize tx")?;
+    sqlx::query(
+        "UPDATE meeting_records SET status = 'done', ended_at_ms = ?2, duration_ms = ?3,          num_speakers = ?4, num_segments = ?5, audio_path = ?6, error = '' WHERE id = ?1",
+    )
+    .bind(id)
+    .bind(ended_at_ms)
+    .bind(duration_ms)
+    .bind(num_speakers)
+    .bind(segments.len() as i64)
+    .bind(audio_path)
+    .execute(&mut *tx)
+    .await
+    .context("meeting: finalize row")?;
+    for seg in segments {
+        sqlx::query(
+            "INSERT INTO meeting_segments              (meeting_id, start_ms, end_ms, speaker_index, speaker, text)              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(id)
+        .bind(seg.start_ms as i64)
+        .bind(seg.end_ms as i64)
+        .bind(i64::from(seg.speaker_index))
+        .bind(&seg.speaker)
+        .bind(&seg.text)
+        .execute(&mut *tx)
+        .await
+        .context("meeting: insert segment")?;
+    }
+    tx.commit().await.context("meeting: commit finalize")?;
+    Ok(())
+}
+
+/// List meetings newest-first.
+pub async fn list_meetings(pool: &SqlitePool) -> Result<Vec<MeetingRow>> {
+    let rows: Vec<MeetingRow> = sqlx::query_as(
+        "SELECT id, started_at_ms, ended_at_ms, duration_ms, status, num_speakers,          num_segments, audio_path, error FROM meeting_records          ORDER BY started_at_ms DESC, id DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .context("meeting: list")?;
+    Ok(rows)
+}
+
+/// Fetch one meeting row.
+pub async fn get_meeting(pool: &SqlitePool, id: i64) -> Result<Option<MeetingRow>> {
+    let row: Option<MeetingRow> = sqlx::query_as(
+        "SELECT id, started_at_ms, ended_at_ms, duration_ms, status, num_speakers,          num_segments, audio_path, error FROM meeting_records WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("meeting: get")?;
+    Ok(row)
+}
+
+/// Fetch one meeting's segments ordered by start time.
+pub async fn list_meeting_segments(
+    pool: &SqlitePool,
+    meeting_id: i64,
+) -> Result<Vec<MeetingSegmentRow>> {
+    let rows: Vec<(i64, i64, i64, String, String)> = sqlx::query_as(
+        "SELECT start_ms, end_ms, speaker_index, speaker, text FROM meeting_segments          WHERE meeting_id = ?1 ORDER BY start_ms ASC, id ASC",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .context("meeting: list segments")?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(start_ms, end_ms, speaker_index, speaker, text)| MeetingSegmentRow {
+                start_ms,
+                end_ms,
+                speaker_index,
+                speaker,
+                text,
+            },
+        )
+        .collect())
+}
+
+/// Delete a meeting, its segments, and any retained audio file.
+/// Returns whether the meeting existed.
+pub async fn delete_meeting(pool: &SqlitePool, id: i64) -> Result<bool> {
+    let row = get_meeting(pool, id).await?;
+    let Some(meeting) = row else {
+        return Ok(false);
+    };
+    let mut tx = pool.begin().await.context("meeting: begin delete tx")?;
+    sqlx::query("DELETE FROM meeting_segments WHERE meeting_id = ?1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .context("meeting: delete segments")?;
+    sqlx::query("DELETE FROM meeting_records WHERE id = ?1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .context("meeting: delete row")?;
+    tx.commit().await.context("meeting: commit delete")?;
+    if let Some(path) = meeting.audio_path.filter(|p| !p.is_empty()) {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path, "meeting: retained audio delete failed")
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// Initialize the SQLite pool at `path` with WAL mode and busy timeout.
 ///
 /// This creates an async SqlitePool for web CRUD operations.

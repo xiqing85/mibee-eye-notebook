@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Meeting mode** (SPEC appendix A #27): on-demand local meeting
+  minutes — explicit `POST /api/meetings/start` → `stop` recording
+  sessions (nothing is recorded outside a session; WAV deleted after
+  processing unless `meeting.keep_audio`), then offline speaker
+  diarization (pyannote segmentation + CAM++ embedding + fast
+  clustering) → per-segment trilingual ASR → punctuation restoration →
+  per-speaker voiceprint voting for names. New endpoints
+  `GET/DELETE /api/meetings`, `GET /api/meetings/{id}`; new SSE
+  `meeting_state`; new tables `meeting_records` + `meeting_segments`
+  (migration 007); capability `meeting`; auto-stop at
+  `max_duration_secs`; `--selftest-meeting <wav>` diarization
+  self-test. Records view gains a meeting-minutes card.
 - **Speaker voiceprints** (SPEC appendix A #25): enroll wake-word
   voiceprints (3D-Speaker CAM++ via sherpa-onnx, zh_en checkpoint),
   gate wake words on a known speaker (`voice.speaker_verify`, fail-open

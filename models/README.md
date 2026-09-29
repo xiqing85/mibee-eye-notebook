@@ -20,6 +20,21 @@ Download to this directory; every engine fails open without them.
 |---|---|---|---|
 | `voice/kws/`, `voice/paraformer/` | k2-fsa sherpa-onnx release `asr-multi-zh-hans` / keyword models (`kws.tar.bz2` untracked; extracted onnx files untracked) | ~250 MB | Apache-2.0 |
 
+## Meeting diarization + punctuation (feature `voice`, opt-in config `[meeting]`)
+
+| Path | Source | Size | License |
+|---|---|---|---|
+| `voice/diarization/pyannote.onnx` | k2-fsa sherpa-onnx release `speaker-segmentation-models` → `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2` (`model.int8.onnx`) | ~1.5 MB | MIT (pyannote segmentation-3.0) |
+| `voice/punct/model.onnx` | k2-fsa release `punctuation-models` → `sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2` (`model.int8.onnx`) | ~75 MB | Apache-2.0 |
+
+Meeting mode reuses `voice/speaker/campplus.onnx` (cluster embeddings)
+and the `[voice]` paraformer ASR models (segment transcription). The
+diarization self-test WAVs (`0-four-speakers-zh.wav`,
+`1-two-speakers-en.wav`) ship in the same sherpa release for
+`--selftest-meeting` sanity checks. Quality note: zero-shot clustering
+splits a 4-speaker sample into 5 at the default threshold 0.5 — tune
+`meeting.clustering_threshold` per room.
+
 ## Decision (feature `ai`, opt-in config `[decision]`)
 
 | Path | Source | Size | License |

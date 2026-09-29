@@ -497,6 +497,54 @@ num_threads = 1
 | `min_confidence` | f32 | `0.35` | Decisions below this are ignored (fail-open to the old behavior). |
 | `num_threads` | u16 | `1` | Inference threads. |
 
+### [meeting] - Meeting mode (on-demand recording + diarization + transcription)
+
+Local meeting minutes: an explicit start → stop recording session, then
+offline speaker diarization (pyannote segmentation + CAM++ embedding +
+fast clustering) → per-segment trilingual ASR → (optional) punctuation
+restoration → per-speaker voiceprint voting for names, persisted as a
+text minute. **Privacy posture**: the no-audio-at-standby promise is
+unchanged — samples only land on disk inside an explicit session;
+`keep_audio=false` (default) deletes the WAV after processing (failures
+too), keeping only the text; the session auto-stops at
+`max_duration_secs` and feeds the same pipeline. Depends on the
+`[voice]` ASR and speaker-embedding model files (meetings reuse them);
+processing needs a `voice`-feature build. Model assets: see
+`models/README.md`.
+
+```toml
+[meeting]
+enabled = false
+segmentation_model = "models/voice/diarization/pyannote.onnx"
+punctuation_model = "models/voice/punct/model.onnx"
+clustering_threshold = 0.5
+min_duration_on = 0.3
+min_duration_off = 0.5
+keep_audio = false
+max_duration_secs = 7200
+audio_dir = "meetings"
+num_threads = 1
+```
+
+| Key | Type | Default | Notes |
+|------|------|---------|------|
+| `enabled` | bool | `false` | Master switch (off by default — recording must be explicit). |
+| `segmentation_model` | String | `models/voice/diarization/pyannote.onnx` | pyannote segmentation-3.0 (sherpa-onnx int8, ~1.5 MB, MIT). |
+| `punctuation_model` | String | `models/voice/punct/model.onnx` | ct-transformer zh-en punctuation (int8 ~75 MB); empty string disables. |
+| `clustering_threshold` | f32 | `0.5` | Fast-clustering distance threshold (higher = fewer speakers; a 4-speaker sample yields 5 at 0.5 — calibrate on site). |
+| `min_duration_on` | f32 | `0.3` | Minimum voiced segment (s). |
+| `min_duration_off` | f32 | `0.5` | Minimum silence (s); same-speaker gaps ≤ this merge into one ASR call. |
+| `keep_audio` | bool | `false` | Keep the WAV after processing (deleted by default — privacy first). |
+| `max_duration_secs` | u64 | `7200` | Safety cap: auto-stop and process (guards against forgotten recordings). |
+| `audio_dir` | String | `meetings` | Session WAV directory (relative to the working directory). |
+| `num_threads` | i32 | `1` | Inference threads. |
+
+**Honest boundary**: acoustic clustering may merge same-voiced family
+members and over-split distinctive voices (tune
+`clustering_threshold`); transcription quality matches `[voice]` ASR;
+speaker names depend on voiceprint matches (misses render as
+"Speaker N") — convenience features, not precise annotation.
+
 ### [tts] - Text-to-Speech Playback
 
 Spoken replies via the `sherpa-onnx-offline-tts` **CLI subprocess** (the GPL

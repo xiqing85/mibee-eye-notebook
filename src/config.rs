@@ -326,6 +326,12 @@ pub struct AppConfig {
     /// llama.cpp mtmd). Off by default; workstation-class only.
     #[serde(default)]
     pub vlm: streaming::vlm::VlmConfig,
+
+    /// Meeting mode (`[meeting]` section: on-demand recording +
+    /// diarization + per-segment ASR, SPEC appendix A #27). Off by
+    /// default; processing requires a `voice`-feature build.
+    #[serde(default)]
+    pub meeting: streaming::meeting::MeetingConfig,
 }
 impl AppConfig {
     /// Load configuration from a TOML file.
