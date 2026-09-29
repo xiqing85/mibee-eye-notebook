@@ -37,3 +37,8 @@ futures = "0.3.32"
 tokio-stream = { version = "0.1", features = ["sync"] }
 schemars.workspace = true
 libc.workspace = true
+
+[dev-dependencies]
+# MD5 for the ONVIF HTTP-Digest wire test (RFC 7616 MD5 response hash) —
+# already in the lockfile transitively, test-only here.
+md-5 = "0.10"

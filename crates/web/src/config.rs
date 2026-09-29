@@ -34,9 +34,31 @@ pub struct OnvifConfig {
     /// `tns1:VideoSource/MotionAlarm` while an NVR holds a subscription.
     #[serde(default = "default_onvif_events_enabled")]
     pub events_enabled: bool,
+    /// Serve the ver20 Media2 service alongside the legacy Media face
+    /// (Profile-T entry path: `tr2` GetProfiles + its own
+    /// `/onvif/media2_service` route). Requires an active stream at
+    /// protocol start — like every Media field, restart-to-apply.
+    #[serde(default = "default_onvif_media2_enabled")]
+    pub media2_enabled: bool,
+    /// Offer HTTP Digest transport auth (RFC 7616 MD5 subset) alongside
+    /// WS-Security on the ONVIF SOAP listener — the Profile S route for
+    /// non-TLS deployments. Default off (UsernameToken only).
+    #[serde(default)]
+    pub http_digest: bool,
+    /// IPv4 allow-list for the ONVIF SOAP listener, as `a.b.c.d[/prefix]`
+    /// strings (prefix 0–32, default 32 for bare addresses). Empty (the
+    /// default) disables filtering entirely; when set, only listed
+    /// networks may connect (peers are refused 403 before any SOAP
+    /// processing). Restart-to-apply.
+    #[serde(default)]
+    pub ip_filter: Vec<String>,
 }
 
 fn default_onvif_events_enabled() -> bool {
+    true
+}
+
+fn default_onvif_media2_enabled() -> bool {
     true
 }
 
@@ -70,6 +92,9 @@ impl Default for OnvifConfig {
             firmware_version: "1.0.0".into(),
             port: 3702,
             events_enabled: true,
+            media2_enabled: true,
+            http_digest: false,
+            ip_filter: Vec::new(),
         }
     }
 }

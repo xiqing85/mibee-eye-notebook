@@ -894,6 +894,16 @@ impl StreamManager {
         self.streams.read().await.len()
     }
 
+    /// Best-effort synchronous snapshot of the tracked camera IDs
+    /// (`None` when the streams lock is contended). Diagnostic surfaces
+    /// that cannot await — e.g. the ONVIF DeviceHooks texts (a sync trait
+    /// served from async handlers) — report through this; anything that
+    /// can await must use [`Self::list_active_streams`] instead.
+    pub fn try_active_camera_ids(&self) -> Option<Vec<String>> {
+        let streams = self.streams.try_read().ok()?;
+        Some(streams.keys().cloned().collect())
+    }
+
     /// Check whether a stream for the given camera ID is currently tracked
     /// (active).
     pub async fn has_stream(&self, camera_id: &str) -> bool {
