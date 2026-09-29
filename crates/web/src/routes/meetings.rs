@@ -374,6 +374,63 @@ mod tests {
             assert_eq!(res.status(), 404);
         }
 
+        // Full production router regression: DELETE /api/meetings/{id}
+        // must be a valid route (an earlier registration put it on the
+        // collection path — masked by this file's own mini-router, and
+        // only the live device caught the 405). Login for real cookies,
+        // then verify the item path routes DELETE to the handler.
+        let app_full = crate::server::test_app_with_user().await;
+        let login = app_full
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"username": "testuser", "password": "test_password"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            login.status(),
+            200,
+            "login must succeed for the route check"
+        );
+        let cookies: Vec<String> = login
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .map(|c| c.split(';').next().unwrap_or(c).to_string())
+            .collect();
+        let csrf = cookies
+            .iter()
+            .find_map(|c| c.strip_prefix("csrf-token="))
+            .unwrap_or_default()
+            .to_string();
+        let res = app_full
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/meetings/424242")
+                    .header("cookie", cookies.join("; "))
+                    .header("x-csrf-token", &csrf)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            405,
+            "DELETE must route on /api/meetings/{{id}}"
+        );
+        assert_eq!(res.status(), 404, "unknown id — routed and handled");
+
         // Delete removes row + segments.
         let res = app
             .clone()
