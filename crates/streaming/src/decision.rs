@@ -19,7 +19,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(feature = "ai")]
 use std::path::Path;
+#[cfg(feature = "ai")]
 use std::sync::Mutex;
 
 #[cfg(feature = "ai")]
@@ -70,9 +72,11 @@ pub struct ChoiceDecision {
 }
 
 /// Question types understood by the head (`qtype` ids).
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
 pub(crate) const QTYPES: [(&str, i64); 3] = [("choice", 0), ("score", 1), ("noul", 2)];
 
 /// Per-option token cap from the upstream runtime.
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
 pub(crate) const OPTION_TOKEN_CAP: usize = 48;
 
 /// Decision engine (fail-open).
@@ -80,9 +84,13 @@ pub struct DecisionEngine {
     active: bool,
     inactive_reason: String,
     min_confidence: f32,
+    #[cfg_attr(not(feature = "ai"), allow(dead_code))]
     max_len: usize,
+    #[cfg_attr(not(feature = "ai"), allow(dead_code))]
     head_max_len: usize,
+    #[cfg_attr(not(feature = "ai"), allow(dead_code))]
     temperature: [f32; 3],
+    #[cfg_attr(not(feature = "ai"), allow(dead_code))]
     temperature_by_options: HashMap<String, f32>,
     #[cfg(feature = "ai")]
     session: Option<Mutex<Session>>,
