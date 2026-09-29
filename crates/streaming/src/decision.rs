@@ -598,7 +598,11 @@ mod tests {
         let head = vec![10, 11, 12];
         let opts = vec![vec![20, 21], vec![30], vec![40, 41, 42]];
         let state = vec![50, 51, 52, 53];
-        let sp = SpecialTokens { cls: 1, sep: 2, mask: 0 };
+        let sp = SpecialTokens {
+            cls: 1,
+            sep: 2,
+            mask: 0,
+        };
         let (ids, markers) = assemble_sequence(sp, &head, &opts, &state, 512, 192);
         assert_eq!(
             ids,
@@ -617,7 +621,11 @@ mod tests {
         // head_max_len 24: options become 5 ids each (MASK + 4) = 10,
         // budget 14 < 16 → options trim to (24-16)/2 = 4 ids each = 8,
         // budget recovers to 16 → instructions keep exactly 16.
-        let sp = SpecialTokens { cls: 1, sep: 2, mask: 0 };
+        let sp = SpecialTokens {
+            cls: 1,
+            sep: 2,
+            mask: 0,
+        };
         let (ids, markers) = assemble_sequence(sp, &head, &opts, &[], 512, 24);
         let first_sep = ids.iter().position(|&t| t == 2).expect("head [SEP]");
         let head_len = first_sep - 1;
@@ -635,7 +643,11 @@ mod tests {
         let head = vec![7; 20];
         let opts = vec![vec![3; 4], vec![4; 4]];
         let state = vec![9; 500];
-        let sp = SpecialTokens { cls: 1, sep: 2, mask: 0 };
+        let sp = SpecialTokens {
+            cls: 1,
+            sep: 2,
+            mask: 0,
+        };
         let (ids, _) = assemble_sequence(sp, &head, &opts, &state, 40, 192);
         assert_eq!(ids.len(), 40, "sequence respects max_len");
         assert_eq!(*ids.last().unwrap(), 2, "state end still carries [SEP]");

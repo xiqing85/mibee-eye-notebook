@@ -89,27 +89,26 @@ pub async fn list_hearing_records(
     kind: Option<&str>,
 ) -> Result<Vec<HearingRecord>> {
     let limit = limit.clamp(1, 500);
-    let rows: Vec<HearingRow> =
-        if matches!(kind, Some("sound") | Some("voice")) {
-            sqlx::query_as(
-                "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
+    let rows: Vec<HearingRow> = if matches!(kind, Some("sound") | Some("voice")) {
+        sqlx::query_as(
+            "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
              FROM hearing_records WHERE kind = ?1 ORDER BY timestamp_ms DESC, id DESC LIMIT ?2",
-            )
-            .bind(kind)
-            .bind(limit)
-            .fetch_all(pool)
-            .await
-            .context("hearing record: list")?
-        } else {
-            sqlx::query_as(
-                "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
+        )
+        .bind(kind)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .context("hearing record: list")?
+    } else {
+        sqlx::query_as(
+            "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
              FROM hearing_records ORDER BY timestamp_ms DESC, id DESC LIMIT ?1",
-            )
-            .bind(limit)
-            .fetch_all(pool)
-            .await
-            .context("hearing record: list")?
-        };
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .context("hearing record: list")?
+    };
     Ok(rows
         .into_iter()
         .map(
