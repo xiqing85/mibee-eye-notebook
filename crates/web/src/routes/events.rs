@@ -73,6 +73,16 @@ pub enum CameraEvent {
         act_probability: f32,
         timestamp_ms: u64,
     },
+    /// Meeting-mode lifecycle change (SPEC appendix A notebook dialect
+    /// #27: `meeting_state`): recording started, processing started,
+    /// pipeline done/failed.
+    MeetingState {
+        /// Device-level: notebook meetings are not per-camera ("all").
+        camera_id: String,
+        meeting_id: i64,
+        status: String,
+        timestamp_ms: u64,
+    },
     /// A zone event fired (SPEC appendix A notebook dialect:
     /// `zone_event`). Produced by the zone engine in main.rs from tracked
     /// detections crossing user-drawn zones.
@@ -223,6 +233,20 @@ fn event_to_sse(event: CameraEvent) -> Event {
                 "choice": choice,
                 "confidence": confidence,
                 "act_probability": act_probability,
+                "timestamp": timestamp_ms,
+            })
+            .to_string(),
+        ),
+        CameraEvent::MeetingState {
+            camera_id,
+            meeting_id,
+            status,
+            timestamp_ms,
+        } => Event::default().event("meeting_state").data(
+            serde_json::json!({
+                "camera_id": camera_id,
+                "meeting_id": meeting_id,
+                "status": status,
                 "timestamp": timestamp_ms,
             })
             .to_string(),

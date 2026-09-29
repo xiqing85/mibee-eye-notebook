@@ -112,6 +112,16 @@ const DICT = {
     speakersEnrollFailed: '注册启动失败', speakersCommitFailed: '注册保存失败',
     speakersDeleteConfirm: '删除说话人 {name} 的声纹？',
     recordSpeaker: '说话人',
+    // Meeting mode (SPEC appendix A #27)
+    meetingsTitle: '会议纪要', meetingsDesc: '按需录音并离线转写为带说话人标签的纪要——只在会话期间录音，处理后默认删除音频只保留文字',
+    meetingsStart: '开始会议', meetingsStop: '结束会议',
+    meetingsRecording: '录音中', meetingsEmpty: '暂无会议纪要',
+    meetingsStatusRecording: '录音中', meetingsStatusProcessing: '处理中', meetingsStatusDone: '已完成', meetingsStatusFailed: '失败',
+    meetingsSpeakerN: '说话人 {n}',
+    meetingsSpk: '{n} 位说话人', meetingsSegs: '{n} 段', meetingsMins: '{n} 分钟',
+    meetingsDeleteConfirm: '删除这场会议的纪要？',
+    meetingsShow: '展开纪要', meetingsHide: '收起',
+    meetingsStartFailed: '会议启动失败', meetingsStopFailed: '会议停止失败',
     // Devices view
     devicesTitle: '主机设备', devicesDesc: '主机上的视频 / 音频采集设备', videoDevices: '视频设备', audioDevices: '音频设备',
     formats: '支持格式', useAsCamera: '用作相机', noDevices: '未发现设备',
@@ -280,6 +290,16 @@ const DICT = {
     speakersEnrollFailed: 'Failed to start enrollment', speakersCommitFailed: 'Failed to save enrollment',
     speakersDeleteConfirm: 'Delete the voiceprint of {name}?',
     recordSpeaker: 'Speaker',
+    // Meeting mode (SPEC appendix A #27)
+    meetingsTitle: 'Meeting minutes', meetingsDesc: 'On-demand recording transcribed offline into speaker-labeled minutes — audio only during a session, deleted after processing',
+    meetingsStart: 'Start meeting', meetingsStop: 'End meeting',
+    meetingsRecording: 'REC', meetingsEmpty: 'No meeting minutes yet',
+    meetingsStatusRecording: 'Recording', meetingsStatusProcessing: 'Processing', meetingsStatusDone: 'Done', meetingsStatusFailed: 'Failed',
+    meetingsSpeakerN: 'Speaker {n}',
+    meetingsSpk: '{n} speakers', meetingsSegs: '{n} segments', meetingsMins: '{n} min',
+    meetingsDeleteConfirm: 'Delete the minutes of this meeting?',
+    meetingsShow: 'Show minutes', meetingsHide: 'Hide',
+    meetingsStartFailed: 'Failed to start the meeting', meetingsStopFailed: 'Failed to stop the meeting',
     // Devices view
     devicesTitle: 'Host Devices', devicesDesc: 'Video / audio capture devices on this host', videoDevices: 'Video devices', audioDevices: 'Audio devices',
     formats: 'Formats', useAsCamera: 'Use as camera', noDevices: 'No devices found',

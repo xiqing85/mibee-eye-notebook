@@ -250,7 +250,7 @@ impl VoiceEngine {
             warn!(error = %e, "voice: KWS unavailable (voice stays disabled, fail-open)");
             anyhow::anyhow!("KWS model unavailable (see startup log)")
         })?;
-        let recognizer = build_recognizer(config).map_err(|e| {
+        let recognizer = build_recognizer_for(config).map_err(|e| {
             warn!(error = %e, "voice: paraformer unavailable (voice stays disabled, fail-open)");
             anyhow::anyhow!("paraformer model unavailable (see startup log)")
         })?;
@@ -294,6 +294,29 @@ impl VoiceEngine {
     #[must_use]
     pub fn subscribe_events(&self) -> broadcast::Receiver<VoiceEvent> {
         self.event_tx.subscribe()
+    }
+
+    /// Synchronous voiceprint lookup over a 16 kHz clip — the meeting
+    /// module's diarization clusters vote through this. Blocking (runs the
+    /// embedding model); call from `spawn_blocking` contexts. `None` when
+    /// incapable or unmatched.
+    pub fn resolve_speaker_blocking(&self, samples: &[f32]) -> Option<String> {
+        #[cfg(feature = "voice")]
+        {
+            let embed = self.internals.as_ref()?.embed.as_ref()?;
+            let emb = compute_embedding(embed, samples)?;
+            self.speakers
+                .lock()
+                .expect("speaker registry lock")
+                .manager
+                .as_ref()
+                .and_then(|m| m.search(&emb, self.config.speaker_threshold))
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            let _ = samples;
+            None
+        }
     }
 
     // -- Speaker (voiceprint) API -----------------------------------------
@@ -829,8 +852,12 @@ fn build_kws(config: &VoiceConfig) -> anyhow::Result<sherpa_onnx::KeywordSpotter
     KeywordSpotter::create(&cfg).ok_or_else(|| anyhow::anyhow!("KeywordSpotter::create failed"))
 }
 
+/// Build an offline paraformer recognizer from a voice config — shared
+/// with the meeting module (which rides on the same ASR model files).
 #[cfg(feature = "voice")]
-fn build_recognizer(config: &VoiceConfig) -> anyhow::Result<sherpa_onnx::OfflineRecognizer> {
+pub(crate) fn build_recognizer_for(
+    config: &VoiceConfig,
+) -> anyhow::Result<sherpa_onnx::OfflineRecognizer> {
     use sherpa_onnx::{
         OfflineModelConfig, OfflineParaformerModelConfig, OfflineRecognizer,
         OfflineRecognizerConfig,
@@ -896,7 +923,7 @@ pub fn selftest_voice(path: &str) -> anyhow::Result<serde_json::Value> {
     #[cfg(feature = "voice")]
     {
         let kws = build_kws(&config)?;
-        let recognizer = build_recognizer(&config)?;
+        let recognizer = build_recognizer_for(&config)?;
         let mut resampler = capture::audio_monitor::LinearResampler::new(
             f64::from(wav.sample_rate) / f64::from(capture::audio_monitor::TARGET_RATE),
         );

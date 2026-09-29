@@ -357,6 +357,18 @@
         <h2 data-i18n="recordsTitle">Hearing records</h2>
         <p class="view-desc" data-i18n="recordsDesc"></p>
       </div>
+      <div id="meetings-card" class="card hidden">
+        <div class="view-head">
+          <h3 data-i18n="meetingsTitle">Meeting minutes</h3>
+          <p class="view-desc" data-i18n="meetingsDesc"></p>
+        </div>
+        <div class="live-toolbar records-toolbar">
+          <span id="meeting-rec" class="meeting-rec hidden"><span class="rec-dot" aria-hidden="true"></span><span data-i18n="meetingsRecording">REC</span><span id="meeting-rec-timer" class="mono"></span></span>
+          <button type="button" id="meeting-start" class="btn-small" data-i18n="meetingsStart">Start meeting</button>
+          <button type="button" id="meeting-stop" class="btn-small hidden" data-i18n="meetingsStop">End meeting</button>
+        </div>
+        <div id="meetings-list"></div>
+      </div>
       <div id="speakers-card" class="card hidden">
         <div class="view-head">
           <h3 data-i18n="speakersTitle">Enrolled speakers</h3>

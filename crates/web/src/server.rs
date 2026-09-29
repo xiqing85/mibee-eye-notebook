@@ -62,6 +62,9 @@ pub struct AppRouterState {
     pub vlm: Arc<streaming::vlm::VlmEngine>,
     /// Laya typed-decision engine (inactive without `ai`/models).
     pub decision: Arc<streaming::decision::DecisionEngine>,
+    /// Meeting-mode engine (inactive without `voice` feature/models —
+    /// SPEC appendix A #27).
+    pub meeting: Arc<streaming::meeting::MeetingEngine>,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +163,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let chat = state.chat.clone();
     let vlm = state.vlm.clone();
     let decision = state.decision.clone();
+    let meeting = state.meeting.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -217,6 +221,13 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             "/api/voice/speakers/{name}",
             axum::routing::delete(routes::voice_speakers::delete_speaker),
         )
+        .route("/api/meetings/start", post(routes::meetings::start))
+        .route("/api/meetings/{id}/stop", post(routes::meetings::stop))
+        .route(
+            "/api/meetings",
+            get(routes::meetings::list).delete(routes::meetings::delete_meeting),
+        )
+        .route("/api/meetings/{id}", get(routes::meetings::get_meeting))
         .route("/api/cameras/{id}/zones", get(crate::zones::get_zones))
         .route("/api/cameras/{id}/zones", put(crate::zones::put_zones))
         .route("/api/detections", get(routes::detections::get_detections))
@@ -322,6 +333,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(chat))
         .layer(Extension(vlm))
         .layer(Extension(decision))
+        .layer(Extension(meeting))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
         // HSTS
@@ -378,6 +390,10 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         decision: Arc::new(streaming::decision::DecisionEngine::from_config(
             &streaming::decision::DecisionConfig::default(),
         )),
+        meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
+            &streaming::meeting::MeetingConfig::default(),
+            &streaming::voice::VoiceConfig::default(),
+        )),
     })
 }
 
@@ -432,6 +448,10 @@ pub async fn test_app_with_user() -> Router {
         )),
         decision: Arc::new(streaming::decision::DecisionEngine::from_config(
             &streaming::decision::DecisionConfig::default(),
+        )),
+        meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
+            &streaming::meeting::MeetingConfig::default(),
+            &streaming::voice::VoiceConfig::default(),
         )),
     })
 }
@@ -624,6 +644,7 @@ pub async fn run(
     chat: Arc<streaming::llm::ChatEngine>,
     vlm: Arc<streaming::vlm::VlmEngine>,
     decision: Arc<streaming::decision::DecisionEngine>,
+    meeting: Arc<streaming::meeting::MeetingEngine>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -646,6 +667,7 @@ pub async fn run(
         chat,
         vlm,
         decision,
+        meeting,
     };
     let app = build_app_with_state(state);
 
@@ -710,6 +732,7 @@ pub async fn run_with_shutdown(
     chat: Arc<streaming::llm::ChatEngine>,
     vlm: Arc<streaming::vlm::VlmEngine>,
     decision: Arc<streaming::decision::DecisionEngine>,
+    meeting: Arc<streaming::meeting::MeetingEngine>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -734,6 +757,7 @@ pub async fn run_with_shutdown(
         chat,
         vlm,
         decision,
+        meeting,
     };
     let app = build_app_with_state(state);
 

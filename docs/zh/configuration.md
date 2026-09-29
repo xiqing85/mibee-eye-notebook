@@ -488,6 +488,48 @@ num_threads = 1
 | `min_confidence` | f32 | `0.35` | 低于该置信度的决策不采纳（fail-open 维持旧行为）。 |
 | `num_threads` | u16 | `1` | 推理线程。 |
 
+### [meeting] - 会议模式（按需录音 + 说话人分离 + 分段转写）
+
+本地会议纪要：显式 start → stop 的录音会话，停止后离线跑说话人分离
+（pyannote 分割 + CAM++ 嵌入 + 快速聚类）→ 逐段三语转写 →（启用时）标点
+恢复 → 每说话人经声纹档案投票打名，入库为文字纪要。**隐私姿态**：待机不
+录任何音频的承诺不变——只有显式会话窗口内落盘；`keep_audio=false`（缺省）
+时处理完成（含失败）即删音频，只留文字；到 `max_duration_secs` 自动停止
+并走同一管线。依赖 `[voice]` 的 ASR 模型与说话人嵌入模型在场（会议复用
+同一套文件）；处理需要 `voice` feature 构建。模型资产见 `models/README.md`。
+
+```toml
+[meeting]
+enabled = false
+segmentation_model = "models/voice/diarization/pyannote.onnx"
+punctuation_model = "models/voice/punct/model.onnx"
+clustering_threshold = 0.5
+min_duration_on = 0.3
+min_duration_off = 0.5
+keep_audio = false
+max_duration_secs = 7200
+audio_dir = "meetings"
+num_threads = 1
+```
+
+| 键 | 类型 | 缺省 | 说明 |
+|------|------|---------|------|
+| `enabled` | bool | `false` | 主开关（缺省关——录音必须显式开启）。 |
+| `segmentation_model` | String | `models/voice/diarization/pyannote.onnx` | pyannote segmentation-3.0（sherpa-onnx 转换，int8 ~1.5MB，MIT）。 |
+| `punctuation_model` | String | `models/voice/punct/model.onnx` | ct-transformer zh-en 标点（int8 ~75MB）；空串禁用标点恢复。 |
+| `clustering_threshold` | f32 | `0.5` | 快速聚类距离阈值（调高=更少说话人；实测四说话人样本在 0.5 检出 5——按现场校准）。 |
+| `min_duration_on` | f32 | `0.3` | 最短发声段（秒）。 |
+| `min_duration_off` | f32 | `0.5` | 最短静默段（秒）；同说话人相邻段间隔 ≤ 该值时合并为一段转写。 |
+| `keep_audio` | bool | `false` | 处理完成后保留 WAV（缺省删除——隐私优先）。 |
+| `max_duration_secs` | u64 | `7200` | 安全上限：到点自动停止并处理（防遗忘录音）。 |
+| `audio_dir` | String | `meetings` | 会话 WAV 目录（相对工作目录）。 |
+| `num_threads` | i32 | `1` | 推理线程。 |
+
+**诚实边界**：声学聚类对同嗓音家人可能合并为一个说话人，对独特嗓音可能
+过分裂（可调 `clustering_threshold`）；转写质量同 `[voice]` ASR；说话人
+命名依赖声纹档案命中（未命中显示"说话人 N"）——均为便利性能力，非精确
+标注。
+
 ### [tts] - 语音播报
 
 通过 `sherpa-onnx-offline-tts` **CLI 子进程**合成语音（GPL espeak-ng 依赖

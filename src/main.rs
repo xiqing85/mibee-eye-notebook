@@ -50,6 +50,10 @@ struct Args {
     /// Describe one JPEG via the VLM (`--selftest-vlm <path>`).
     #[arg(long)]
     selftest_vlm: Option<String>,
+    /// Diarize a multi-speaker WAV (`--selftest-meeting <wav>`; `voice`
+    /// builds only — segmentation only, no ASR).
+    #[arg(long)]
+    selftest_meeting: Option<PathBuf>,
 }
 
 /// VLM description scheduler state: single-flight flag + last-start
@@ -107,6 +111,11 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(path) = &args.selftest_vlm {
         return selftest_cli("vlm", || streaming::vlm::selftest_vlm(path));
+    }
+    if let Some(path) = &args.selftest_meeting {
+        return selftest_cli("meeting", || {
+            streaming::meeting::selftest_meeting(&path.to_string_lossy())
+        });
     }
     if let Some(text) = &args.selftest_tts {
         return selftest_cli("tts", || streaming::tts::selftest_tts(text));
@@ -466,8 +475,23 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => tracing::warn!(error = %e, "voice: speaker profile load failed"),
         }
     }
+    // Meeting mode (SPEC appendix A #27): rides the voice models for ASR,
+    // shares the 16 kHz monitor for recording, and votes cluster names
+    // through the voiceprint registry above.
+    let meeting_engine = Arc::new(streaming::meeting::MeetingEngine::from_config(
+        &config.meeting,
+        &config.voice,
+    ));
+    if !meeting_engine.is_active() {
+        tracing::info!(reason = %meeting_engine.inactive_reason(), "meeting: mode disabled");
+    } else {
+        let voice_for_lookup = Arc::clone(&voice_engine);
+        meeting_engine.set_speaker_lookup(std::sync::Arc::new(move |samples| {
+            voice_for_lookup.resolve_speaker_blocking(samples)
+        }));
+    }
     let mut _audio_monitor = None;
-    if audio_ai_engine.is_active() || voice_engine.is_active() {
+    if audio_ai_engine.is_active() || voice_engine.is_active() || meeting_engine.is_active() {
         // Boot-time races (audio service still registering the source, a
         // restart racing the previous instance's device release) used to
         // kill sound for the whole run on a single lost open — retry with a
@@ -502,6 +526,29 @@ async fn main() -> anyhow::Result<()> {
                 }
                 if voice_engine.is_active() {
                     voice_engine.spawn_worker(rx.resubscribe());
+                }
+                if meeting_engine.is_active() {
+                    meeting_engine.spawn_worker(rx.resubscribe());
+                    // Auto-stopped sessions (max duration) ride the same
+                    // pipeline as manual stops: diarize → transcribe →
+                    // persist → meeting_state SSE.
+                    if let Some(mut finished) = meeting_engine.finished_receiver() {
+                        let pool = pool.clone();
+                        let events = event_tx.clone();
+                        let meeting = Arc::clone(&meeting_engine);
+                        tokio::spawn(async move {
+                            while let Some(rec) = finished.recv().await {
+                                tracing::info!(meeting = rec.id, "meeting: auto-stopped");
+                                web::routes::meetings::process_finished(
+                                    pool.clone(),
+                                    Arc::clone(&meeting),
+                                    events.clone(),
+                                    rec,
+                                )
+                                .await;
+                            }
+                        });
+                    }
                 }
                 _audio_monitor = Some(monitor);
             }
@@ -1143,6 +1190,7 @@ async fn main() -> anyhow::Result<()> {
         chat_engine,
         vlm_engine,
         decision_engine,
+        meeting_engine,
     )
     .await?;
 

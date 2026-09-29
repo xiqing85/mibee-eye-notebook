@@ -1812,6 +1812,49 @@ input[type="range"]::-moz-range-thumb {
 .records-toolbar .btn-small { white-space: nowrap; }
 
 /* Voiceprint speakers card (SPEC appendix A #25) */
+/* Meeting minutes card (SPEC appendix A #27) */
+.meeting-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger, #ef4444);
+  font-weight: 600;
+  min-height: 30px;
+}
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger, #ef4444);
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+.meeting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  min-width: 0;
+}
+.meeting-meta { opacity: 0.75; font-size: 12px; white-space: nowrap; }
+.meeting-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.meeting-detail {
+  padding: 4px 4px 10px 18px;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+}
+.meeting-seg {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  min-width: 0;
+}
+.meeting-seg .record-text { flex: 1; min-width: 0; }
+
 .speaker-chip {
   display: inline-flex;
   align-items: center;

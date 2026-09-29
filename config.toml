@@ -209,6 +209,19 @@ enabled = false
 # min_confidence = 0.35
 # num_threads = 1
 
+[meeting]
+# On-demand meeting mode (SPEC appendix A #27): explicit start → stop
+# recording sessions, then offline diarization + per-segment ASR.
+# Nothing is recorded outside a session. Requires the [voice] ASR models.
+enabled = false
+# segmentation_model = "models/voice/diarization/pyannote.onnx"
+# punctuation_model = "models/voice/punct/model.onnx"
+# clustering_threshold = 0.5
+# keep_audio = false
+# max_duration_secs = 7200
+# audio_dir = "meetings"
+# num_threads = 1
+
 [vlm]
 enabled = false
 # model_path = "models/vlm/qwen3-vl-2b-instruct-q4_k_m.gguf"
