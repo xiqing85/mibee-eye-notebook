@@ -223,11 +223,11 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         )
         .route("/api/meetings/start", post(routes::meetings::start))
         .route("/api/meetings/{id}/stop", post(routes::meetings::stop))
+        .route("/api/meetings", get(routes::meetings::list))
         .route(
-            "/api/meetings",
-            get(routes::meetings::list).delete(routes::meetings::delete_meeting),
+            "/api/meetings/{id}",
+            get(routes::meetings::get_meeting).delete(routes::meetings::delete_meeting),
         )
-        .route("/api/meetings/{id}", get(routes::meetings::get_meeting))
         .route("/api/cameras/{id}/zones", get(crate::zones::get_zones))
         .route("/api/cameras/{id}/zones", put(crate::zones::put_zones))
         .route("/api/detections", get(routes::detections::get_detections))
