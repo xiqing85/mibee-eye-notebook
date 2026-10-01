@@ -92,6 +92,13 @@ pub fn build_system_turn(ctx: &TurnContext, user_text: &str) -> ChatTurn {
     }
 }
 
+/// Chinese weekday name for an ISO weekday number (1=Monday…7=Sunday).
+#[must_use]
+pub fn weekday_name(iso_u: usize) -> &'static str {
+    const NAMES: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    NAMES[(iso_u.clamp(1, 7) - 1) % 7]
+}
+
 /// Render the 【本机】 block from gathered facts (pure — testable).
 #[must_use]
 pub fn format_local_block(
@@ -111,7 +118,6 @@ pub fn format_local_block(
 /// Gather and render the 【本机】 block (reads /proc + camera rows).
 pub async fn local_block(pool: &SqlitePool) -> String {
     let now = chrono::Local::now();
-    let weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
     let uptime_human = std::fs::read_to_string("/proc/uptime")
         .ok()
         .and_then(|t| {
@@ -152,16 +158,15 @@ pub async fn local_block(pool: &SqlitePool) -> String {
             }
         })
         .unwrap_or_else(|_| "未知".into());
-    let weekday_idx = now
+    let weekday_idx: usize = now
         .format("%u")
         .to_string()
-        .parse::<usize>()
+        .parse()
         .unwrap_or(1)
-        .saturating_sub(1)
-        .min(6);
+        .clamp(1, 7);
     format_local_block(
         &now.format("%Y-%m-%d %H:%M:%S").to_string(),
-        weekdays[weekday_idx],
+        weekday_name(weekday_idx),
         &uptime_human,
         load1,
         avail_mib,
@@ -342,6 +347,18 @@ mod tests {
     fn english_text_gets_explicit_nudge() {
         let t = build_system_turn(&ctx(None), "how many people do you see?");
         assert!(t.content.contains("reply in English"), "{}", t.content);
+    }
+
+    #[test]
+    fn weekday_names_map_iso_monday_first() {
+        // 2026-10-01 is a Thursday → ISO weekday 4 → 周四 (the Sunday-first
+        // off-by-one this replaces said 周三).
+        assert_eq!(weekday_name(4), "周四");
+        assert_eq!(weekday_name(1), "周一");
+        assert_eq!(weekday_name(7), "周日");
+        // Out-of-range values clamp instead of panicking.
+        assert_eq!(weekday_name(0), "周一");
+        assert_eq!(weekday_name(9), "周日");
     }
 
     #[test]

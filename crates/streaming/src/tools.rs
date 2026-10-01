@@ -39,7 +39,7 @@ pub struct ResourcesConfig {
 }
 
 /// Resolve the LLM model path for the current tier (#30-E).
-/// Thresholds (available RAM): ≥10 GiB → full, ≥4 GiB → mid, else lite.
+/// Thresholds (available RAM): ≥8 GiB → full, ≥4 GiB → mid, else lite.
 /// Empty tier paths fall back to `model_path`; the resolved tier name is
 /// returned alongside for logging/capabilities.
 pub fn resolve_llm_tier(
@@ -52,7 +52,7 @@ pub fn resolve_llm_tier(
     if !auto_tier {
         return (model_path.to_string(), "manual");
     }
-    if avail_mib >= 10 * 1024 {
+    if avail_mib >= 8 * 1024 {
         (model_path.to_string(), "full")
     } else if avail_mib >= 4 * 1024 {
         if model_path_mid.is_empty() {
