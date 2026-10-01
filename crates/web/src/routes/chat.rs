@@ -55,7 +55,10 @@ pub struct TurnContext {
 
 fn language_hint(user_text: &str) -> Option<&'static str> {
     match streaming::lang::detect(user_text) {
-        streaming::lang::SpokenLang::Cantonese => Some("用户使用粤语——请用粤语（广东话）回答。"),
+        streaming::lang::SpokenLang::Cantonese => Some(
+            "用户使用粤语——请用地道的口语粤语（广东话）回答：用粤语惯用字（而家、嘅、唔、\
+             係、咗、乜嘢、冇），不要用普通话书面语（避免写「现在」「的」「不」「什么」）。",
+        ),
         streaming::lang::SpokenLang::English => Some("The user speaks English — reply in English."),
         streaming::lang::SpokenLang::Mandarin => None,
     }
@@ -327,6 +330,17 @@ mod tests {
         let t = build_system_turn(&ctx(None), "你好");
         assert!(!t.content.contains("【画面】"), "{}", t.content);
         assert!(t.content.contains("【本机】"), "{}", t.content);
+    }
+
+    #[test]
+    fn system_turn_cantonese_gets_vernacular_hint() {
+        // 而家-only questions reach the Cantonese arm via the bigram and
+        // must carry the vernacular-writing nudge — a small model turns
+        // a bare "用粤语回答" into standard written Chinese.
+        let t = build_system_turn(&ctx(None), "而家广州天气点呀");
+        assert!(t.content.contains("口语粤语"), "{}", t.content);
+        assert!(t.content.contains("而家、嘅"), "{}", t.content);
+        assert!(t.content.contains("不要用普通话书面语"), "{}", t.content);
     }
 
     #[test]
