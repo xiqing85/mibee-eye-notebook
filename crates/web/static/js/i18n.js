@@ -54,6 +54,8 @@ const DICT = {
     zoneNeedPoints: '至少需要 {n} 个点', zoneNeedName: '请输入区域名称',
     zonesSaved: '区域已保存', zonesLoadFailed: '区域加载失败',
     chatTitle: 'AI 对话', chatSend: '发送', chatPlaceholder: '输入消息…', chatFailed: '对话失败',
+    chatVisionTitle: '看图直答：把你的问题和当前画面一起交给视觉模型（较慢）', chatVisionSlow: '看图直答中，视觉模型推理需要几十秒…',
+    chatGroundedVlm: '看图', chatGroundedScene: '画面', chatGroundedSceneTitle: '回复时注入了实时画面上下文',
     // PTZ
     ptzControl: '云台控制', ptzEnableDesc: '在实时画面显示方向控制按钮',
     pan: '水平', tilt: '俯仰', zoom: '变焦',
@@ -232,6 +234,8 @@ const DICT = {
     zoneNeedPoints: 'At least {n} points required', zoneNeedName: 'Zone name required',
     zonesSaved: 'Zones saved', zonesLoadFailed: 'Failed to load zones',
     chatTitle: 'AI chat', chatSend: 'Send', chatPlaceholder: 'Type a message…', chatFailed: 'Chat failed',
+    chatVisionTitle: 'Answer with vision: your question goes to the VLM with a fresh frame (slow)', chatVisionSlow: 'VLM answering — can take tens of seconds…',
+    chatGroundedVlm: 'vision', chatGroundedScene: 'scene', chatGroundedSceneTitle: 'Answer grounded on live camera context',
     // PTZ
     ptzControl: 'PTZ Control', ptzEnableDesc: 'Show direction controls on the Live view',
     pan: 'Pan', tilt: 'Tilt', zoom: 'Zoom',

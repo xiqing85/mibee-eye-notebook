@@ -1782,6 +1782,30 @@ input[type="range"]::-moz-range-thumb {
 }
 .chat-input-row input { flex: 1; }
 
+/* Grounded-chat affordances (SPEC appendix A #29): the 👁 toggle opts a
+   turn into direct VLM Q&A; badges on replies disclose which grounding
+   produced them ("看图" = VLM saw a fresh frame, "画面" = live scene
+   context was injected into the LLM prompt). */
+.chat-vision.on {
+  background: color-mix(in srgb, var(--accent, #3aa0ff) 24%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #3aa0ff) 55%, transparent);
+}
+.chat-badge {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  vertical-align: 1px;
+  border: 1px solid var(--border-light);
+  background: rgba(127, 140, 160, .14);
+  color: var(--text-dim, inherit);
+}
+.chat-badge.vlm {
+  border-color: color-mix(in srgb, var(--accent, #3aa0ff) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #3aa0ff) 18%, transparent);
+}
+
 /* ===== Hearing records view (audio_records, SPEC appendix A #24) ===== */
 .records-toolbar {
   display: flex;

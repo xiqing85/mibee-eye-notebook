@@ -51,6 +51,9 @@ pub enum CameraEvent {
         /// directly and do not ride the SSE bus.
         source: String,
         reply: String,
+        /// Grounding mode that produced the reply (SPEC appendix A
+        /// #29): `"scene"` (live context injected) or `"none"`.
+        grounded: String,
         timestamp_ms: u64,
     },
     /// A voice interaction completed (SPEC appendix A notebook dialect:
@@ -196,11 +199,13 @@ fn event_to_sse(event: CameraEvent) -> Event {
         CameraEvent::ChatReply {
             source,
             reply,
+            grounded,
             timestamp_ms,
         } => Event::default().event("chat_reply").data(
             serde_json::json!({
                 "source": source,
                 "reply": reply,
+                "grounded": grounded,
                 "timestamp": timestamp_ms,
             })
             .to_string(),
