@@ -57,6 +57,21 @@ impl Default for TtsConfig {
     }
 }
 
+/// Token table for a per-language model: prefer the `tokens.txt` sitting
+/// next to the model (every sherpa TTS bundle ships one — reusing the
+/// primary model's table makes the subprocess exit 255 on mismatched
+/// symbols), fall back to the primary table when absent.
+#[must_use]
+pub fn companion_tokens(model_path: &str, fallback: &str) -> String {
+    let companion = std::path::Path::new(model_path)
+        .parent()
+        .map(|d| d.join("tokens.txt"));
+    match companion {
+        Some(p) if p.is_file() => p.to_string_lossy().into_owned(),
+        _ => fallback.to_string(),
+    }
+}
+
 /// Model files available for one spoken language.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceProfile {
@@ -139,7 +154,7 @@ impl TtsEngine {
                 VoiceProfile {
                     model: self.config.yue_model.clone(),
                     lexicon: self.config.yue_lexicon.clone(),
-                    tokens: self.config.tokens.clone(),
+                    tokens: companion_tokens(&self.config.yue_model, &self.config.tokens),
                     dict_dir: self.config.yue_dict_dir.clone(),
                     rule_fsts: String::new(),
                 }
@@ -147,7 +162,7 @@ impl TtsEngine {
             crate::lang::SpokenLang::English if !self.config.en_model.is_empty() => VoiceProfile {
                 model: self.config.en_model.clone(),
                 lexicon: self.config.en_lexicon.clone(),
-                tokens: self.config.tokens.clone(),
+                tokens: companion_tokens(&self.config.en_model, &self.config.tokens),
                 dict_dir: String::new(),
                 rule_fsts: String::new(),
             },
@@ -300,6 +315,25 @@ mod profile_tests {
         assert_eq!(
             e.profile_for(crate::lang::SpokenLang::Mandarin).model,
             "models/voice/melo/model.onnx"
+        );
+    }
+
+    #[test]
+    fn companion_tokens_prefers_model_directory_table() {
+        let dir = std::env::temp_dir().join("mibee-tts-tokens-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.onnx");
+        std::fs::write(&model, b"x").unwrap();
+        std::fs::write(dir.join("tokens.txt"), b"AA").unwrap();
+        let m = model.to_string_lossy();
+        assert_eq!(
+            companion_tokens(&m, "fallback/tokens.txt"),
+            format!("{}/tokens.txt", dir.display())
+        );
+        std::fs::remove_file(dir.join("tokens.txt")).unwrap();
+        assert_eq!(
+            companion_tokens(&m, "fallback/tokens.txt"),
+            "fallback/tokens.txt"
         );
     }
 
