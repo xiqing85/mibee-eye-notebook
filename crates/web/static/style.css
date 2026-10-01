@@ -772,9 +772,21 @@ input:focus, select:focus {
   z-index: 2;
   pointer-events: none;
 }
+/* Shared overlay-canvas contract: full-wrapper, out of flow, CSS-sized.
+   A missing absolute rule on #zones-overlay made it an in-flow flex item
+   whose intrinsic (device-pixel) size fed back into renderZonesOverlay's
+   wrapper.clientHeight read — on dpr>1 screens every ai_detection event
+   doubled the wrapper height until the renderer gave up (user-visible
+   "picture expands downward until the page whites out", 2026-10-01). */
 .detection-box {
   --detection-color: var(--accent);
   --detection-label-bg: rgba(4, 8, 14, .7);
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
 }
 
 /* -------------------------------------------------------------------
