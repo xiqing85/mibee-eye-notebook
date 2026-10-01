@@ -49,10 +49,15 @@ export async function renderRecords() {
     const speakerBadge = (isVoice && rec.speaker)
       ? el('span', { className: 'record-kind kind-speaker', textContent: rec.speaker, title: t('recordSpeaker') })
       : el('span');
+    // Correlated record (#30-C): what the camera saw when this was heard.
+    const sceneBadge = rec.scene
+      ? el('span', { className: 'record-kind kind-scene', textContent: '👁', title: rec.scene })
+      : el('span');
     list.appendChild(el('div', { className: 'record-row' }, [
       el('span', { className: 'record-time mono', textContent: fmtTime(rec.timestamp_ms) }),
       el('span', { className: 'record-kind ' + (isVoice ? 'kind-voice' : 'kind-sound'), textContent: isVoice ? t('recordsKindVoice') : t('recordsKindSound') }),
       speakerBadge,
+      sceneBadge,
       textCell,
       typeof rec.score === 'number'
         ? el('span', { className: 'record-score mono', textContent: rec.score.toFixed(2) })
