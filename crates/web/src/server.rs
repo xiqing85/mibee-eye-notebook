@@ -65,6 +65,9 @@ pub struct AppRouterState {
     /// Meeting-mode engine (inactive without `voice` feature/models —
     /// SPEC appendix A #27).
     pub meeting: Arc<streaming::meeting::MeetingEngine>,
+    /// Live scene grounding for chat (#29): latest detection labels +
+    /// VLM alarm descriptions per camera.
+    pub grounding: Arc<crate::grounding::GroundingState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +167,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let vlm = state.vlm.clone();
     let decision = state.decision.clone();
     let meeting = state.meeting.clone();
+    let grounding = state.grounding.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -333,6 +337,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(chat))
         .layer(Extension(vlm))
         .layer(Extension(decision))
+        .layer(Extension(grounding))
         .layer(Extension(meeting))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
@@ -390,6 +395,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         decision: Arc::new(streaming::decision::DecisionEngine::from_config(
             &streaming::decision::DecisionConfig::default(),
         )),
+        grounding: Arc::new(crate::grounding::GroundingState::new()),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -449,6 +455,7 @@ pub async fn test_app_with_user() -> Router {
         decision: Arc::new(streaming::decision::DecisionEngine::from_config(
             &streaming::decision::DecisionConfig::default(),
         )),
+        grounding: Arc::new(crate::grounding::GroundingState::new()),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -645,6 +652,7 @@ pub async fn run(
     vlm: Arc<streaming::vlm::VlmEngine>,
     decision: Arc<streaming::decision::DecisionEngine>,
     meeting: Arc<streaming::meeting::MeetingEngine>,
+    grounding: Arc<crate::grounding::GroundingState>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -668,6 +676,7 @@ pub async fn run(
         vlm,
         decision,
         meeting,
+        grounding,
     };
     let app = build_app_with_state(state);
 
@@ -733,6 +742,7 @@ pub async fn run_with_shutdown(
     vlm: Arc<streaming::vlm::VlmEngine>,
     decision: Arc<streaming::decision::DecisionEngine>,
     meeting: Arc<streaming::meeting::MeetingEngine>,
+    grounding: Arc<crate::grounding::GroundingState>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -758,6 +768,7 @@ pub async fn run_with_shutdown(
         vlm,
         decision,
         meeting,
+        grounding,
     };
     let app = build_app_with_state(state);
 

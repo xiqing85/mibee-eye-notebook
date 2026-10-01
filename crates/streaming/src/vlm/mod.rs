@@ -164,22 +164,34 @@ impl VlmEngine {
     ///
     /// Inactive engine, image decode failure, or inference failure.
     pub fn describe_jpeg(&self, jpeg: &[u8]) -> anyhow::Result<String> {
+        self.answer_jpeg(jpeg, &self.config.prompt)
+    }
+
+    /// Answer one question about one JPEG frame (blocking; call from
+    /// `spawn_blocking`). The question replaces the configured
+    /// describing instruction inside the same multimodal template —
+    /// this is the "看图直答" path (SPEC appendix A #29).
+    ///
+    /// # Errors
+    ///
+    /// Inactive engine, image decode failure, or inference failure.
+    pub fn answer_jpeg(&self, jpeg: &[u8], question: &str) -> anyhow::Result<String> {
         #[cfg(feature = "vlm")]
         {
             let Some(inner) = &self.inner else {
                 anyhow::bail!("vlm inactive: {}", self.inactive_reason);
             };
-            self.run_describe(inner, jpeg)
+            self.run_qa(inner, jpeg, question)
         }
         #[cfg(not(feature = "vlm"))]
         {
-            let _ = jpeg;
+            let _ = (jpeg, question);
             anyhow::bail!("vlm inactive: {}", self.inactive_reason)
         }
     }
 
     #[cfg(feature = "vlm")]
-    fn run_describe(&self, inner: &VlmInner, jpeg: &[u8]) -> anyhow::Result<String> {
+    fn run_qa(&self, inner: &VlmInner, jpeg: &[u8], question: &str) -> anyhow::Result<String> {
         use llama_cpp_2::context::params::LlamaContextParams;
         use llama_cpp_2::llama_batch::LlamaBatch;
         use llama_cpp_2::model::AddBos;
@@ -199,7 +211,7 @@ impl VlmEngine {
             "<|im_start|>system\n你是一名安防监控助手，回答简短准确。<|im_end|>\n\
              <|im_start|>user\n<__media__>\n{}<|im_end|>\n\
              <|im_start|>assistant",
-            self.config.prompt
+            question
         );
         let text = MtmdInputText {
             text: prompt,

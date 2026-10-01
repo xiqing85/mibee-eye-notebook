@@ -275,6 +275,10 @@ async fn main() -> anyhow::Result<()> {
     // VLM alarm-frame descriptions (SPEC appendix A #23). Created before
     // the alarm bridge so the hook below can clone it.
     let vlm_engine = Arc::new(streaming::vlm::VlmEngine::from_config(&config.vlm));
+    // Live scene grounding (SPEC appendix A #29): fed by the AI loop and
+    // the VLM alarm descriptions, read by the chat routes and the voice
+    // auto-reply — one shared instance keeps every answer equally fresh.
+    let grounding_state = Arc::new(web::grounding::GroundingState::new());
     if !vlm_engine.is_active() {
         tracing::info!(reason = %vlm_engine.inactive_reason(), "vlm: descriptions disabled");
     }
@@ -290,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
     // Alarm NOTIFY when GB28181 is up and the AlarmReport gate allows).
     {
         let vlm_engine = Arc::clone(&vlm_engine);
+        let grounding_feed = Arc::clone(&grounding_state);
         let mut ai_events = ai_engine.subscribe_events();
         let bridge_tx = event_tx.clone();
         let mut alarm_bridge =
@@ -302,16 +307,17 @@ async fn main() -> anyhow::Result<()> {
                 match ai_events.recv().await {
                     Ok(ev) => {
                         let targets = ev.detections.len();
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        grounding_feed.record_detections(&ev.camera_id, now_ms, &ev.detections);
                         let _ = bridge_tx.send(web::routes::events::CameraEvent::AiDetection {
                             camera_id: ev.camera_id.clone(),
                             detections: ev.detections,
                             frame_number: ev.frame_number,
                         });
 
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0);
                         if let Some(sig) = alarm_bridge.observe(
                             &ev.camera_id,
                             targets,
@@ -366,6 +372,7 @@ async fn main() -> anyhow::Result<()> {
                                     let tx = bridge_tx.clone();
                                     let camera_id = sig.camera_id.clone();
                                     let alarm_ts = sig.timestamp_ms;
+                                    let grounding_feed = Arc::clone(&grounding_feed);
                                     tokio::task::spawn_blocking(move || {
                                         let started = std::time::Instant::now();
                                         let result = vlm.describe_jpeg(&jpeg);
@@ -373,6 +380,11 @@ async fn main() -> anyhow::Result<()> {
                                             .store(false, std::sync::atomic::Ordering::SeqCst);
                                         match result {
                                             Ok(description) => {
+                                                grounding_feed.record_vlm_description(
+                                                    &camera_id,
+                                                    alarm_ts,
+                                                    &description,
+                                                );
                                                 let _ = tx.send(
                                                     web::routes::events::CameraEvent::AlarmDescription {
                                                         camera_id,
@@ -732,6 +744,7 @@ async fn main() -> anyhow::Result<()> {
         let bridge_tx = event_tx.clone();
         let chat_for_voice = chat_engine.clone();
         let decision_for_voice = decision_engine.clone();
+        let grounding_for_voice = Arc::clone(&grounding_state);
         let records_pool = pool.clone();
         tokio::spawn(async move {
             loop {
@@ -811,12 +824,24 @@ async fn main() -> anyhow::Result<()> {
                             && chat_for_voice.is_active()
                             && !ev.transcript.trim().is_empty()
                         {
+                            // Scene grounding (SPEC #29): same context the
+                            // HTTP chat route injects — the spoken answer
+                            // knows what the camera sees and follows the
+                            // user's language (Mandarin/Cantonese/English).
+                            let scene = web::db::list_cameras(&records_pool)
+                                .await
+                                .ok()
+                                .and_then(|cams| cams.first().map(|c| c.id.clone()))
+                                .and_then(|id| {
+                                    grounding_for_voice.scene_summary(&id, unix_now_ms())
+                                });
+                            let grounded =
+                                if scene.is_some() { "scene" } else { "none" }.to_string();
                             let turns = vec![
-                                streaming::llm::ChatTurn {
-                                    role: "system".into(),
-                                    content: "你是家庭摄像头的语音助手，用不超过两句话的中文回答。"
-                                        .into(),
-                                },
+                                web::routes::chat::build_system_turn(
+                                    scene.as_deref(),
+                                    &ev.transcript,
+                                ),
                                 streaming::llm::ChatTurn {
                                     role: "user".into(),
                                     content: ev.transcript.clone(),
@@ -825,11 +850,13 @@ async fn main() -> anyhow::Result<()> {
                             let engine = chat_for_voice.clone();
                             let tx = bridge_tx.clone();
                             let tts_for_reply = tts_engine.clone();
+                            let grounded = grounded.clone();
                             tokio::task::spawn_blocking(move || match engine.complete(&turns) {
                                 Ok(reply) => {
                                     let _ = tx.send(web::routes::events::CameraEvent::ChatReply {
                                         source: "voice".into(),
                                         reply: reply.clone(),
+                                        grounded,
                                         timestamp_ms: unix_now_ms(),
                                     });
                                     if tts_for_reply.is_active()
@@ -1191,6 +1218,7 @@ async fn main() -> anyhow::Result<()> {
         vlm_engine,
         decision_engine,
         meeting_engine,
+        grounding_state,
     )
     .await?;
 

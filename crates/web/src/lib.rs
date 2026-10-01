@@ -10,6 +10,7 @@ pub mod errors;
 /// GB28181 voice-talkback receive: G.711 decode → cpal output.
 pub mod gb28181_control;
 pub mod gb28181_talkback;
+pub mod grounding;
 pub mod observe;
 pub mod onvif_alarm;
 pub mod protocol_runtime;

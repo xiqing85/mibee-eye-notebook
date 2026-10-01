@@ -387,6 +387,7 @@ mod tests {
                 &streaming::meeting::MeetingConfig::default(),
                 &streaming::voice::VoiceConfig::default(),
             )),
+            grounding: Arc::new(crate::grounding::GroundingState::new()),
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),
