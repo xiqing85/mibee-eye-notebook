@@ -25,6 +25,16 @@ pub struct TtsConfig {
     pub rule_fsts: String,
     /// Playback command (`aplay -q`); empty = synthesize only.
     pub player: String,
+    // -- Trilingual profiles (SPEC appendix A #30-D) -------------------
+    // Optional per-language models; empty = the language falls back to
+    // the primary (Mandarin melo) voice.
+    /// Cantonese vits model (empty = no Cantonese voice).
+    pub yue_model: String,
+    pub yue_lexicon: String,
+    pub yue_dict_dir: String,
+    /// English vits model (empty = no English voice).
+    pub en_model: String,
+    pub en_lexicon: String,
 }
 
 impl Default for TtsConfig {
@@ -38,8 +48,23 @@ impl Default for TtsConfig {
             dict_dir: "models/voice/melo/dict".into(),
             rule_fsts: "models/voice/melo/number.fst,models/voice/melo/date.fst".into(),
             player: "aplay -q".into(),
+            yue_model: String::new(),
+            yue_lexicon: String::new(),
+            yue_dict_dir: String::new(),
+            en_model: String::new(),
+            en_lexicon: String::new(),
         }
     }
+}
+
+/// Model files available for one spoken language.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceProfile {
+    pub model: String,
+    pub lexicon: String,
+    pub tokens: String,
+    pub dict_dir: String,
+    pub rule_fsts: String,
 }
 
 /// TTS engine (fail-open: missing binary/model leaves it inactive).
@@ -96,8 +121,43 @@ impl TtsEngine {
         &self.inactive_reason
     }
 
-    /// Synthesize (and play, when a player is configured) one utterance.
-    /// Blocking — call from `spawn_blocking`.
+    /// Pick the voice profile for a reply's language (#30-D):
+    /// Cantonese/English fall back to the primary model when their
+    /// optional model is not configured (honest — the accent will be
+    /// Mandarin, the text is still spoken).
+    #[must_use]
+    pub fn profile_for(&self, lang: crate::lang::SpokenLang) -> VoiceProfile {
+        let primary = VoiceProfile {
+            model: self.config.model.clone(),
+            lexicon: self.config.lexicon.clone(),
+            tokens: self.config.tokens.clone(),
+            dict_dir: self.config.dict_dir.clone(),
+            rule_fsts: self.config.rule_fsts.clone(),
+        };
+        match lang {
+            crate::lang::SpokenLang::Cantonese if !self.config.yue_model.is_empty() => {
+                VoiceProfile {
+                    model: self.config.yue_model.clone(),
+                    lexicon: self.config.yue_lexicon.clone(),
+                    tokens: self.config.tokens.clone(),
+                    dict_dir: self.config.yue_dict_dir.clone(),
+                    rule_fsts: String::new(),
+                }
+            }
+            crate::lang::SpokenLang::English if !self.config.en_model.is_empty() => VoiceProfile {
+                model: self.config.en_model.clone(),
+                lexicon: self.config.en_lexicon.clone(),
+                tokens: self.config.tokens.clone(),
+                dict_dir: String::new(),
+                rule_fsts: String::new(),
+            },
+            _ => primary,
+        }
+    }
+
+    /// Synthesize (and play, when a player is configured) one utterance
+    /// with the voice matching its language. Blocking — call from
+    /// `spawn_blocking`.
     ///
     /// # Errors
     ///
@@ -109,13 +169,14 @@ impl TtsEngine {
         if text.trim().is_empty() {
             anyhow::bail!("tts: empty text");
         }
+        let profile = self.profile_for(crate::lang::detect(text));
         let out = std::env::temp_dir().join(format!("mibee-tts-{}.wav", std::process::id()));
         let mut cmd = std::process::Command::new(&self.config.binary);
-        cmd.arg(format!("--vits-model={}", self.config.model))
-            .arg(format!("--vits-lexicon={}", self.config.lexicon))
-            .arg(format!("--vits-tokens={}", self.config.tokens))
-            .arg(format!("--vits-dict-dir={}", self.config.dict_dir))
-            .arg(format!("--tts-rule-fsts={}", self.config.rule_fsts))
+        cmd.arg(format!("--vits-model={}", profile.model))
+            .arg(format!("--vits-lexicon={}", profile.lexicon))
+            .arg(format!("--vits-tokens={}", profile.tokens))
+            .arg(format!("--vits-dict-dir={}", profile.dict_dir))
+            .arg(format!("--tts-rule-fsts={}", profile.rule_fsts))
             .arg("--num-threads=1")
             .arg(format!("--output-filename={}", out.display()))
             .arg(text);
@@ -202,5 +263,53 @@ mod tests {
             ..TtsConfig::default()
         });
         assert!(!e.is_active(), "missing assets must not fake activity");
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    fn engine_with(yue: bool, en: bool) -> TtsEngine {
+        let mut c = TtsConfig::default();
+        if yue {
+            c.yue_model = "models/voice/tts-yue/cantonese.onnx".into();
+            c.yue_lexicon = "models/voice/tts-yue/lexicon.txt".into();
+            c.yue_dict_dir = "models/voice/tts-yue/dict".into();
+        }
+        if en {
+            c.en_model = "models/voice/tts-en/model.onnx".into();
+            c.en_lexicon = "models/voice/tts-en/lexicon.txt".into();
+        }
+        TtsEngine::from_config(&c)
+    }
+
+    #[test]
+    fn profile_follows_language_with_fallback() {
+        let e = engine_with(true, true);
+        assert_eq!(
+            e.profile_for(crate::lang::SpokenLang::Cantonese).model,
+            "models/voice/tts-yue/cantonese.onnx"
+        );
+        assert_eq!(
+            e.profile_for(crate::lang::SpokenLang::English).model,
+            "models/voice/tts-en/model.onnx"
+        );
+        assert_eq!(
+            e.profile_for(crate::lang::SpokenLang::Mandarin).model,
+            "models/voice/melo/model.onnx"
+        );
+    }
+
+    #[test]
+    fn missing_language_model_falls_back_to_primary() {
+        let e = engine_with(false, false);
+        for lang in [
+            crate::lang::SpokenLang::Cantonese,
+            crate::lang::SpokenLang::English,
+            crate::lang::SpokenLang::Mandarin,
+        ] {
+            assert_eq!(e.profile_for(lang).model, "models/voice/melo/model.onnx");
+        }
     }
 }

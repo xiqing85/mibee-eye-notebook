@@ -64,6 +64,10 @@ pub enum CameraEvent {
         /// Best-matching enrolled speaker ("" = unknown) — SPEC appendix A
         /// #25 additive field.
         speaker: String,
+        /// 【画面】 summary when the utterance fired (#30-C; "" = none).
+        scene: String,
+        /// Captured inside a follow-up window (#30-B).
+        follow_up: bool,
         timestamp_ms: u64,
     },
     /// One Laya typed decision over a voice transcript (SPEC appendix A
@@ -214,12 +218,16 @@ fn event_to_sse(event: CameraEvent) -> Event {
             keyword,
             transcript,
             speaker,
+            scene,
+            follow_up,
             timestamp_ms,
         } => Event::default().event("voice_transcript").data(
             serde_json::json!({
                 "keyword": keyword,
                 "transcript": transcript,
                 "speaker": speaker,
+                "scene": scene,
+                "follow_up": follow_up,
                 "timestamp": timestamp_ms,
             })
             .to_string(),

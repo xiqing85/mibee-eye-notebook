@@ -47,6 +47,10 @@ pub struct VoiceEvent {
     /// no speaker model / no match above threshold).
     #[serde(default)]
     pub speaker: String,
+    /// True when captured inside a follow-up window (no wake word —
+    /// SPEC appendix A #30-B continuous dialogue).
+    #[serde(default)]
+    pub follow_up: bool,
 }
 
 /// `[voice]` configuration section.
@@ -83,6 +87,13 @@ pub struct VoiceConfig {
     /// Seconds of pre-wake audio kept in the ring buffer for the
     /// verification embedding (must cover the wake-word utterance).
     pub verify_window_secs: f32,
+    /// Follow-up window length in seconds (#30-B): after the host arms
+    /// it (once its reply finished playing), utterances inside the
+    /// window skip the wake word. 0 = feature off.
+    pub follow_up_window_secs: f32,
+    /// Silero VAD model path (follow-up endpointing). Missing file
+    /// disables follow-up with a WARN.
+    pub vad_model: String,
 }
 
 impl Default for VoiceConfig {
@@ -104,6 +115,8 @@ impl Default for VoiceConfig {
             speaker_verify: false,
             speaker_threshold: 0.55,
             verify_window_secs: 2.0,
+            follow_up_window_secs: 0.0,
+            vad_model: "models/voice/vad/silero_vad.onnx".into(),
         }
     }
 }
@@ -116,6 +129,9 @@ struct VoiceInternals {
     /// Speaker-embedding extractor; `None` (missing model file) keeps KWS +
     /// ASR alive and only disables the speaker features.
     embed: Option<Arc<sherpa_onnx::SpeakerEmbeddingExtractor>>,
+    /// Follow-up endpointing VAD; `None` (feature off / model missing)
+    /// keeps wake-word mode only.
+    vad: Option<Arc<sherpa_onnx::VoiceActivityDetector>>,
 }
 
 /// Host-visible snapshot of an in-flight enrollment session.
@@ -195,6 +211,12 @@ pub struct VoiceEngine {
     /// wake-word worker and the web routes).
     #[cfg_attr(not(feature = "voice"), allow(dead_code))]
     speakers: Arc<std::sync::Mutex<SpeakerRegistry>>,
+    /// Follow-up window deadline (unix-ms; 0 = closed). The host arms it
+    /// via [`VoiceEngine::arm_follow_up`] once its reply finished
+    /// PLAYING — arming earlier would let the VAD capture the device's
+    /// own TTS output.
+    #[cfg_attr(not(feature = "voice"), allow(dead_code))]
+    follow_until_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl VoiceEngine {
@@ -221,6 +243,7 @@ impl VoiceEngine {
                     event_tx,
                     internals: Some(internals),
                     speakers: Arc::new(std::sync::Mutex::new(SpeakerRegistry::new(dim))),
+                    follow_until_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }
             }
             #[cfg(not(feature = "voice"))]
@@ -236,6 +259,7 @@ impl VoiceEngine {
                     #[cfg(feature = "voice")]
                     internals: None,
                     speakers: Arc::new(std::sync::Mutex::new(SpeakerRegistry::empty())),
+                    follow_until_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }
             }
         }
@@ -263,10 +287,24 @@ impl VoiceEngine {
             })
             .map(Arc::new)
             .ok();
+        // Follow-up VAD (#30-B): optional — a requested-but-missing model
+        // only disables continuous dialogue, with one WARN.
+        let vad = if config.follow_up_window_secs > 0.0 {
+            match build_vad(config) {
+                Ok(v) => Some(Arc::new(v)),
+                Err(e) => {
+                    warn!(error = %e, "voice: VAD unavailable (follow-up disabled)");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(VoiceInternals {
             kws: Arc::new(kws),
             recognizer: Arc::new(recognizer),
             embed,
+            vad,
         })
     }
 
@@ -291,7 +329,36 @@ impl VoiceEngine {
     }
 
     /// Subscribe to completed voice interactions.
-    #[must_use]
+    /// Open the follow-up window for `follow_up_window_secs` from now
+    /// (#30-B). No-op when the window length is 0 or the VAD is absent.
+    pub fn arm_follow_up(&self) {
+        #[cfg(feature = "voice")]
+        {
+            if self.config.follow_up_window_secs <= 0.0 {
+                return;
+            }
+            if self
+                .internals
+                .as_ref()
+                .and_then(|i| i.vad.as_ref())
+                .is_none()
+            {
+                return;
+            }
+            let until = unix_now_ms() + (self.config.follow_up_window_secs * 1000.0) as u64;
+            self.follow_until_ms
+                .store(until, std::sync::atomic::Ordering::SeqCst);
+            info!(
+                window_secs = self.config.follow_up_window_secs,
+                "voice: follow-up window armed"
+            );
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            let _ = self;
+        }
+    }
+
     pub fn subscribe_events(&self) -> broadcast::Receiver<VoiceEvent> {
         self.event_tx.subscribe()
     }
@@ -543,6 +610,7 @@ impl VoiceEngine {
             kws: Arc::clone(&i.kws),
             recognizer: Arc::clone(&i.recognizer),
             embed: i.embed.clone(),
+            vad: i.vad.clone(),
         }) else {
             return tokio::spawn(async {});
         };
@@ -556,6 +624,7 @@ impl VoiceEngine {
                 .max(16_000);
             let event_tx = self.event_tx.clone();
             let speakers = Arc::clone(&self.speakers);
+            let follow_until_ms = Arc::clone(&self.follow_until_ms);
             info!("voice: wake-word worker started");
             tokio::spawn(async move {
                 // The KWS stream is single-owner; the decode loop runs on
@@ -574,6 +643,57 @@ impl VoiceEngine {
                             let samples: Vec<f32> =
                                 chunk.samples.iter().map(|&s| s as f32 / 32_768.0).collect();
                             ring.push(&samples);
+                            // Follow-up window (#30-B): VAD endpointing
+                            // replaces the wake word until the window
+                            // closes. Each completed segment re-extends the
+                            // deadline slightly so a mid-window answer keeps
+                            // the conversation alive; the host re-arms it
+                            // properly after its reply plays.
+                            let now_ms = unix_now_ms();
+                            let until = follow_until_ms.load(std::sync::atomic::Ordering::SeqCst);
+                            if until > 0
+                                && let Some(vad) = internals.vad.as_ref()
+                            {
+                                {
+                                    if now_ms >= until {
+                                        follow_until_ms
+                                            .store(0, std::sync::atomic::Ordering::SeqCst);
+                                        vad.clear();
+                                        vad.reset();
+                                        info!("voice: follow-up window closed");
+                                    } else {
+                                        vad.accept_waveform(&samples);
+                                        while let Some(seg) = vad.front() {
+                                            let waveform = seg.samples().to_vec();
+                                            vad.pop();
+                                            if waveform.len() < 16_000 {
+                                                // < 1 s — noise, keep listening.
+                                                continue;
+                                            }
+                                            let recognizer = Arc::clone(&internals.recognizer);
+                                            let tx = event_tx.clone();
+                                            let extend = now_ms + 2_000;
+                                            follow_until_ms
+                                                .store(extend, std::sync::atomic::Ordering::SeqCst);
+                                            tokio::task::spawn_blocking(move || {
+                                                let text = transcribe(&recognizer, &waveform);
+                                                info!(
+                                                    chars = text.chars().count(),
+                                                    "voice: follow-up transcript"
+                                                );
+                                                let _ = tx.send(VoiceEvent {
+                                                    keyword: String::new(),
+                                                    transcript: text,
+                                                    timestamp_ms: unix_now_ms(),
+                                                    speaker: String::new(),
+                                                    follow_up: true,
+                                                });
+                                            });
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
                             if let Some(keyword) = &keyword_pending {
                                 captured.extend_from_slice(&samples);
                                 if tokio::time::Instant::now() >= capture_deadline {
@@ -613,6 +733,7 @@ impl VoiceEngine {
                                             transcript: text,
                                             timestamp_ms: now_ms,
                                             speaker,
+                                            follow_up: false,
                                         });
                                     });
                                     keyword_pending = None;
@@ -741,6 +862,34 @@ fn transcribe(recognizer: &sherpa_onnx::OfflineRecognizer, waveform: &[f32]) -> 
     stream.accept_waveform(16_000, waveform);
     recognizer.decode(&stream);
     stream.get_result().map(|r| r.text).unwrap_or_default()
+}
+
+/// Load the optional follow-up VAD (silero). Missing model is an error
+/// the caller logs-and-ignores (follow-up disabled, wake mode intact).
+#[cfg(feature = "voice")]
+fn build_vad(config: &VoiceConfig) -> anyhow::Result<sherpa_onnx::VoiceActivityDetector> {
+    use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
+    if !std::path::Path::new(&config.vad_model).exists() {
+        anyhow::bail!("vad model not found: {}", config.vad_model);
+    }
+    let silero = SileroVadModelConfig {
+        model: Some(config.vad_model.clone()),
+        threshold: 0.5,
+        min_silence_duration: 0.6,
+        min_speech_duration: 0.25,
+        window_size: 512,
+        max_speech_duration: 10.0,
+    };
+    let cfg = VadModelConfig {
+        silero_vad: silero,
+        sample_rate: 16_000,
+        num_threads: 1,
+        provider: Some("cpu".into()),
+        debug: false,
+        ..Default::default()
+    };
+    VoiceActivityDetector::create(&cfg, 30.0)
+        .ok_or_else(|| anyhow::anyhow!("VoiceActivityDetector::create failed"))
 }
 
 /// Load the optional speaker-embedding extractor (CAM++ class ONNX).
