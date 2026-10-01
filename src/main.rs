@@ -593,6 +593,12 @@ async fn main() -> anyhow::Result<()> {
             ),
         }
     }
+    // Shared MP4-segment registry (#30-C media_ref): the FileOutputs
+    // publish their current segment here; hearing bridges resolve the
+    // covering file; the StreamManager below adopts the same Arc.
+    let segment_registry: Arc<std::sync::Mutex<HashMap<String, streaming::output::SegmentSlot>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+
     // Sound events ride the same alarm pipeline as visual detections: SSE
     // `alarm` with source:"audio" (+ class/score) and the GB Alarm NOTIFY
     // with the same pinned 2022 standard triple; the description carries
@@ -606,6 +612,7 @@ async fn main() -> anyhow::Result<()> {
         let records_pool = pool.clone();
         let grounding_sound = Arc::clone(&grounding_state);
         let sound_pool_for_scene = pool.clone();
+        let streams_for_sound = Arc::clone(&segment_registry);
         tokio::spawn(async move {
             loop {
                 match sound_events.recv().await {
@@ -614,11 +621,25 @@ async fn main() -> anyhow::Result<()> {
                         // fail-open: a DB hiccup never touches the alarm
                         // pipeline. Scene = what the camera saw when the
                         // sound fired (#30-C).
-                        let scene = web::db::list_cameras(&sound_pool_for_scene)
+                        let camera = web::db::list_cameras(&sound_pool_for_scene)
                             .await
                             .ok()
-                            .and_then(|cams| cams.first().map(|c| c.id.clone()))
-                            .and_then(|id| grounding_sound.scene_summary(&id, ev.timestamp_ms))
+                            .and_then(|cams| cams.first().map(|c| c.id.clone()));
+                        let scene = camera
+                            .as_deref()
+                            .and_then(|id| grounding_sound.scene_summary(id, ev.timestamp_ms))
+                            .unwrap_or_default();
+                        // Video dimension (#30-C): the MP4 segment covering
+                        // this sound, when the camera is recording.
+                        let media_ref = camera
+                            .as_deref()
+                            .and_then(|id| {
+                                web::stream_manager::StreamManager::segment_covering(
+                                    &streams_for_sound,
+                                    id,
+                                    ev.timestamp_ms,
+                                )
+                            })
                             .unwrap_or_default();
                         if let Err(e) = web::db::insert_hearing_record(
                             &records_pool,
@@ -628,6 +649,7 @@ async fn main() -> anyhow::Result<()> {
                             "",
                             "",
                             &scene,
+                            &media_ref,
                             ev.timestamp_ms as i64,
                         )
                         .await
@@ -785,6 +807,7 @@ async fn main() -> anyhow::Result<()> {
         let chat_for_voice = chat_engine.clone();
         let decision_for_voice = decision_engine.clone();
         let grounding_for_voice = Arc::clone(&grounding_state);
+        let streams_for_voice = Arc::clone(&segment_registry);
         let tools_for_voice = config.tools.clone();
         let voice_engine_for_arming = Arc::clone(&voice_engine);
         // Conversation session (#30-B): the last 120 s of turns give
@@ -800,11 +823,23 @@ async fn main() -> anyhow::Result<()> {
                     Ok(ev) => {
                         // Persistent hearing record (SPEC appendix A #24)
                         // with the correlated scene (#30-C).
-                        let scene = web::db::list_cameras(&records_pool)
+                        let camera = web::db::list_cameras(&records_pool)
                             .await
                             .ok()
-                            .and_then(|cams| cams.first().map(|c| c.id.clone()))
-                            .and_then(|id| grounding_voice.scene_summary(&id, ev.timestamp_ms))
+                            .and_then(|cams| cams.first().map(|c| c.id.clone()));
+                        let scene = camera
+                            .as_deref()
+                            .and_then(|id| grounding_voice.scene_summary(id, ev.timestamp_ms))
+                            .unwrap_or_default();
+                        let media_ref = camera
+                            .as_deref()
+                            .and_then(|id| {
+                                web::stream_manager::StreamManager::segment_covering(
+                                    &streams_for_voice,
+                                    id,
+                                    ev.timestamp_ms,
+                                )
+                            })
                             .unwrap_or_default();
                         if let Err(e) = web::db::insert_hearing_record(
                             &records_pool,
@@ -814,6 +849,7 @@ async fn main() -> anyhow::Result<()> {
                             &ev.keyword,
                             &ev.speaker,
                             &scene,
+                            &media_ref,
                             ev.timestamp_ms as i64,
                         )
                         .await
@@ -997,7 +1033,8 @@ async fn main() -> anyhow::Result<()> {
             .with_recording_pause_flag(Arc::clone(&recording_paused))
             .with_force_idr_flag(Arc::clone(&force_idr))
             .with_gb_flips(Arc::clone(&gb_flips))
-            .with_ai(ai_engine.clone()),
+            .with_ai(ai_engine.clone())
+            .with_segment_slots(Arc::clone(&segment_registry)),
     );
 
     // Auto-start streams for cameras with DB status "running" (resume across restart).

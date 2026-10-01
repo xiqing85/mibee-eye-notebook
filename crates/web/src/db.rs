@@ -39,6 +39,9 @@ pub struct HearingRecord {
     /// 【画面】 summary captured when the event fired (#30-C; "" when
     /// nothing was known / pre-migration rows).
     pub scene: String,
+    /// MP4 segment covering the event timestamp when the camera was
+    /// recording (#30-C; "" when recording off / rotation race).
+    pub media_ref: String,
 }
 
 /// FIFO cap applied on every insert so a chatty microphone can never grow
@@ -57,11 +60,12 @@ pub async fn insert_hearing_record(
     keyword: &str,
     speaker: &str,
     scene: &str,
+    media_ref: &str,
     timestamp_ms: i64,
 ) -> Result<()> {
     let mut tx = pool.begin().await.context("hearing record: begin")?;
     sqlx::query(
-        "INSERT INTO hearing_records (kind, text, score, keyword, speaker, scene, timestamp_ms)          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO hearing_records (kind, text, score, keyword, speaker, scene, media_ref, timestamp_ms)          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
         .bind(kind)
         .bind(text)
@@ -69,6 +73,7 @@ pub async fn insert_hearing_record(
         .bind(keyword)
         .bind(speaker)
         .bind(scene)
+        .bind(media_ref)
         .bind(timestamp_ms)
         .execute(&mut *tx)
         .await
@@ -93,6 +98,7 @@ type HearingRow = (
     String,
     String,
     String,
+    String,
     i64,
 );
 
@@ -106,7 +112,7 @@ pub async fn list_hearing_records(
     let limit = limit.clamp(1, 500);
     let rows: Vec<HearingRow> = if matches!(kind, Some("sound") | Some("voice")) {
         sqlx::query_as(
-            "SELECT id, kind, text, score, keyword, speaker, scene, timestamp_ms \
+            "SELECT id, kind, text, score, keyword, speaker, scene, media_ref, timestamp_ms \
              FROM hearing_records WHERE kind = ?1 ORDER BY timestamp_ms DESC, id DESC LIMIT ?2",
         )
         .bind(kind)
@@ -116,7 +122,7 @@ pub async fn list_hearing_records(
         .context("hearing record: list")?
     } else {
         sqlx::query_as(
-            "SELECT id, kind, text, score, keyword, speaker, scene, timestamp_ms \
+            "SELECT id, kind, text, score, keyword, speaker, scene, media_ref, timestamp_ms \
              FROM hearing_records ORDER BY timestamp_ms DESC, id DESC LIMIT ?1",
         )
         .bind(limit)
@@ -127,15 +133,18 @@ pub async fn list_hearing_records(
     Ok(rows
         .into_iter()
         .map(
-            |(id, kind, text, score, keyword, speaker, scene, timestamp_ms)| HearingRecord {
-                id,
-                kind,
-                text,
-                score,
-                keyword,
-                speaker,
-                scene,
-                timestamp_ms,
+            |(id, kind, text, score, keyword, speaker, scene, media_ref, timestamp_ms)| {
+                HearingRecord {
+                    id,
+                    kind,
+                    text,
+                    score,
+                    keyword,
+                    speaker,
+                    scene,
+                    media_ref,
+                    timestamp_ms,
+                }
             },
         )
         .collect())
@@ -1474,7 +1483,7 @@ mod tests {
     #[tokio::test]
     async fn hearing_record_insert_and_list_roundtrip() {
         let pool = test_pool().await;
-        insert_hearing_record(&pool, "sound", "Dog", Some(0.62), "", "", "", 1_000)
+        insert_hearing_record(&pool, "sound", "Dog", Some(0.62), "", "", "", "", 1_000)
             .await
             .unwrap();
         insert_hearing_record(
@@ -1485,6 +1494,7 @@ mod tests {
             "小蜜蜂",
             "mickey",
             "实时检测：1×person（中间）",
+            "recordings/cam_20261001.mp4",
             2_000,
         )
         .await
@@ -1498,6 +1508,9 @@ mod tests {
         assert_eq!(rows[0].keyword, "小蜜蜂");
         assert_eq!(rows[0].speaker, "mickey");
         assert_eq!(rows[0].score, None);
+        // Correlated-record dimensions round-trip (#30-C).
+        assert_eq!(rows[0].scene, "实时检测：1×person（中间）");
+        assert_eq!(rows[0].media_ref, "recordings/cam_20261001.mp4");
         assert_eq!(rows[1].kind, "sound");
         assert_eq!(rows[1].text, "Dog");
         assert_eq!(rows[1].score, Some(0.62));
@@ -1509,12 +1522,22 @@ mod tests {
     async fn hearing_record_kind_filter_and_limit() {
         let pool = test_pool().await;
         for i in 0..5 {
-            insert_hearing_record(&pool, "sound", "Dog", Some(0.5), "", "", "", i * 10)
+            insert_hearing_record(&pool, "sound", "Dog", Some(0.5), "", "", "", "", i * 10)
                 .await
                 .unwrap();
-            insert_hearing_record(&pool, "voice", "你好", None, "小蜜蜂", "", "", i * 10 + 5)
-                .await
-                .unwrap();
+            insert_hearing_record(
+                &pool,
+                "voice",
+                "你好",
+                None,
+                "小蜜蜂",
+                "",
+                "",
+                "",
+                i * 10 + 5,
+            )
+            .await
+            .unwrap();
         }
 
         let sounds = list_hearing_records(&pool, 100, Some("sound"))
@@ -1538,7 +1561,7 @@ mod tests {
     async fn hearing_record_fifo_cap_prunes_oldest() {
         let pool = test_pool().await;
         for i in 0..(HEARING_RECORDS_CAP + 50) {
-            insert_hearing_record(&pool, "sound", "Knock", Some(0.4), "", "", "", i)
+            insert_hearing_record(&pool, "sound", "Knock", Some(0.4), "", "", "", "", i)
                 .await
                 .unwrap();
         }
@@ -1557,10 +1580,10 @@ mod tests {
     #[tokio::test]
     async fn hearing_record_clear_removes_everything() {
         let pool = test_pool().await;
-        insert_hearing_record(&pool, "sound", "Glass", Some(0.9), "", "", "", 7)
+        insert_hearing_record(&pool, "sound", "Glass", Some(0.9), "", "", "", "", 7)
             .await
             .unwrap();
-        insert_hearing_record(&pool, "voice", "在吗", None, "小蜜蜂", "", "", 8)
+        insert_hearing_record(&pool, "voice", "在吗", None, "小蜜蜂", "", "", "", 8)
             .await
             .unwrap();
         let removed = clear_hearing_records(&pool).await.unwrap();
