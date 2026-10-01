@@ -68,6 +68,10 @@ pub struct AppRouterState {
     /// Live scene grounding for chat (#29): latest detection labels +
     /// VLM alarm descriptions per camera.
     pub grounding: Arc<crate::grounding::GroundingState>,
+    /// Dialogue task tools config (#30-A) — weather lookup gating.
+    pub tools: Arc<streaming::tools::ToolsConfig>,
+    /// Resolved LLM resource tier (#30-E): full|mid|lite|manual.
+    pub llm_tier: Arc<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +172,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let decision = state.decision.clone();
     let meeting = state.meeting.clone();
     let grounding = state.grounding.clone();
+    let tools = state.tools.clone();
+    let llm_tier = state.llm_tier.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -338,6 +344,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(vlm))
         .layer(Extension(decision))
         .layer(Extension(grounding))
+        .layer(Extension(tools))
+        .layer(Extension(llm_tier))
         .layer(Extension(meeting))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
@@ -396,6 +404,8 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
             &streaming::decision::DecisionConfig::default(),
         )),
         grounding: Arc::new(crate::grounding::GroundingState::new()),
+        tools: Arc::new(streaming::tools::ToolsConfig::default()),
+        llm_tier: Arc::new("manual".to_string()),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -456,6 +466,8 @@ pub async fn test_app_with_user() -> Router {
             &streaming::decision::DecisionConfig::default(),
         )),
         grounding: Arc::new(crate::grounding::GroundingState::new()),
+        tools: Arc::new(streaming::tools::ToolsConfig::default()),
+        llm_tier: Arc::new("manual".to_string()),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -653,6 +665,8 @@ pub async fn run(
     decision: Arc<streaming::decision::DecisionEngine>,
     meeting: Arc<streaming::meeting::MeetingEngine>,
     grounding: Arc<crate::grounding::GroundingState>,
+    tools: Arc<streaming::tools::ToolsConfig>,
+    llm_tier: Arc<String>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -677,6 +691,8 @@ pub async fn run(
         decision,
         meeting,
         grounding,
+        tools,
+        llm_tier,
     };
     let app = build_app_with_state(state);
 
@@ -743,6 +759,8 @@ pub async fn run_with_shutdown(
     decision: Arc<streaming::decision::DecisionEngine>,
     meeting: Arc<streaming::meeting::MeetingEngine>,
     grounding: Arc<crate::grounding::GroundingState>,
+    tools: Arc<streaming::tools::ToolsConfig>,
+    llm_tier: Arc<String>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -769,6 +787,8 @@ pub async fn run_with_shutdown(
         decision,
         meeting,
         grounding,
+        tools,
+        llm_tier,
     };
     let app = build_app_with_state(state);
 

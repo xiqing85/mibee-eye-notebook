@@ -1,0 +1,237 @@
+//! Dialogue task tools (SPEC appendix A #30-A): internet lookups whose
+//! results are injected into the chat system turn as a 【联网】 block.
+//!
+//! Weather-first via wttr.in (no API key). Intent-gated — a lookup only
+//! runs when the user's text actually asks about weather AND the host
+//! enabled `[tools] weather_enabled`; every failure is fail-open (no
+//! block, the model honestly says it does not know).
+
+use serde::{Deserialize, Serialize};
+
+/// `[tools]` configuration section (SPEC appendix A #30-A).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// Weather lookup via wttr.in (off by default — outbound policy).
+    pub weather_enabled: bool,
+    /// City name (pinyin or Chinese); empty = feature inert.
+    pub weather_city: String,
+    /// Lookup timeout.
+    pub timeout_secs: u64,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            weather_enabled: false,
+            weather_city: String::new(),
+            timeout_secs: 5,
+        }
+    }
+}
+
+/// `[resources]` configuration section (#30-E).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ResourcesConfig {
+    /// Auto-pick the LLM tier from available memory at startup.
+    pub auto_tier: bool,
+}
+
+/// Resolve the LLM model path for the current tier (#30-E).
+/// Thresholds (available RAM): ≥10 GiB → full, ≥4 GiB → mid, else lite.
+/// Empty tier paths fall back to `model_path`; the resolved tier name is
+/// returned alongside for logging/capabilities.
+pub fn resolve_llm_tier(
+    model_path: &str,
+    model_path_mid: &str,
+    model_path_lite: &str,
+    auto_tier: bool,
+    avail_mib: u64,
+) -> (String, &'static str) {
+    if !auto_tier {
+        return (model_path.to_string(), "manual");
+    }
+    if avail_mib >= 10 * 1024 {
+        (model_path.to_string(), "full")
+    } else if avail_mib >= 4 * 1024 {
+        if model_path_mid.is_empty() {
+            (model_path.to_string(), "mid")
+        } else {
+            (model_path_mid.to_string(), "mid")
+        }
+    } else if model_path_lite.is_empty() {
+        (model_path.to_string(), "lite")
+    } else {
+        (model_path_lite.to_string(), "lite")
+    }
+}
+
+/// Read MemAvailable from /proc/meminfo (MiB). Linux-only product.
+pub fn available_mem_mib() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+            return Some(kb / 1024);
+        }
+    }
+    None
+}
+
+/// Does this user utterance ask about weather? (intent gate)
+#[must_use]
+pub fn weather_intent(text: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "天气",
+        "气温",
+        "温度几",
+        "几度",
+        "下雨",
+        "落雨",
+        "落緊雨",
+        "台风",
+        "颱風",
+        "冷不冷",
+        "热不热",
+        "weather",
+        "temperature",
+        "rain",
+        "forecast",
+    ];
+    let lower = text.to_lowercase();
+    NEEDLES.iter().any(|n| lower.contains(n))
+}
+
+/// One wttr.in `?format=j1` current-condition row (subset).
+#[derive(Debug, Deserialize)]
+struct WttrCurrent {
+    #[serde(rename = "temp_C")]
+    temp_c: String,
+    #[serde(rename = "FeelsLikeC")]
+    feels_c: String,
+    #[serde(rename = "humidity")]
+    humidity: String,
+    #[serde(rename = "windspeedKmph")]
+    wind_kmph: String,
+    #[serde(rename = "weatherDesc")]
+    desc: Vec<WttrDesc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WttrDesc {
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WttrJson {
+    #[serde(rename = "current_condition")]
+    current_condition: Vec<WttrCurrent>,
+}
+
+/// Fetch the current weather for `city` and render the compact 【联网】
+/// payload (Chinese labels; the description stays in wttr.in's English
+/// — the LLM translates it in the reply).
+///
+/// # Errors
+///
+/// Network failure, timeout, or unexpected payload shape.
+pub async fn fetch_weather(city: &str, timeout_secs: u64) -> anyhow::Result<String> {
+    let url = format!("https://wttr.in/{}?format=j1", urlencode(city));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs.max(1)))
+        .user_agent("mibee-eye")
+        .build()?;
+    let body = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let parsed: WttrJson = serde_json::from_str(&body)?;
+    let cur = parsed
+        .current_condition
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("wttr.in: no current_condition"))?;
+    let desc = cur.desc.first().map(|d| d.value.as_str()).unwrap_or("n/a");
+    Ok(format!(
+        "{city} 当前天气：{desc}，气温 {}°C（体感 {}°C），湿度 {}%，风速 {}km/h",
+        cur.temp_c, cur.feels_c, cur.humidity, cur.wind_kmph
+    ))
+}
+
+/// Minimal percent-encoding for the city path segment.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intent_matches_weather_questions_in_three_languages() {
+        assert!(weather_intent("今天天气怎么样"));
+        assert!(weather_intent("听日会唔会落雨呀"));
+        assert!(weather_intent("what's the weather like"));
+        assert!(weather_intent("temperature outside?"));
+        assert!(!weather_intent("现在几点了"));
+        assert!(!weather_intent("讲个笑话"));
+    }
+
+    #[test]
+    fn urlencode_keeps_ascii_and_encodes_cjk() {
+        assert_eq!(urlencode("Guangzhou"), "Guangzhou");
+        assert_eq!(urlencode("广州"), "%E5%B9%BF%E5%B7%9E");
+    }
+
+    #[tokio::test]
+    async fn fetch_weather_parses_wttr_payload() {
+        // Shape test against a captured wttr.in j1 fragment — no network.
+        let payload = r#"{"current_condition":[{"temp_C":"26","FeelsLikeC":"28",
+            "humidity":"70","windspeedKmph":"12",
+            "weatherDesc":[{"value":"Partly cloudy"}]}]}"#;
+        let parsed: WttrJson = serde_json::from_str(payload).unwrap();
+        let cur = &parsed.current_condition[0];
+        assert_eq!(cur.temp_c, "26");
+        assert_eq!(cur.desc[0].value, "Partly cloudy");
+    }
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+
+    #[test]
+    fn tier_thresholds_and_fallbacks() {
+        let (p, t) = resolve_llm_tier("full.gguf", "mid.gguf", "lite.gguf", true, 12 * 1024);
+        assert_eq!((p.as_str(), t), ("full.gguf", "full"));
+        let (p, t) = resolve_llm_tier("full.gguf", "mid.gguf", "lite.gguf", true, 5 * 1024);
+        assert_eq!((p.as_str(), t), ("mid.gguf", "mid"));
+        let (p, t) = resolve_llm_tier("full.gguf", "mid.gguf", "lite.gguf", true, 2 * 1024);
+        assert_eq!((p.as_str(), t), ("lite.gguf", "lite"));
+        // Empty tier path → fall back to the primary model, tier still named.
+        let (p, t) = resolve_llm_tier("full.gguf", "", "", true, 2 * 1024);
+        assert_eq!((p.as_str(), t), ("full.gguf", "lite"));
+        // auto_tier off → manual, primary path.
+        let (p, t) = resolve_llm_tier("full.gguf", "mid.gguf", "lite.gguf", false, 512);
+        assert_eq!((p.as_str(), t), ("full.gguf", "manual"));
+    }
+
+    #[test]
+    fn meminfo_parses_when_present() {
+        if let Some(mib) = available_mem_mib() {
+            assert!(mib > 100, "{mib}");
+        }
+    }
+}

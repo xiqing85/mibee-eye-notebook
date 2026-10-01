@@ -40,58 +40,151 @@ pub struct ChatRequest {
     pub vision: bool,
 }
 
-/// Distinctive Cantonese characters (rare in written Mandarin) — enough
-/// signal to nudge a small model explicitly.
-const CANTONESE_HINT_CHARS: &[char] = &[
-    '咁', '嘅', '唔', '係', '喺', '嗰', '啲', '乜', '嘢', '佢', '嚟', '噉', '咧', '嚿', '掂', '冇',
-];
-
-/// Cheap spoken-language detection for the reply-language nudge. A 0.6 B
-/// model does not reliably follow a generic "reply in the user's
-/// language" instruction — an explicit per-turn hint does much better.
-fn language_hint(user_text: &str) -> Option<&'static str> {
-    let canto = user_text.chars().any(|c| CANTONESE_HINT_CHARS.contains(&c));
-    if canto {
-        return Some("用户使用粤语——请用粤语（广东话）回答。");
-    }
-    // Mostly ASCII letters and spaces → English.
-    let mut letters = 0usize;
-    let mut cjk = 0usize;
-    for c in user_text.chars() {
-        if c.is_ascii_alphabetic() {
-            letters += 1;
-        } else if ('\u{4e00}'..='\u{9fff}').contains(&c) {
-            cjk += 1;
-        }
-    }
-    if letters >= 2 && cjk == 0 {
-        return Some("The user speaks English — reply in English.");
-    }
-    None
+/// The injected context blocks of one dialogue turn (#29 + #30-A).
+/// All optional/fail-open: missing blocks are simply omitted.
+#[derive(Debug, Default, Clone)]
+pub struct TurnContext {
+    /// 【画面】 from [`GroundingState::scene_summary`].
+    pub scene: Option<String>,
+    /// 【本机】 — local clock/system/camera facts (time questions must
+    /// never be answered from model memory).
+    pub local: Option<String>,
+    /// 【联网】 — intent-gated lookup result (weather).
+    pub web: Option<String>,
 }
 
-/// The always-on grounding system turn. `scene` is the 【画面】 block
-/// from [`GroundingState::scene_summary`] (None → omitted, the reply
-/// is then `grounded: "none"`). `user_text` drives the reply-language
-/// hint (Cantonese/English are nudged explicitly — see
-/// [`language_hint`]; Mandarin needs no hint).
-pub fn build_system_turn(scene: Option<&str>, user_text: &str) -> ChatTurn {
+fn language_hint(user_text: &str) -> Option<&'static str> {
+    match streaming::lang::detect(user_text) {
+        streaming::lang::SpokenLang::Cantonese => Some("用户使用粤语——请用粤语（广东话）回答。"),
+        streaming::lang::SpokenLang::English => Some("The user speaks English — reply in English."),
+        streaming::lang::SpokenLang::Mandarin => None,
+    }
+}
+
+/// The always-on grounding system turn assembled from a
+/// [`TurnContext`]. `user_text` drives the reply-language hint
+/// (Cantonese/English are nudged explicitly — a small model does not
+/// follow a generic instruction; Mandarin needs no hint).
+pub fn build_system_turn(ctx: &TurnContext, user_text: &str) -> ChatTurn {
     let mut content = String::from(
         "你是一台家庭安防摄像头上的语音助手。用用户所用的语言回复（普通话、粤语或英语），\
-         回答简洁。\n",
+         回答简洁。涉及时间、天气、画面等问题时，只依据下面给出的【】资料回答；没有资料就\
+         如实说不知道。\n",
     );
     if let Some(hint) = language_hint(user_text) {
         content.push_str(hint);
         content.push('\n');
     }
-    if let Some(scene) = scene {
-        content.push_str("【画面】");
-        content.push_str(scene);
-        content.push('\n');
+    for (tag, block) in [
+        ("【画面】", &ctx.scene),
+        ("【本机】", &ctx.local),
+        ("【联网】", &ctx.web),
+    ] {
+        if let Some(block) = block {
+            content.push_str(tag);
+            content.push_str(block);
+            content.push('\n');
+        }
     }
     ChatTurn {
         role: "system".into(),
         content,
+    }
+}
+
+/// Render the 【本机】 block from gathered facts (pure — testable).
+#[must_use]
+pub fn format_local_block(
+    now_local: &str,
+    weekday: &str,
+    uptime_human: &str,
+    load1: f64,
+    avail_mib: u64,
+    cameras: &str,
+) -> String {
+    format!(
+        "当前时间 {now_local} {weekday}；本机已运行 {uptime_human}；负载 {load1:.2}；\
+         可用内存 {avail_mib} MiB；相机：{cameras}。回答时间/日期问题必须以此为准。"
+    )
+}
+
+/// Gather and render the 【本机】 block (reads /proc + camera rows).
+pub async fn local_block(pool: &SqlitePool) -> String {
+    let now = chrono::Local::now();
+    let weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+    let uptime_human = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|t| {
+            t.split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<f64>().ok())
+        })
+        .map(|secs| {
+            let d = (secs / 86_400.0) as u64;
+            let h = ((secs % 86_400.0) / 3600.0) as u64;
+            let m = ((secs % 3600.0) / 60.0) as u64;
+            if d > 0 {
+                format!("{d}天{h}小时")
+            } else {
+                format!("{h}小时{m}分")
+            }
+        })
+        .unwrap_or_else(|| "未知".into());
+    let load1 = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|t| {
+            t.split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<f64>().ok())
+        })
+        .unwrap_or(0.0);
+    let avail_mib = streaming::tools::available_mem_mib().unwrap_or(0);
+    let cameras = db::list_cameras(pool)
+        .await
+        .map(|cams| {
+            if cams.is_empty() {
+                "无".to_string()
+            } else {
+                cams.iter()
+                    .map(|c| format!("{}({})", c.name, c.status))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            }
+        })
+        .unwrap_or_else(|_| "未知".into());
+    let weekday_idx = now
+        .format("%u")
+        .to_string()
+        .parse::<usize>()
+        .unwrap_or(1)
+        .saturating_sub(1)
+        .min(6);
+    format_local_block(
+        &now.format("%Y-%m-%d %H:%M:%S").to_string(),
+        weekdays[weekday_idx],
+        &uptime_human,
+        load1,
+        avail_mib,
+        &cameras,
+    )
+}
+
+/// Weather lookup for the 【联网】 block (#30-A): intent-gated,
+/// config-enabled, fail-open (errors → None and the model honestly
+/// says it does not know).
+pub async fn web_block(tools: &streaming::tools::ToolsConfig, user_text: &str) -> Option<String> {
+    if !tools.weather_enabled || tools.weather_city.is_empty() {
+        return None;
+    }
+    if !streaming::tools::weather_intent(user_text) {
+        return None;
+    }
+    match streaming::tools::fetch_weather(&tools.weather_city, tools.timeout_secs).await {
+        Ok(report) => Some(report),
+        Err(e) => {
+            tracing::warn!(error = %e, "tools: weather lookup failed (fail-open)");
+            None
+        }
     }
 }
 
@@ -113,11 +206,13 @@ async fn primary_camera_id(pool: &SqlitePool) -> Option<String> {
 }
 
 #[tracing::instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub async fn chat(
     Extension(engine): Extension<Arc<ChatEngine>>,
     Extension(vlm): Extension<Arc<VlmEngine>>,
     Extension(streams): Extension<Arc<StreamManager>>,
     Extension(grounding): Extension<Arc<GroundingState>>,
+    Extension(tools): Extension<Arc<streaming::tools::ToolsConfig>>,
     Extension(pool): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     body: axum::extract::Json<ChatRequest>,
@@ -132,9 +227,14 @@ pub async fn chat(
         )));
     }
     let camera_id = primary_camera_id(&pool).await;
-    let scene = camera_id
-        .as_deref()
-        .and_then(|id| grounding.scene_summary(id, unix_now_ms()));
+    let ctx = TurnContext {
+        scene: camera_id
+            .as_deref()
+            .and_then(|id| grounding.scene_summary(id, unix_now_ms())),
+        local: Some(local_block(&pool).await),
+        web: web_block(&tools, &body.text).await,
+    };
+    let scene = ctx.scene.clone();
 
     // Explicit VLM Q&A (#29): the question itself goes to the vision
     // model with a fresh frame. Any failure falls through to the
@@ -166,7 +266,7 @@ pub async fn chat(
         }
     }
 
-    let mut turns: Vec<ChatTurn> = vec![build_system_turn(scene.as_deref(), &body.text)];
+    let mut turns: Vec<ChatTurn> = vec![build_system_turn(&ctx, &body.text)];
     turns.extend(body.history.iter().take(8).cloned());
     turns.push(ChatTurn {
         role: "user".into(),
@@ -191,9 +291,17 @@ pub async fn chat(
 mod tests {
     use super::*;
 
+    fn ctx(scene: Option<&str>) -> TurnContext {
+        TurnContext {
+            scene: scene.map(String::from),
+            local: Some("当前时间 2026-10-01 21:00:00 周四；本机已运行 3小时5分".into()),
+            web: None,
+        }
+    }
+
     #[test]
-    fn system_turn_carries_language_and_scene() {
-        let t = build_system_turn(Some("实时检测：2×person"), "你看到几个人");
+    fn system_turn_carries_language_scene_and_local() {
+        let t = build_system_turn(&ctx(Some("实时检测：2×person")), "你看到几个人");
         assert_eq!(t.role, "system");
         assert!(t.content.contains("粤语"), "{}", t.content);
         assert!(
@@ -201,33 +309,54 @@ mod tests {
             "{}",
             t.content
         );
-        // Mandarin text gets no explicit nudge beyond the generic line.
+        assert!(
+            t.content.contains("【本机】当前时间 2026-10-01"),
+            "{}",
+            t.content
+        );
         assert!(!t.content.contains("用户使用粤语"), "{}", t.content);
     }
 
     #[test]
-    fn system_turn_without_scene_omits_block() {
-        let t = build_system_turn(None, "你好");
+    fn system_turn_without_scene_omits_that_block_only() {
+        let t = build_system_turn(&ctx(None), "你好");
         assert!(!t.content.contains("【画面】"), "{}", t.content);
+        assert!(t.content.contains("【本机】"), "{}", t.content);
+    }
+
+    #[test]
+    fn web_block_appears_when_fetched() {
+        let mut c = ctx(None);
+        c.web = Some("广州 当前天气：Partly cloudy，气温 26°C".into());
+        let t = build_system_turn(&c, "今天天气如何");
+        assert!(t.content.contains("【联网】广州"), "{}", t.content);
     }
 
     #[test]
     fn cantonese_text_gets_explicit_nudge() {
-        // Only *distinctive* written Cantonese is detectable — sentences
-        // written entirely in shared characters are genuinely ambiguous
-        // and fall back to the generic language instruction.
-        let t = build_system_turn(None, "我唔知道啊");
-        assert!(t.content.contains("用户使用粤语"), "{}", t.content);
-        let t = build_system_turn(None, "佢哋喺边度？");
+        let t = build_system_turn(&ctx(None), "我唔知道啊");
         assert!(t.content.contains("用户使用粤语"), "{}", t.content);
     }
 
     #[test]
     fn english_text_gets_explicit_nudge() {
-        let t = build_system_turn(None, "how many people do you see?");
+        let t = build_system_turn(&ctx(None), "how many people do you see?");
         assert!(t.content.contains("reply in English"), "{}", t.content);
-        // Mixed CJK text never triggers the English hint.
-        let t = build_system_turn(None, "这个 hello 什么意思");
-        assert!(!t.content.contains("reply in English"), "{}", t.content);
+    }
+
+    #[test]
+    fn local_block_formats_the_clock_authoritatively() {
+        let b = format_local_block(
+            "2026-10-01 21:00:00",
+            "周四",
+            "3小时5分",
+            0.42,
+            8192,
+            "客厅(running)",
+        );
+        assert!(b.contains("当前时间 2026-10-01 21:00:00 周四"), "{b}");
+        assert!(b.contains("可用内存 8192 MiB"), "{b}");
+        assert!(b.contains("客厅(running)"), "{b}");
+        assert!(b.contains("必须以此为准"), "{b}");
     }
 }

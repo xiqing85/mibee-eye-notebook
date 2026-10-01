@@ -48,6 +48,7 @@ pub async fn get_capabilities(
     Extension(ocr): Extension<Arc<streaming::ocr::OcrEngine>>,
     Extension(voice): Extension<Arc<streaming::voice::VoiceEngine>>,
     Extension(chat): Extension<Arc<streaming::llm::ChatEngine>>,
+    Extension(llm_tier): Extension<Arc<String>>,
     Extension(decision): Extension<Arc<streaming::decision::DecisionEngine>>,
     Extension(meeting): Extension<Arc<streaming::meeting::MeetingEngine>>,
     Extension(vlm): Extension<Arc<streaming::vlm::VlmEngine>>,
@@ -127,6 +128,8 @@ pub async fn get_capabilities(
         "voice_speakers": voice_speakers_capable(voice.is_active(), voice.speaker_capable()),
         // Local LLM dialogue (`POST /api/chat`).
         "chat": chat.is_active(),
+        // Resource tier the LLM booted into (#30-E).
+        "llm_tier": llm_tier.as_str(),
         // Laya typed-decision triage over voice transcripts (SSE
         // `voice_decision`, SPEC appendix A #26).
         "decision": decision.is_active(),
@@ -209,6 +212,7 @@ mod tests {
             Extension(Arc::new(streaming::llm::ChatEngine::from_config(
                 &streaming::llm::LlmConfig::default(),
             ))),
+            Extension(Arc::new("manual".to_string())),
             Extension(Arc::new(streaming::decision::DecisionEngine::from_config(
                 &streaming::decision::DecisionConfig::default(),
             ))),

@@ -332,6 +332,12 @@ pub struct AppConfig {
     /// default; processing requires a `voice`-feature build.
     #[serde(default)]
     pub meeting: streaming::meeting::MeetingConfig,
+    /// Dialogue task tools (weather lookup; SPEC appendix A #30-A).
+    #[serde(default)]
+    pub tools: streaming::tools::ToolsConfig,
+    /// Resource-adaptive capability tiering (#30-E).
+    #[serde(default)]
+    pub resources: streaming::tools::ResourcesConfig,
 }
 impl AppConfig {
     /// Load configuration from a TOML file.

@@ -23,6 +23,11 @@ pub struct LlmConfig {
     pub max_tokens: u32,
     /// Append `/no_think` to user turns (Qwen3 thinking off).
     pub no_think: bool,
+    /// Mid-tier model for `[resources] auto_tier` (4–10 GiB available;
+    /// empty = reuse `model_path`).
+    pub model_path_mid: String,
+    /// Lite-tier model for auto_tier (<4 GiB; empty = reuse `model_path`).
+    pub model_path_lite: String,
 }
 
 impl Default for LlmConfig {
@@ -34,6 +39,8 @@ impl Default for LlmConfig {
             n_threads: 2,
             max_tokens: 200,
             no_think: true,
+            model_path_mid: String::new(),
+            model_path_lite: String::new(),
         }
     }
 }

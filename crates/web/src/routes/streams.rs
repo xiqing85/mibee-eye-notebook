@@ -388,6 +388,8 @@ mod tests {
                 &streaming::voice::VoiceConfig::default(),
             )),
             grounding: Arc::new(crate::grounding::GroundingState::new()),
+            tools: Arc::new(streaming::tools::ToolsConfig::default()),
+            llm_tier: Arc::new("manual".to_string()),
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),

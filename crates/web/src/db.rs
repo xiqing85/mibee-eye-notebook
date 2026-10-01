@@ -36,6 +36,9 @@ pub struct HearingRecord {
     /// Best-matching enrolled speaker for voice records ("" = unknown;
     /// sound records always "").
     pub speaker: String,
+    /// 【画面】 summary captured when the event fired (#30-C; "" when
+    /// nothing was known / pre-migration rows).
+    pub scene: String,
 }
 
 /// FIFO cap applied on every insert so a chatty microphone can never grow
@@ -45,6 +48,7 @@ pub const HEARING_RECORDS_CAP: i64 = 1000;
 /// Persist one hearing record. Fail-open at the call site: a full or busy
 /// database must never take the audio pipeline down, so callers log the
 /// error and move on.
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_hearing_record(
     pool: &SqlitePool,
     kind: &str,
@@ -52,17 +56,19 @@ pub async fn insert_hearing_record(
     score: Option<f64>,
     keyword: &str,
     speaker: &str,
+    scene: &str,
     timestamp_ms: i64,
 ) -> Result<()> {
     let mut tx = pool.begin().await.context("hearing record: begin")?;
     sqlx::query(
-        "INSERT INTO hearing_records (kind, text, score, keyword, speaker, timestamp_ms)          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO hearing_records (kind, text, score, keyword, speaker, scene, timestamp_ms)          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )
         .bind(kind)
         .bind(text)
         .bind(score)
         .bind(keyword)
         .bind(speaker)
+        .bind(scene)
         .bind(timestamp_ms)
         .execute(&mut *tx)
         .await
@@ -79,7 +85,16 @@ pub async fn insert_hearing_record(
 
 /// Row shape fetched for [`HearingRecord`] (sqlx runtime queries decode
 /// into tuples before mapping).
-type HearingRow = (i64, String, String, Option<f64>, String, String, i64);
+type HearingRow = (
+    i64,
+    String,
+    String,
+    Option<f64>,
+    String,
+    String,
+    String,
+    i64,
+);
 
 /// List hearing records, newest first. `kind` filters when given (must be
 /// `"sound"` or `"voice"`; anything else is treated as no filter).
@@ -91,7 +106,7 @@ pub async fn list_hearing_records(
     let limit = limit.clamp(1, 500);
     let rows: Vec<HearingRow> = if matches!(kind, Some("sound") | Some("voice")) {
         sqlx::query_as(
-            "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
+            "SELECT id, kind, text, score, keyword, speaker, scene, timestamp_ms \
              FROM hearing_records WHERE kind = ?1 ORDER BY timestamp_ms DESC, id DESC LIMIT ?2",
         )
         .bind(kind)
@@ -101,7 +116,7 @@ pub async fn list_hearing_records(
         .context("hearing record: list")?
     } else {
         sqlx::query_as(
-            "SELECT id, kind, text, score, keyword, speaker, timestamp_ms \
+            "SELECT id, kind, text, score, keyword, speaker, scene, timestamp_ms \
              FROM hearing_records ORDER BY timestamp_ms DESC, id DESC LIMIT ?1",
         )
         .bind(limit)
@@ -112,13 +127,14 @@ pub async fn list_hearing_records(
     Ok(rows
         .into_iter()
         .map(
-            |(id, kind, text, score, keyword, speaker, timestamp_ms)| HearingRecord {
+            |(id, kind, text, score, keyword, speaker, scene, timestamp_ms)| HearingRecord {
                 id,
                 kind,
                 text,
                 score,
                 keyword,
                 speaker,
+                scene,
                 timestamp_ms,
             },
         )
@@ -1458,7 +1474,7 @@ mod tests {
     #[tokio::test]
     async fn hearing_record_insert_and_list_roundtrip() {
         let pool = test_pool().await;
-        insert_hearing_record(&pool, "sound", "Dog", Some(0.62), "", "", 1_000)
+        insert_hearing_record(&pool, "sound", "Dog", Some(0.62), "", "", "", 1_000)
             .await
             .unwrap();
         insert_hearing_record(
@@ -1468,6 +1484,7 @@ mod tests {
             None,
             "小蜜蜂",
             "mickey",
+            "实时检测：1×person（中间）",
             2_000,
         )
         .await
@@ -1492,10 +1509,10 @@ mod tests {
     async fn hearing_record_kind_filter_and_limit() {
         let pool = test_pool().await;
         for i in 0..5 {
-            insert_hearing_record(&pool, "sound", "Dog", Some(0.5), "", "", i * 10)
+            insert_hearing_record(&pool, "sound", "Dog", Some(0.5), "", "", "", i * 10)
                 .await
                 .unwrap();
-            insert_hearing_record(&pool, "voice", "你好", None, "小蜜蜂", "", i * 10 + 5)
+            insert_hearing_record(&pool, "voice", "你好", None, "小蜜蜂", "", "", i * 10 + 5)
                 .await
                 .unwrap();
         }
@@ -1521,7 +1538,7 @@ mod tests {
     async fn hearing_record_fifo_cap_prunes_oldest() {
         let pool = test_pool().await;
         for i in 0..(HEARING_RECORDS_CAP + 50) {
-            insert_hearing_record(&pool, "sound", "Knock", Some(0.4), "", "", i)
+            insert_hearing_record(&pool, "sound", "Knock", Some(0.4), "", "", "", i)
                 .await
                 .unwrap();
         }
@@ -1540,10 +1557,10 @@ mod tests {
     #[tokio::test]
     async fn hearing_record_clear_removes_everything() {
         let pool = test_pool().await;
-        insert_hearing_record(&pool, "sound", "Glass", Some(0.9), "", "", 7)
+        insert_hearing_record(&pool, "sound", "Glass", Some(0.9), "", "", "", 7)
             .await
             .unwrap();
-        insert_hearing_record(&pool, "voice", "在吗", None, "小蜜蜂", "", 8)
+        insert_hearing_record(&pool, "voice", "在吗", None, "小蜜蜂", "", "", 8)
             .await
             .unwrap();
         let removed = clear_hearing_records(&pool).await.unwrap();

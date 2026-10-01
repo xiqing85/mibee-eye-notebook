@@ -311,7 +311,17 @@ async fn main() -> anyhow::Result<()> {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0);
-                        grounding_feed.record_detections(&ev.camera_id, now_ms, &ev.detections);
+                        let frame_w = ev
+                            .jpeg
+                            .as_deref()
+                            .and_then(web::grounding::jpeg_dimensions)
+                            .map_or(0, |(w, _)| w);
+                        grounding_feed.record_detections(
+                            &ev.camera_id,
+                            now_ms,
+                            frame_w,
+                            &ev.detections,
+                        );
                         let _ = bridge_tx.send(web::routes::events::CameraEvent::AiDetection {
                             camera_id: ev.camera_id.clone(),
                             detections: ev.detections,
@@ -461,7 +471,21 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let voice_engine = Arc::new(streaming::voice::VoiceEngine::from_config(&config.voice));
-    let chat_engine = Arc::new(streaming::llm::ChatEngine::from_config(&config.llm));
+    // Resource tier (#30-E): resolve the model by available memory when
+    // auto_tier is on; manual otherwise. Log + expose via capabilities.
+    let (llm_model, llm_tier) = streaming::tools::resolve_llm_tier(
+        &config.llm.model_path,
+        &config.llm.model_path_mid,
+        &config.llm.model_path_lite,
+        config.resources.auto_tier,
+        streaming::tools::available_mem_mib().unwrap_or(0),
+    );
+    let mut llm_config = config.llm.clone();
+    if llm_model != llm_config.model_path {
+        llm_config.model_path = llm_model;
+    }
+    tracing::info!(tier = llm_tier, model = %llm_config.model_path, "llm: resource tier resolved");
+    let chat_engine = Arc::new(streaming::llm::ChatEngine::from_config(&llm_config));
     if !chat_engine.is_active() {
         tracing::info!(reason = %chat_engine.inactive_reason(), "llm: chat disabled");
     }
@@ -580,13 +604,22 @@ async fn main() -> anyhow::Result<()> {
         let notifier_slot = Arc::clone(&notifier_slot);
         let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
         let records_pool = pool.clone();
+        let grounding_sound = Arc::clone(&grounding_state);
+        let sound_pool_for_scene = pool.clone();
         tokio::spawn(async move {
             loop {
                 match sound_events.recv().await {
                     Ok(ev) => {
                         // Persistent hearing record (SPEC appendix A #24) —
                         // fail-open: a DB hiccup never touches the alarm
-                        // pipeline.
+                        // pipeline. Scene = what the camera saw when the
+                        // sound fired (#30-C).
+                        let scene = web::db::list_cameras(&sound_pool_for_scene)
+                            .await
+                            .ok()
+                            .and_then(|cams| cams.first().map(|c| c.id.clone()))
+                            .and_then(|id| grounding_sound.scene_summary(&id, ev.timestamp_ms))
+                            .unwrap_or_default();
                         if let Err(e) = web::db::insert_hearing_record(
                             &records_pool,
                             "sound",
@@ -594,6 +627,7 @@ async fn main() -> anyhow::Result<()> {
                             Some(ev.score as f64),
                             "",
                             "",
+                            &scene,
                             ev.timestamp_ms as i64,
                         )
                         .await
@@ -661,6 +695,7 @@ async fn main() -> anyhow::Result<()> {
         let mut track_events = ai_engine.subscribe_tracks();
         let bridge_tx = event_tx.clone();
         let zones_ref = shared_zones.clone();
+        let grounding_zones = Arc::clone(&grounding_state);
         let notifier_slot = Arc::clone(&notifier_slot);
         let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
         tokio::spawn(async move {
@@ -699,6 +734,11 @@ async fn main() -> anyhow::Result<()> {
                                 kind,
                                 track = ze.track_id,
                                 "zones: event"
+                            );
+                            grounding_zones.record_zone_event(
+                                &ze.camera_id,
+                                ze.timestamp_ms,
+                                &ze.zone,
                             );
                             let _ = bridge_tx.send(web::routes::events::CameraEvent::ZoneEvent {
                                 camera_id: ze.camera_id.clone(),
@@ -745,12 +785,27 @@ async fn main() -> anyhow::Result<()> {
         let chat_for_voice = chat_engine.clone();
         let decision_for_voice = decision_engine.clone();
         let grounding_for_voice = Arc::clone(&grounding_state);
+        let tools_for_voice = config.tools.clone();
+        let voice_engine_for_arming = Arc::clone(&voice_engine);
+        // Conversation session (#30-B): the last 120 s of turns give
+        // follow-ups ("再说详细点") their context.
+        type ConversationSlot =
+            Arc<std::sync::Mutex<Option<(std::time::Instant, Vec<streaming::llm::ChatTurn>)>>>;
+        let conversation: ConversationSlot = Arc::new(std::sync::Mutex::new(None));
         let records_pool = pool.clone();
+        let grounding_voice = Arc::clone(&grounding_state);
         tokio::spawn(async move {
             loop {
                 match voice_events.recv().await {
                     Ok(ev) => {
-                        // Persistent hearing record (SPEC appendix A #24).
+                        // Persistent hearing record (SPEC appendix A #24)
+                        // with the correlated scene (#30-C).
+                        let scene = web::db::list_cameras(&records_pool)
+                            .await
+                            .ok()
+                            .and_then(|cams| cams.first().map(|c| c.id.clone()))
+                            .and_then(|id| grounding_voice.scene_summary(&id, ev.timestamp_ms))
+                            .unwrap_or_default();
                         if let Err(e) = web::db::insert_hearing_record(
                             &records_pool,
                             "voice",
@@ -758,6 +813,7 @@ async fn main() -> anyhow::Result<()> {
                             None,
                             &ev.keyword,
                             &ev.speaker,
+                            &scene,
                             ev.timestamp_ms as i64,
                         )
                         .await
@@ -768,6 +824,8 @@ async fn main() -> anyhow::Result<()> {
                             keyword: ev.keyword,
                             transcript: ev.transcript.clone(),
                             speaker: ev.speaker.clone(),
+                            scene: scene.clone(),
+                            follow_up: ev.follow_up,
                             timestamp_ms: ev.timestamp_ms,
                         });
                         // Decision triage (SPEC appendix A #26): one Laya
@@ -824,10 +882,12 @@ async fn main() -> anyhow::Result<()> {
                             && chat_for_voice.is_active()
                             && !ev.transcript.trim().is_empty()
                         {
-                            // Scene grounding (SPEC #29): same context the
-                            // HTTP chat route injects — the spoken answer
-                            // knows what the camera sees and follows the
-                            // user's language (Mandarin/Cantonese/English).
+                            // Scene grounding (SPEC #29) + local/web
+                            // context (#30-A): same blocks the HTTP chat
+                            // route injects — the spoken answer knows what
+                            // the camera sees, the local clock, and (when
+                            // asked + enabled) the weather, and follows the
+                            // user's language.
                             let scene = web::db::list_cameras(&records_pool)
                                 .await
                                 .ok()
@@ -835,24 +895,65 @@ async fn main() -> anyhow::Result<()> {
                                 .and_then(|id| {
                                     grounding_for_voice.scene_summary(&id, unix_now_ms())
                                 });
+                            let ctx = web::routes::chat::TurnContext {
+                                scene,
+                                local: Some(web::routes::chat::local_block(&records_pool).await),
+                                web: web::routes::chat::web_block(&tools_for_voice, &ev.transcript)
+                                    .await,
+                            };
                             let grounded =
-                                if scene.is_some() { "scene" } else { "none" }.to_string();
-                            let turns = vec![
-                                web::routes::chat::build_system_turn(
-                                    scene.as_deref(),
-                                    &ev.transcript,
-                                ),
-                                streaming::llm::ChatTurn {
-                                    role: "user".into(),
-                                    content: ev.transcript.clone(),
-                                },
-                            ];
+                                if ctx.scene.is_some() { "scene" } else { "none" }.to_string();
+                            // Session history: keep the last 8 turns if the
+                            // conversation is younger than 120 s.
+                            let history_turns = {
+                                let mut slot = conversation.lock().expect("conversation slot lock");
+                                let fresh = slot
+                                    .as_ref()
+                                    .is_some_and(|(at, _)| at.elapsed().as_secs() < 120);
+                                if !fresh {
+                                    *slot = None;
+                                }
+                                slot.as_ref()
+                                    .map_or_else(Vec::new, |(_, turns)| turns.clone())
+                            };
+                            let mut turns =
+                                vec![web::routes::chat::build_system_turn(&ctx, &ev.transcript)];
+                            turns.extend(history_turns.iter().take(8).cloned());
+                            turns.push(streaming::llm::ChatTurn {
+                                role: "user".into(),
+                                content: ev.transcript.clone(),
+                            });
                             let engine = chat_for_voice.clone();
                             let tx = bridge_tx.clone();
                             let tts_for_reply = tts_engine.clone();
                             let grounded = grounded.clone();
+                            let conversation_for_reply = Arc::clone(&conversation);
+                            let voice_engine_for_reply = Arc::clone(&voice_engine_for_arming);
+                            let user_turn = ev.transcript.clone();
                             tokio::task::spawn_blocking(move || match engine.complete(&turns) {
                                 Ok(reply) => {
+                                    // Extend the conversation session with
+                                    // this Q/A pair (trimmed to the last 4
+                                    // pairs = 8 turns).
+                                    {
+                                        let mut slot = conversation_for_reply
+                                            .lock()
+                                            .expect("conversation slot lock");
+                                        let entry = slot.get_or_insert_with(|| {
+                                            (std::time::Instant::now(), Vec::new())
+                                        });
+                                        entry.0 = std::time::Instant::now();
+                                        entry.1.push(streaming::llm::ChatTurn {
+                                            role: "user".into(),
+                                            content: user_turn,
+                                        });
+                                        entry.1.push(streaming::llm::ChatTurn {
+                                            role: "assistant".into(),
+                                            content: reply.clone(),
+                                        });
+                                        let keep = entry.1.len().saturating_sub(8);
+                                        entry.1.drain(..keep);
+                                    }
                                     let _ = tx.send(web::routes::events::CameraEvent::ChatReply {
                                         source: "voice".into(),
                                         reply: reply.clone(),
@@ -864,6 +965,11 @@ async fn main() -> anyhow::Result<()> {
                                     {
                                         tracing::warn!(error = %e, "tts: speak failed");
                                     }
+                                    // Continuous dialogue (#30-B): arm the
+                                    // VAD follow-up window only after the
+                                    // reply finished playing — earlier would
+                                    // let the mic capture our own TTS.
+                                    voice_engine_for_reply.arm_follow_up();
                                 }
                                 Err(e) => {
                                     tracing::warn!(error = %e, "llm: voice auto-reply failed");
@@ -1219,6 +1325,8 @@ async fn main() -> anyhow::Result<()> {
         decision_engine,
         meeting_engine,
         grounding_state,
+        Arc::new(config.tools.clone()),
+        Arc::new(llm_tier.to_string()),
     )
     .await?;
 

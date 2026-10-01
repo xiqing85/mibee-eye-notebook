@@ -30,6 +30,10 @@ struct CameraGrounding {
     /// Unix-ms stamp + text of the last VLM alarm description.
     vlm_ts_ms: Option<u64>,
     vlm_text: Option<String>,
+    /// Last zone event (name + ts) — recent zone activity feeds the
+    /// scene block for multi-dimensional visual judgment.
+    zone_ts_ms: Option<u64>,
+    zone_text: Option<String>,
 }
 
 /// Shared, lock-guarded per-camera grounding state.
@@ -38,10 +42,27 @@ pub struct GroundingState {
     cameras: Mutex<HashMap<String, CameraGrounding>>,
 }
 
-fn render_labels(detections: &[Detection]) -> String {
-    let mut counts: HashMap<&str, u32> = HashMap::new();
+/// Horizontal position bucket of a bbox center (#30 vision context:
+/// lets the model answer WHERE, not just WHAT). `frame_w` 0 → no suffix.
+fn position_suffix(d: &Detection, frame_w: u32) -> &'static str {
+    if frame_w == 0 {
+        return "";
+    }
+    let center = (d.bbox[0] + d.bbox[2]) as f64 / 2.0 / f64::from(frame_w);
+    if center < 0.34 {
+        "（左侧）"
+    } else if center > 0.66 {
+        "（右侧）"
+    } else {
+        "（中间）"
+    }
+}
+
+fn render_labels(detections: &[Detection], frame_w: u32) -> String {
+    let mut counts: HashMap<String, u32> = HashMap::new();
     for d in detections {
-        *counts.entry(d.label.as_str()).or_insert(0) += 1;
+        let key = format!("{}{}", d.label, position_suffix(d, frame_w));
+        *counts.entry(key).or_insert(0) += 1;
     }
     let mut parts: Vec<String> = counts
         .into_iter()
@@ -57,9 +78,16 @@ impl GroundingState {
         Self::default()
     }
 
-    /// Feed from the AI detection loop (every event, cheap).
-    pub fn record_detections(&self, camera_id: &str, ts_ms: u64, detections: &[Detection]) {
-        let labels = render_labels(detections);
+    /// Feed from the AI detection loop (every event, cheap). `frame_w`
+    /// is the capture width for position buckets (0 = skip positions).
+    pub fn record_detections(
+        &self,
+        camera_id: &str,
+        ts_ms: u64,
+        frame_w: u32,
+        detections: &[Detection],
+    ) {
+        let labels = render_labels(detections, frame_w);
         let mut cams = self.cameras.lock().expect("grounding lock");
         let cam = cams
             .entry(camera_id.to_string())
@@ -68,6 +96,8 @@ impl GroundingState {
                 labels: String::new(),
                 vlm_ts_ms: None,
                 vlm_text: None,
+                zone_ts_ms: None,
+                zone_text: None,
             });
         // Only move the timestamp forward — events can arrive out of
         // order across threads.
@@ -87,10 +117,32 @@ impl GroundingState {
                 labels: String::new(),
                 vlm_ts_ms: None,
                 vlm_text: None,
+                zone_ts_ms: None,
+                zone_text: None,
             });
         if cam.vlm_ts_ms.is_none_or(|old| ts_ms >= old) {
             cam.vlm_ts_ms = Some(ts_ms);
             cam.vlm_text = Some(text.to_string());
+        }
+    }
+
+    /// Feed from the zone-event bridge (#30): recent zone triggers
+    /// become part of the scene ("区域「门口」1 分钟内有事件").
+    pub fn record_zone_event(&self, camera_id: &str, ts_ms: u64, name: &str) {
+        let mut cams = self.cameras.lock().expect("grounding lock");
+        let cam = cams
+            .entry(camera_id.to_string())
+            .or_insert(CameraGrounding {
+                detection_ts_ms: 0,
+                labels: String::new(),
+                vlm_ts_ms: None,
+                vlm_text: None,
+                zone_ts_ms: None,
+                zone_text: None,
+            });
+        if cam.zone_ts_ms.is_none_or(|old| ts_ms >= old) {
+            cam.zone_ts_ms = Some(ts_ms);
+            cam.zone_text = Some(name.to_string());
         }
     }
 
@@ -111,12 +163,55 @@ impl GroundingState {
             let age_s = now_ms.saturating_sub(ts) / 1000;
             parts.push(format!("画面描述（{age_s} 秒前，可能滞后）：{text}"));
         }
+        if let (Some(ts), Some(text)) = (cam.zone_ts_ms, cam.zone_text.as_deref())
+            && now_ms.saturating_sub(ts) <= 60_000
+        {
+            parts.push(format!("区域「{text}」1 分钟内有事件"));
+        }
         if parts.is_empty() {
             None
         } else {
             Some(parts.join("；"))
         }
     }
+}
+
+/// Parse the pixel dimensions out of a baseline/progressive JPEG's SOF
+/// marker (enough for position buckets — no decode).
+#[must_use]
+pub fn jpeg_dimensions(jpeg: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 2usize; // skip FFD8
+    while i + 9 < jpeg.len() {
+        if jpeg[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = jpeg[i + 1];
+        // Standalone markers without a length field.
+        if marker == 0xD8 || (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
+            i += 2;
+            continue;
+        }
+        if i + 4 > jpeg.len() {
+            return None;
+        }
+        let seg_len = u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]) as usize;
+        // SOF0..SOF15 except DHT (C4) / DAC (CC) / RST (C0 covers).
+        let is_sof =
+            (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+        if is_sof {
+            if i + 9 <= jpeg.len() {
+                let h = u16::from_be_bytes([jpeg[i + 5], jpeg[i + 6]]);
+                let w = u16::from_be_bytes([jpeg[i + 7], jpeg[i + 8]]);
+                if w > 0 && h > 0 {
+                    return Some((u32::from(w), u32::from(h)));
+                }
+            }
+            return None;
+        }
+        i += 2 + seg_len;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -140,7 +235,12 @@ mod tests {
     #[test]
     fn labels_are_counted_and_sorted() {
         let g = GroundingState::new();
-        g.record_detections("0", 5000, &[det("person"), det("person"), det("chair")]);
+        g.record_detections(
+            "0",
+            5000,
+            640,
+            &[det("person"), det("person"), det("chair")],
+        );
         let s = g.scene_summary("0", 8000).expect("scene");
         assert!(s.contains("2×person"), "{s}");
         assert!(s.contains("1×chair"), "{s}");
@@ -154,7 +254,7 @@ mod tests {
     #[test]
     fn detections_expire_but_vlm_survives() {
         let g = GroundingState::new();
-        g.record_detections("0", 1000, &[det("person")]);
+        g.record_detections("0", 1000, 640, &[det("person")]);
         g.record_vlm_description("0", 1200, "一个人坐在桌前");
         // Fresh: both parts present.
         let s = g.scene_summary("0", 2000).expect("scene");
@@ -171,8 +271,8 @@ mod tests {
     #[test]
     fn out_of_order_events_do_not_rewind() {
         let g = GroundingState::new();
-        g.record_detections("0", 5000, &[det("person")]);
-        g.record_detections("0", 3000, &[det("dog")]); // stale arrival
+        g.record_detections("0", 5000, 640, &[det("person")]);
+        g.record_detections("0", 3000, 640, &[det("dog")]); // stale arrival
         let s = g.scene_summary("0", 6000).expect("scene");
         assert!(s.contains("person") && !s.contains("dog"), "{s}");
     }
@@ -180,9 +280,45 @@ mod tests {
     #[test]
     fn cameras_are_independent() {
         let g = GroundingState::new();
-        g.record_detections("a", 1000, &[det("person")]);
+        g.record_detections("a", 1000, 640, &[det("person")]);
         assert!(g.scene_summary("a", 1500).is_some());
         assert_eq!(g.scene_summary("b", 1500), None);
+    }
+
+    #[test]
+    fn positions_bucket_by_frame_width() {
+        let g = GroundingState::new();
+        let mut left = det("person");
+        left.bbox = [0, 0, 100, 100];
+        let mut right = det("chair");
+        right.bbox = [600, 0, 630, 100];
+        g.record_detections("0", 1000, 640, &[left, right]);
+        let s = g.scene_summary("0", 2000).expect("scene");
+        assert!(s.contains("person（左侧）"), "{s}");
+        assert!(s.contains("chair（右侧）"), "{s}");
+        let g = GroundingState::new();
+        g.record_detections("0", 1000, 0, &[det("person")]);
+        let s = g.scene_summary("0", 2000).expect("scene");
+        assert!(s.contains("1×person") && !s.contains("（"), "{s}");
+    }
+
+    #[test]
+    fn zone_event_joins_scene_and_expires() {
+        let g = GroundingState::new();
+        g.record_zone_event("0", 1000, "门口");
+        let s = g.scene_summary("0", 5000).expect("scene");
+        assert!(s.contains("区域「门口」"), "{s}");
+        assert_eq!(g.scene_summary("0", 121_000), None);
+    }
+
+    #[test]
+    fn jpeg_dimensions_reads_sof() {
+        // Hand-built stream: SOI + one filler segment + SOF0 640x480.
+        let mut jpeg = vec![0xFF, 0xD8];
+        jpeg.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]); // APP0 len 4
+        jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0xE0, 0x02, 0x80, 0x03]);
+        assert_eq!(jpeg_dimensions(&jpeg), Some((640, 480)));
+        assert_eq!(jpeg_dimensions(&[0x00, 0x01, 0x02]), None);
     }
 
     #[test]

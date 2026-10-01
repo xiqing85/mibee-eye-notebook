@@ -19,6 +19,7 @@ pub mod encoder;
 /// Fragmented-MP4 remuxer for MSE / `MediaSource` playback.
 pub mod fmp4;
 pub mod hub;
+pub mod lang;
 /// Local LLM dialogue (llama.cpp; `llm` feature).
 pub mod llm;
 /// On-demand meeting mode (record → diarize → transcribe; SPEC #27).
@@ -32,6 +33,7 @@ pub mod output;
 pub mod resource;
 pub mod source;
 /// TTS playback via the sherpa-onnx CLI subprocess (GPL isolation).
+pub mod tools;
 pub mod tts;
 /// Voice interaction (wake word + offline transcription; `voice` feature).
 pub mod vlm;
