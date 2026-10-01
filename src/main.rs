@@ -1326,7 +1326,7 @@ async fn main() -> anyhow::Result<()> {
         meeting_engine,
         grounding_state,
         Arc::new(config.tools.clone()),
-        Arc::new(llm_tier.to_string()),
+        Arc::new(web::routes::capabilities::LlmTier(llm_tier.to_string())),
     )
     .await?;
 

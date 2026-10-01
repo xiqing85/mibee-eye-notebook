@@ -389,7 +389,7 @@ mod tests {
             )),
             grounding: Arc::new(crate::grounding::GroundingState::new()),
             tools: Arc::new(streaming::tools::ToolsConfig::default()),
-            llm_tier: Arc::new("manual".to_string()),
+            llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),
