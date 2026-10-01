@@ -41,14 +41,19 @@ pub struct CapabilitiesResponse {
 /// Probing is cheap (a handful of sysfs/`/proc` reads) but not free, so the
 /// result is cached for the process lifetime via a [`std::sync::OnceLock`].
 #[allow(clippy::too_many_arguments)]
+/// Resolved LLM resource tier (#30-E) as an Extension-safe newtype.
+#[derive(Debug, Clone)]
+pub struct LlmTier(pub String);
+
 #[tracing::instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub async fn get_capabilities(
     Extension(ai): Extension<Arc<AiEngine>>,
     Extension(audio_ai): Extension<Arc<streaming::audio_ai::AudioAiEngine>>,
     Extension(ocr): Extension<Arc<streaming::ocr::OcrEngine>>,
     Extension(voice): Extension<Arc<streaming::voice::VoiceEngine>>,
     Extension(chat): Extension<Arc<streaming::llm::ChatEngine>>,
-    Extension(llm_tier): Extension<Arc<String>>,
+    Extension(llm_tier): Extension<Arc<LlmTier>>,
     Extension(decision): Extension<Arc<streaming::decision::DecisionEngine>>,
     Extension(meeting): Extension<Arc<streaming::meeting::MeetingEngine>>,
     Extension(vlm): Extension<Arc<streaming::vlm::VlmEngine>>,
@@ -129,7 +134,7 @@ pub async fn get_capabilities(
         // Local LLM dialogue (`POST /api/chat`).
         "chat": chat.is_active(),
         // Resource tier the LLM booted into (#30-E).
-        "llm_tier": llm_tier.as_str(),
+        "llm_tier": llm_tier.0.as_str(),
         // Laya typed-decision triage over voice transcripts (SSE
         // `voice_decision`, SPEC appendix A #26).
         "decision": decision.is_active(),
@@ -212,7 +217,9 @@ mod tests {
             Extension(Arc::new(streaming::llm::ChatEngine::from_config(
                 &streaming::llm::LlmConfig::default(),
             ))),
-            Extension(Arc::new("manual".to_string())),
+            Extension(Arc::new(crate::routes::capabilities::LlmTier(
+                "manual".into(),
+            ))),
             Extension(Arc::new(streaming::decision::DecisionEngine::from_config(
                 &streaming::decision::DecisionConfig::default(),
             ))),

@@ -71,7 +71,9 @@ pub struct AppRouterState {
     /// Dialogue task tools config (#30-A) — weather lookup gating.
     pub tools: Arc<streaming::tools::ToolsConfig>,
     /// Resolved LLM resource tier (#30-E): full|mid|lite|manual.
-    pub llm_tier: Arc<String>,
+    /// Newtype — a bare `Arc<String>` Extension would collide with the
+    /// advertised-host extension of the same type.
+    pub llm_tier: Arc<crate::routes::capabilities::LlmTier>,
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +407,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         )),
         grounding: Arc::new(crate::grounding::GroundingState::new()),
         tools: Arc::new(streaming::tools::ToolsConfig::default()),
-        llm_tier: Arc::new("manual".to_string()),
+        llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -467,7 +469,7 @@ pub async fn test_app_with_user() -> Router {
         )),
         grounding: Arc::new(crate::grounding::GroundingState::new()),
         tools: Arc::new(streaming::tools::ToolsConfig::default()),
-        llm_tier: Arc::new("manual".to_string()),
+        llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -666,7 +668,7 @@ pub async fn run(
     meeting: Arc<streaming::meeting::MeetingEngine>,
     grounding: Arc<crate::grounding::GroundingState>,
     tools: Arc<streaming::tools::ToolsConfig>,
-    llm_tier: Arc<String>,
+    llm_tier: Arc<crate::routes::capabilities::LlmTier>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -760,7 +762,7 @@ pub async fn run_with_shutdown(
     meeting: Arc<streaming::meeting::MeetingEngine>,
     grounding: Arc<crate::grounding::GroundingState>,
     tools: Arc<streaming::tools::ToolsConfig>,
-    llm_tier: Arc<String>,
+    llm_tier: Arc<crate::routes::capabilities::LlmTier>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
