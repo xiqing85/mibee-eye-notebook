@@ -173,6 +173,10 @@ pub struct StreamManager {
     db: Option<SqlitePool>,
     /// Shared local-recording pause gate (platform RecordCmd via GB28181).
     recording_pause_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Per-camera published MP4 segment slots (#30-C media_ref): the
+    /// FileOutput of each recording stream writes its current segment
+    /// path here; hearing records resolve the covering file.
+    segment_slots: Arc<std::sync::Mutex<HashMap<String, streaming::output::SegmentSlot>>>,
     /// Shared IFrameCmd latch consumed by each camera's encode loop.
     force_idr_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Shared GB FrameMirror runtime flags (DeviceConfig A.2.3.2.9),
@@ -194,6 +198,7 @@ impl StreamManager {
             advertised_host: "localhost".to_string(),
             db: None,
             recording_pause_flag: None,
+            segment_slots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             force_idr_flag: None,
             gb_flips: None,
             ai: None,
@@ -209,6 +214,7 @@ impl StreamManager {
             advertised_host: "localhost".to_string(),
             db: None,
             recording_pause_flag: None,
+            segment_slots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             force_idr_flag: None,
             gb_flips: None,
             ai: None,
@@ -227,6 +233,7 @@ impl StreamManager {
             advertised_host,
             db: None,
             recording_pause_flag: None,
+            segment_slots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             force_idr_flag: None,
             gb_flips: None,
             ai: None,
@@ -246,6 +253,7 @@ impl StreamManager {
             advertised_host,
             db: Some(db),
             recording_pause_flag: None,
+            segment_slots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             force_idr_flag: None,
             gb_flips: None,
             ai: None,
@@ -657,6 +665,13 @@ impl StreamManager {
                             if let Some(flag) = &self.recording_pause_flag {
                                 output = output.with_pause_flag(Arc::clone(flag));
                             }
+                            let slot: streaming::output::SegmentSlot =
+                                Arc::new(parking_lot::Mutex::new(None));
+                            output = output.with_segment_slot(Arc::clone(&slot));
+                            self.segment_slots
+                                .lock()
+                                .expect("segment slot registry")
+                                .insert(camera_id.clone(), slot);
                             // Attach the live dimensions handle so the muxer's
                             // track metadata reflects the real negotiated
                             // resolution instead of the 1280x720 default.
@@ -819,6 +834,53 @@ impl StreamManager {
     ///
     /// Returns an error if the camera ID is not found.
     #[tracing::instrument(skip_all, fields(camera_id))]
+    /// Adopt a shared segment registry (the host creates it before the
+    /// audio bridges spawn and hands the same Arc to the manager).
+    #[must_use]
+    pub fn with_segment_slots(
+        mut self,
+        slots: Arc<std::sync::Mutex<HashMap<String, streaming::output::SegmentSlot>>>,
+    ) -> Self {
+        self.segment_slots = slots;
+        self
+    }
+
+    /// Registry lookup for hosts that hold the shared registry before
+    /// the manager exists (hearing bridges): same semantics as
+    /// [`StreamManager::segment_covering`].
+    pub fn segment_covering(
+        registry: &std::sync::Mutex<HashMap<String, streaming::output::SegmentSlot>>,
+        camera_id: &str,
+        ts_ms: u64,
+    ) -> Option<String> {
+        let slot = {
+            let slots = registry.lock().expect("segment slot registry");
+            Arc::clone(slots.get(camera_id)?)
+        };
+        let guard = slot.lock();
+        match guard.as_ref() {
+            Some((path, opened_ms)) if ts_ms >= *opened_ms => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    /// The MP4 segment file covering `ts_ms` for a recording stream
+    /// (#30-C `media_ref`): the segment currently open, when it opened
+    /// at or before the timestamp. None when the camera is not
+    /// recording or the timestamp predates the current segment
+    /// (rotation race — fail open to no reference).
+    pub fn segment_covering_for(&self, camera_id: &str, ts_ms: u64) -> Option<String> {
+        let slot = {
+            let slots = self.segment_slots.lock().expect("segment slot registry");
+            Arc::clone(slots.get(camera_id)?)
+        };
+        let guard = slot.lock();
+        match guard.as_ref() {
+            Some((path, opened_ms)) if ts_ms >= *opened_ms => Some(path.clone()),
+            _ => None,
+        }
+    }
+
     pub async fn stop_stream(&self, camera_id: &str) -> Result<StreamInfo> {
         // Remove the handle from tracking first so concurrent calls see it gone.
         let mut handle = {
@@ -827,6 +889,13 @@ impl StreamManager {
                 .remove(camera_id)
                 .ok_or_else(|| anyhow::anyhow!("no active stream for camera {camera_id}"))?
         };
+
+        // Recording correlation ends with the stream — later events
+        // must not point at the dead stream's last segment.
+        self.segment_slots
+            .lock()
+            .expect("segment slot registry")
+            .remove(camera_id);
 
         // Signal stop.
         if let Some(tx) = handle.stop_tx.take() {
@@ -1126,6 +1195,43 @@ fn parse_substream_config(
         fps,
         bitrate_bps,
     }))
+}
+
+#[cfg(test)]
+mod segment_slot_tests {
+    use super::*;
+
+    fn registry_with(
+        cam: &str,
+        entry: Option<(&str, u64)>,
+    ) -> std::sync::Mutex<HashMap<String, streaming::output::SegmentSlot>> {
+        let mut map = HashMap::new();
+        if let Some((path, opened)) = entry {
+            let slot: streaming::output::SegmentSlot =
+                Arc::new(parking_lot::Mutex::new(Some((path.to_string(), opened))));
+            map.insert(cam.to_string(), slot);
+        }
+        std::sync::Mutex::new(map)
+    }
+
+    #[test]
+    fn covering_returns_segment_when_ts_fits() {
+        let reg = registry_with("cam0", Some(("recordings/cam0_20261001.mp4", 1_000)));
+        let got = StreamManager::segment_covering(&reg, "cam0", 5_000);
+        assert_eq!(got.as_deref(), Some("recordings/cam0_20261001.mp4"));
+    }
+
+    #[test]
+    fn ts_before_open_or_unknown_camera_is_none() {
+        // Rotation race: event older than the current segment's open.
+        let reg = registry_with("cam0", Some(("recordings/late.mp4", 10_000)));
+        assert_eq!(StreamManager::segment_covering(&reg, "cam0", 9_999), None);
+        // Camera not recording / unknown.
+        let reg = registry_with("cam0", None);
+        assert_eq!(StreamManager::segment_covering(&reg, "cam0", 99_999), None);
+        let reg = registry_with("cam0", Some(("x.mp4", 1)));
+        assert_eq!(StreamManager::segment_covering(&reg, "other", 5), None);
+    }
 }
 
 #[cfg(test)]

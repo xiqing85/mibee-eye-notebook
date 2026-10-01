@@ -15,6 +15,7 @@ pub mod rtmp;
 pub mod rtsp;
 
 pub use file::FileOutput;
+pub use file::SegmentSlot;
 #[cfg(test)]
 pub use mock::MockOutput;
 pub use rtmp::RtmpOutput;

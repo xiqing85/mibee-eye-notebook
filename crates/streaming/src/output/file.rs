@@ -27,6 +27,13 @@ use crate::source::MediaFrame;
 
 /// MP4 segment archive output.
 ///
+/// Shared "current segment" publication (SPEC #30-C `media_ref`): every
+/// segment open writes `(path, opened_at_unix_ms)`; readers answer
+/// "which segment file covers timestamp T". A single slot is enough —
+/// events are read at fire time, so the segment open *now* is the one
+/// that covered them (rotation races fail open to empty).
+pub type SegmentSlot = Arc<Mutex<Option<(String, u64)>>>;
+
 /// Writes H.264 NAL units into rolling MP4 segment files via muxide. Audio
 /// frames are currently dropped (TODO: wire once AAC encoding is exercised).
 pub struct FileOutput {
@@ -65,6 +72,8 @@ pub struct FileOutput {
     was_paused: bool,
     /// Frame counter — used to throttle pruning checks.
     frame_count: u64,
+    /// Published segment reference for media_ref lookups (#30-C).
+    segment_slot: Option<SegmentSlot>,
 }
 
 struct ActiveSegment {
@@ -103,7 +112,14 @@ impl FileOutput {
             pause_flag: None,
             was_paused: false,
             frame_count: 0,
+            segment_slot: None,
         }
+    }
+
+    /// Publish the current segment path to a shared slot (#30-C).
+    pub fn with_segment_slot(mut self, slot: SegmentSlot) -> Self {
+        self.segment_slot = Some(slot);
+        self
     }
 
     /// Set the video track dimensions and frame rate.
@@ -198,6 +214,9 @@ impl FileOutput {
         // Format as YYYYmmddHHMMSS using a simple libc-free conversion.
         let stamp = format_local_timestamp(now);
         let filename = format!("{}/{}_{}.mp4", self.path, self.camera_id, stamp);
+        if let Some(slot) = &self.segment_slot {
+            *slot.lock() = Some((filename.clone(), now * 1000));
+        }
 
         let file = std::fs::File::create(&filename)
             .with_context(|| format!("failed to create segment file {filename}"))?;

@@ -75,12 +75,22 @@ mod tests {
     async fn records_roundtrip_filter_and_clear() {
         let (pool, _auth) = crate::db::create_test_dbs().await;
         crate::db::run_migrations(&pool).await.expect("migrations");
-        db::insert_hearing_record(&pool, "sound", "Dog", Some(0.7), "", "", "", 1_000)
+        db::insert_hearing_record(&pool, "sound", "Dog", Some(0.7), "", "", "", "", 1_000)
             .await
             .unwrap();
-        db::insert_hearing_record(&pool, "voice", "开灯", None, "小蜜蜂", "mickey", "", 2_000)
-            .await
-            .unwrap();
+        db::insert_hearing_record(
+            &pool,
+            "voice",
+            "开灯",
+            None,
+            "小蜜蜂",
+            "mickey",
+            "",
+            "",
+            2_000,
+        )
+        .await
+        .unwrap();
         let app = app_with(pool.clone()).await;
 
         // Default list: newest first, both kinds, full record shape.
