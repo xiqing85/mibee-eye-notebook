@@ -1024,10 +1024,17 @@ async fn main() -> anyhow::Result<()> {
                                         grounded,
                                         timestamp_ms: unix_now_ms(),
                                     });
-                                    if tts_for_reply.is_active()
-                                        && let Err(e) = tts_for_reply.speak(&reply)
-                                    {
-                                        tracing::warn!(error = %e, "tts: speak failed");
+                                    // Playback self-mute: while this reply
+                                    // is on the speaker the wake-word
+                                    // worker stays deaf — a spoken 小蜜蜂
+                                    // in the reply would re-wake the
+                                    // device into a self-talk loop.
+                                    if tts_for_reply.is_active() {
+                                        voice_engine_for_reply.begin_playback_mute();
+                                        if let Err(e) = tts_for_reply.speak(&reply) {
+                                            tracing::warn!(error = %e, "tts: speak failed");
+                                        }
+                                        voice_engine_for_reply.end_playback_mute();
                                     }
                                     // Continuous dialogue (#30-B): arm the
                                     // VAD follow-up window only after the

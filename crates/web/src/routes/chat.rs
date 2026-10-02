@@ -70,7 +70,8 @@ fn language_hint(user_text: &str) -> Option<&'static str> {
 /// follow a generic instruction; Mandarin needs no hint).
 pub fn build_system_turn(ctx: &TurnContext, user_text: &str) -> ChatTurn {
     let mut content = String::from(
-        "你是一台家庭安防摄像头上的语音助手。用用户所用的语言回复（普通话、粤语或英语），\
+        "你是一台家庭安防摄像头上的语音助手，名叫小蜜蜂（唤醒词就是你的名字，\
+         不要说自己是其他助手）。用用户所用的语言回复（普通话、粤语或英语），\
          回答简洁。涉及时间、天气、画面等问题时，只依据下面给出的【】资料回答；没有资料就\
          如实说不知道。\n",
     );
