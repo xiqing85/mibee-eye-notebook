@@ -223,6 +223,13 @@ pub struct VoiceEngine {
     /// runtime. 0 disables arming; the VAD engine itself is still built
     /// from the boot-time config value.
     follow_up_window_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Playback self-mute deadline (unix-ms; 0 = mic open). Latched by
+    /// the host around `TtsEngine::speak` so the wake-word worker stays
+    /// deaf while the device's own reply plays — a spoken 小蜜蜂 in a
+    /// reply otherwise re-wakes the device and sustains a self-talk
+    /// loop (observed live 2026-10-02).
+    #[cfg_attr(not(feature = "voice"), allow(dead_code))]
+    playback_mute_until_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl VoiceEngine {
@@ -253,6 +260,7 @@ impl VoiceEngine {
                     follow_up_window_ms: Arc::new(std::sync::atomic::AtomicU64::new(
                         (config.follow_up_window_secs.max(0.0) * 1000.0) as u64,
                     )),
+                    playback_mute_until_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }
             }
             #[cfg(not(feature = "voice"))]
@@ -272,6 +280,7 @@ impl VoiceEngine {
                     follow_up_window_ms: Arc::new(std::sync::atomic::AtomicU64::new(
                         (config.follow_up_window_secs.max(0.0) * 1000.0) as u64,
                     )),
+                    playback_mute_until_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 }
             }
         }
@@ -380,6 +389,34 @@ impl VoiceEngine {
     #[must_use]
     pub fn follow_up_window_share(&self) -> Arc<std::sync::atomic::AtomicU64> {
         Arc::clone(&self.follow_up_window_ms)
+    }
+
+    /// Deafen the wake-word worker while the device's own reply plays.
+    /// The KWS hears any spoken 小蜜蜂 in our TTS output and re-wakes
+    /// the device, sustaining a self-talk loop (observed live
+    /// 2026-10-02: the LLM echoed a garbled self-transcript into
+    /// 「我話小蜜蜂」×50 and every repetition re-triggered the wake).
+    /// The deadline carries a generous hard cap so a hung `speak`
+    /// cannot mute the mic forever; the worker clears it on expiry.
+    pub fn begin_playback_mute(&self) {
+        let until = unix_now_ms() + 120_000;
+        self.playback_mute_until_ms
+            .store(until, std::sync::atomic::Ordering::SeqCst);
+        info!("voice: playback self-mute latched");
+    }
+
+    /// Re-open the mic after [`VoiceEngine::begin_playback_mute`].
+    pub fn end_playback_mute(&self) {
+        self.playback_mute_until_ms
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        info!("voice: playback self-mute released");
+    }
+
+    /// Shared handle to the playback self-mute deadline — the wake-word
+    /// worker gates KWS/VAD input on it.
+    #[must_use]
+    pub fn playback_mute_share(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.playback_mute_until_ms)
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<VoiceEvent> {
@@ -648,6 +685,7 @@ impl VoiceEngine {
             let event_tx = self.event_tx.clone();
             let speakers = Arc::clone(&self.speakers);
             let follow_until_ms = Arc::clone(&self.follow_until_ms);
+            let playback_mute_until_ms = Arc::clone(&self.playback_mute_until_ms);
             info!("voice: wake-word worker started");
             tokio::spawn(async move {
                 // The KWS stream is single-owner; the decode loop runs on
@@ -666,6 +704,24 @@ impl VoiceEngine {
                             let samples: Vec<f32> =
                                 chunk.samples.iter().map(|&s| s as f32 / 32_768.0).collect();
                             ring.push(&samples);
+                            // Playback self-mute: while the device's own
+                            // reply is on the speaker, stay deaf to KWS and
+                            // VAD alike — a spoken wake word in our TTS
+                            // output otherwise re-wakes the device (the
+                            // 2026-10-02 self-talk loop). The expired-cap
+                            // case re-opens the mic instead of trusting a
+                            // stale deadline.
+                            let mute_until =
+                                playback_mute_until_ms.load(std::sync::atomic::Ordering::SeqCst);
+                            if mute_until > 0 {
+                                if unix_now_ms() >= mute_until {
+                                    playback_mute_until_ms
+                                        .store(0, std::sync::atomic::Ordering::SeqCst);
+                                    info!("voice: playback self-mute expired, mic re-opened");
+                                } else {
+                                    continue;
+                                }
+                            }
                             // Follow-up window (#30-B): VAD endpointing
                             // replaces the wake word until the window
                             // closes. Each completed segment re-extends the
@@ -1206,6 +1262,48 @@ mod tests {
         // Inactive engine (no models): arming must stay a safe no-op
         // whatever the share holds.
         e.arm_follow_up();
+    }
+
+    #[test]
+    fn playback_mute_latch_semantics() {
+        // 2026-10-02 self-talk loop: a spoken 小蜜蜂 inside our own TTS
+        // reply re-waked the device every ~6 s. The latch must open
+        // closed→deadline→cleared, and never outlive a crashed speak.
+        let e = VoiceEngine::from_config(&VoiceConfig::default());
+        let share = e.playback_mute_share();
+        assert_eq!(
+            share.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "mic starts open"
+        );
+        e.begin_playback_mute();
+        let until = share.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            until > unix_now_ms(),
+            "begin latches a future deadline (hard cap)"
+        );
+        assert!(
+            until <= unix_now_ms() + 120_000,
+            "deadline carries the 120 s hard cap"
+        );
+        e.end_playback_mute();
+        assert_eq!(
+            share.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "end re-opens the mic"
+        );
+        // Re-begin then simulate the worker's expired-cap branch: a stale
+        // (far-past) deadline must not keep the mic muted.
+        e.begin_playback_mute();
+        share.store(
+            unix_now_ms().saturating_sub(1),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        assert!(
+            unix_now_ms() >= share.load(std::sync::atomic::Ordering::SeqCst),
+            "expired deadline reads as open"
+        );
+        e.end_playback_mute();
     }
 
     #[test]
