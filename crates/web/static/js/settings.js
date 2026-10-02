@@ -41,6 +41,8 @@ const CONSTRAINTS = {
   'rtsp.port': { min: 1, max: 65535, required: false },
   'web.port': { min: 1, max: 65535, required: false },
   'watermark.font_size': { min: 12, max: 96, required: false },
+  'scene.voice.follow_up_window_secs': { min: 0, max: 120, required: false },
+  'scene.tools.weather_timeout_secs': { min: 1, max: 30, required: false },
   'watermark.text': { maxlength: 128 },
   'protocols.watermark.font_size': { min: 12, max: 96, required: false },
   'protocols.watermark.text': { maxlength: 128 },

@@ -455,9 +455,62 @@ impl AppConfig {
     }
 }
 
+/// Apply `scene.*` settings-bag rows (persisted by PUT /api/config,
+/// SPEC appendix A #31) over the TOML-loaded config at boot — web edits
+/// take precedence over file defaults. Unknown/malformed rows are
+/// skipped with a warning rather than failing boot (the API validated
+/// them on write; a hand-edited DB row must not brick startup).
+pub fn overlay_scene_from_rows(config: &mut AppConfig, rows: &[(String, String)]) {
+    for (key, value) in rows {
+        let applied = match key.as_str() {
+            "scene.voice.follow_up_window_secs" => value
+                .parse::<f32>()
+                .ok()
+                .filter(|v| (0.0..=120.0).contains(v))
+                .map(|v| config.voice.follow_up_window_secs = v),
+            "scene.tools.weather_enabled" => value.parse::<bool>().ok().map(|v| {
+                config.tools.weather_enabled = v;
+            }),
+            "scene.tools.weather_city" => {
+                config.tools.weather_city = value.clone();
+                Some(())
+            }
+            "scene.tools.weather_timeout_secs" => value.parse::<u64>().ok().map(|v| {
+                config.tools.timeout_secs = v;
+            }),
+            _ => None,
+        };
+        if applied.is_none() && key.starts_with("scene.") {
+            tracing::warn!(key = %key, value = %value, "ignoring invalid scene overlay row");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_overlay_applies_rows_and_skips_garbage() {
+        let mut cfg: AppConfig = toml::from_str("").expect("empty config");
+        assert_eq!(cfg.voice.follow_up_window_secs, 0.0);
+        overlay_scene_from_rows(
+            &mut cfg,
+            &[
+                ("scene.voice.follow_up_window_secs".into(), "12.5".into()),
+                ("scene.tools.weather_enabled".into(), "true".into()),
+                ("scene.tools.weather_city".into(), "Guangzhou".into()),
+                ("scene.tools.weather_timeout_secs".into(), "8".into()),
+                ("scene.voice.follow_up_window_secs".into(), "999".into()), // out of range
+                ("scene.tools.weather_timeout_secs".into(), "abc".into()),  // malformed
+                ("ui.theme".into(), "dark".into()),                         // not a scene row
+            ],
+        );
+        assert_eq!(cfg.voice.follow_up_window_secs, 12.5);
+        assert!(cfg.tools.weather_enabled);
+        assert_eq!(cfg.tools.weather_city, "Guangzhou");
+        assert_eq!(cfg.tools.timeout_secs, 8);
+    }
 
     #[test]
     fn test_ai_section_parses_and_defaults() {

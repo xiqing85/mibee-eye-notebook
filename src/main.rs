@@ -166,6 +166,22 @@ async fn main() -> anyhow::Result<()> {
     let pool = web::db::init_pool(&db_path_str).await?;
     let auth_db_conn = web::db::init_auth_db(&db_path_str)?;
     let auth_db = Arc::new(tokio::sync::Mutex::new(auth_db_conn));
+    // Scene overlay (#31): web-persisted scene.* rows take precedence
+    // over TOML at boot, before any engine reads the values.
+    if let Ok(rows) = web::db::list_settings(&pool).await {
+        let n = rows.iter().filter(|(k, _)| k.starts_with("scene.")).count();
+        if n > 0 {
+            tracing::info!(
+                rows = n,
+                "applying scene config overlay from settings store"
+            );
+        }
+        mibee_eye::config::overlay_scene_from_rows(&mut config, &rows);
+    }
+    // One shared tools handle (#31): the voice bridge, the web routes and
+    // the scene config API all see hot updates.
+    let shared_tools: web::server::SharedTools =
+        Arc::new(std::sync::RwLock::new(config.tools.clone()));
     // Seed protocol_configs table from config.toml on first run (when empty).
     // Subsequent runs use the persisted values; users' Web UI edits survive restart.
     if web::db::protocol_configs_is_empty(&pool).await? {
@@ -808,7 +824,7 @@ async fn main() -> anyhow::Result<()> {
         let decision_for_voice = decision_engine.clone();
         let grounding_for_voice = Arc::clone(&grounding_state);
         let streams_for_voice = Arc::clone(&segment_registry);
-        let tools_for_voice = config.tools.clone();
+        let tools_for_voice = Arc::clone(&shared_tools);
         let voice_engine_for_arming = Arc::clone(&voice_engine);
         // Conversation session (#30-B): the last 120 s of turns give
         // follow-ups ("再说详细点") their context.
@@ -882,7 +898,11 @@ async fn main() -> anyhow::Result<()> {
                                         &state_text,
                                         "这句话属于哪一类意图？",
                                         &[
-                                            ("answer".into(), "用户在提问或聊天，需要回答".into()),
+                                            (
+                                                "answer".into(),
+                                                "用户在提问或聊天（普通话、粤语、英语都算），需要回答"
+                                                    .into(),
+                                            ),
                                             ("device".into(), "用户想控制设备或查询状态".into()),
                                             (
                                                 "ignore".into(),
@@ -901,7 +921,10 @@ async fn main() -> anyhow::Result<()> {
                                     confidence = %d.confidence,
                                     "decision: voice triage"
                                 );
-                                skip_reply = d.label == "ignore";
+                                skip_reply = streaming::decision::triage_skips_reply(
+                                    &d.label,
+                                    &ev.transcript,
+                                );
                                 let _ = tx_for_decision.send(
                                     web::routes::events::CameraEvent::VoiceDecision {
                                         camera_id: "0".to_string(),
@@ -934,8 +957,13 @@ async fn main() -> anyhow::Result<()> {
                             let ctx = web::routes::chat::TurnContext {
                                 scene,
                                 local: Some(web::routes::chat::local_block(&records_pool).await),
-                                web: web::routes::chat::web_block(&tools_for_voice, &ev.transcript)
-                                    .await,
+                                web: {
+                                    let t = tools_for_voice
+                                        .read()
+                                        .expect("tools config lock poisoned")
+                                        .clone();
+                                    web::routes::chat::web_block(&t, &ev.transcript).await
+                                },
                             };
                             let grounded =
                                 if ctx.scene.is_some() { "scene" } else { "none" }.to_string();
@@ -1362,7 +1390,7 @@ async fn main() -> anyhow::Result<()> {
         decision_engine,
         meeting_engine,
         grounding_state,
-        Arc::new(config.tools.clone()),
+        Arc::clone(&shared_tools),
         Arc::new(web::routes::capabilities::LlmTier(llm_tier.to_string())),
     )
     .await?;

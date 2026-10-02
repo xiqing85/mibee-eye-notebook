@@ -31,6 +31,10 @@ use tracing::Instrument;
 #[derive(Clone, Default)]
 pub struct ActiveStreams(pub Arc<Mutex<HashMap<String, bool>>>);
 
+/// Dialogue tools config behind a std RwLock — the scene config section
+/// (#31) rewrites it at runtime; readers take a short-lived lock per turn.
+pub type SharedTools = Arc<std::sync::RwLock<streaming::tools::ToolsConfig>>;
+
 /// Application state passed to all routes via Extension.
 pub struct AppRouterState {
     /// Async pool for web CRUD operations (cameras, settings, protocols)
@@ -69,7 +73,8 @@ pub struct AppRouterState {
     /// VLM alarm descriptions per camera.
     pub grounding: Arc<crate::grounding::GroundingState>,
     /// Dialogue task tools config (#30-A) — weather lookup gating.
-    pub tools: Arc<streaming::tools::ToolsConfig>,
+    /// RwLock: the scene config section (#31) hot-updates these values.
+    pub tools: SharedTools,
     /// Resolved LLM resource tier (#30-E): full|mid|lite|manual.
     /// Newtype — a bare `Arc<String>` Extension would collide with the
     /// advertised-host extension of the same type.
@@ -175,6 +180,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let meeting = state.meeting.clone();
     let grounding = state.grounding.clone();
     let tools = state.tools.clone();
+    let scene = crate::routes::config_api::SceneHandles {
+        follow_up_window_ms: state.voice.follow_up_window_share(),
+        tools: tools.clone(),
+    };
     let llm_tier = state.llm_tier.clone();
 
     // -- Auth routes (public, rate-limited) --
@@ -347,6 +356,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(decision))
         .layer(Extension(grounding))
         .layer(Extension(tools))
+        .layer(Extension(scene))
         .layer(Extension(llm_tier))
         .layer(Extension(meeting))
         // CSP — strict Content-Security-Policy
@@ -406,7 +416,9 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
             &streaming::decision::DecisionConfig::default(),
         )),
         grounding: Arc::new(crate::grounding::GroundingState::new()),
-        tools: Arc::new(streaming::tools::ToolsConfig::default()),
+        tools: Arc::new(std::sync::RwLock::new(
+            streaming::tools::ToolsConfig::default(),
+        )),
         llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
@@ -468,7 +480,9 @@ pub async fn test_app_with_user() -> Router {
             &streaming::decision::DecisionConfig::default(),
         )),
         grounding: Arc::new(crate::grounding::GroundingState::new()),
-        tools: Arc::new(streaming::tools::ToolsConfig::default()),
+        tools: Arc::new(std::sync::RwLock::new(
+            streaming::tools::ToolsConfig::default(),
+        )),
         llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
@@ -667,7 +681,7 @@ pub async fn run(
     decision: Arc<streaming::decision::DecisionEngine>,
     meeting: Arc<streaming::meeting::MeetingEngine>,
     grounding: Arc<crate::grounding::GroundingState>,
-    tools: Arc<streaming::tools::ToolsConfig>,
+    tools: SharedTools,
     llm_tier: Arc<crate::routes::capabilities::LlmTier>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
@@ -761,7 +775,7 @@ pub async fn run_with_shutdown(
     decision: Arc<streaming::decision::DecisionEngine>,
     meeting: Arc<streaming::meeting::MeetingEngine>,
     grounding: Arc<crate::grounding::GroundingState>,
-    tools: Arc<streaming::tools::ToolsConfig>,
+    tools: SharedTools,
     llm_tier: Arc<crate::routes::capabilities::LlmTier>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics

@@ -545,9 +545,44 @@ fn cfg_get_f32(cfg: &serde_json::Value, idx: usize) -> f32 {
         .unwrap_or(1.0)
 }
 
+/// Voice-triage ignore guard. The triage options are written in
+/// Mandarin and the multilingual classifier is out-of-domain on
+/// written Cantonese — it confidently labels real Cantonese
+/// questions as noise (0.90/0.70 on 而家…点嘛, 2026-10-02), which
+/// silently drops the spoken reply. An "ignore" verdict on a
+/// Cantonese transcript is not trustworthy; fail open to a reply,
+/// like every other uncertain path (speaker_verify, weather).
+#[must_use]
+pub fn triage_skips_reply(label: &str, transcript: &str) -> bool {
+    label == "ignore" && crate::lang::detect(transcript) != crate::lang::SpokenLang::Cantonese
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn triage_ignore_fails_open_for_cantonese() {
+        // Measured on the deployed workstation 2026-10-02: the triage
+        // options are Mandarin and the classifier confidently labeled
+        // real Cantonese questions (而家…点嘛 / …变嘛) as "ignore"
+        // (0.90/0.70) — the spoken reply was silently dropped.
+        assert!(!triage_skips_reply("ignore", "而家广州天气变嘛"));
+        assert!(!triage_skips_reply("ignore", "而家天气广州天气点嘛"));
+    }
+
+    #[test]
+    fn triage_ignore_still_skips_mandarin_and_english_noise() {
+        assert!(triage_skips_reply("ignore", "嗯嗯啊啊的背景声"));
+        assert!(triage_skips_reply("ignore", "blah blah"));
+    }
+
+    #[test]
+    fn triage_never_skips_answer_or_device() {
+        assert!(!triage_skips_reply("answer", "现在几点了"));
+        assert!(!triage_skips_reply("device", "打开录像"));
+        assert!(!triage_skips_reply("answer", "而家几点"));
+    }
 
     #[test]
     fn config_defaults_off() {
