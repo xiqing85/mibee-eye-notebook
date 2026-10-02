@@ -63,6 +63,16 @@ fn validate_scene(scene: &Value) -> Result<Vec<(String, String)>, String> {
         let obj = v.as_object().ok_or("scene.voice must be an object")?;
         for (k, val) in obj {
             match k.as_str() {
+                "wake_word" => {
+                    let w = val
+                        .as_str()
+                        .ok_or("scene.voice.wake_word must be a string")?;
+                    // Same validator that generates the keywords line —
+                    // an unusable word must never reach the store (it
+                    // would deafen the wake word after restart).
+                    streaming::voice::wake_word_to_keyword_line(w)?;
+                    rows.push(("scene.voice.wake_word".into(), w.to_string()));
+                }
                 "follow_up_window_secs" => {
                     let n = val
                         .as_f64()
@@ -128,12 +138,16 @@ fn format_number(n: f64) -> String {
     }
 }
 
-/// Snapshot of the live scene values (GET shape, SPEC #31).
-fn scene_document(scene: &SceneHandles) -> Value {
+/// Snapshot of the live scene values (GET shape, SPEC #31/#32). The
+/// wake word is restart-class: reported from the persisted store value.
+fn scene_document(scene: &SceneHandles, wake_word: Option<String>) -> Value {
     let window_ms = scene.follow_up_window_ms.load(Ordering::SeqCst);
     let tools = tools_snapshot(&scene.tools);
     json!({
-        "voice": { "follow_up_window_secs": window_ms as f64 / 1000.0 },
+        "voice": {
+            "follow_up_window_secs": window_ms as f64 / 1000.0,
+            "wake_word": wake_word.unwrap_or_else(|| streaming::voice::DEFAULT_WAKE_WORD.into()),
+        },
         "tools": tools,
     })
 }
@@ -224,10 +238,16 @@ pub async fn get_config(
     Extension(db): Extension<Db>,
     Extension(scene): Extension<SceneHandles>,
 ) -> Response {
+    let mut persisted_wake_word: Option<String> = None;
     let settings = match db::list_settings(&db).await {
         Ok(rows) => nest_dotted(
             rows.into_iter()
-                .filter(|(k, _)| !k.starts_with("scene."))
+                .filter(|(k, v)| {
+                    if k == "scene.voice.wake_word" {
+                        persisted_wake_word = Some(v.clone());
+                    }
+                    !k.starts_with("scene.")
+                })
                 .collect(),
         ),
         Err(e) => {
@@ -260,7 +280,7 @@ pub async fn get_config(
         Json(json!({
             "settings": settings,
             "protocols": protocols,
-            "scene": scene_document(&scene),
+            "scene": scene_document(&scene, persisted_wake_word),
         })),
     )
         .into_response()
@@ -396,6 +416,10 @@ pub async fn put_config(
         // the runtime diverged from the store on the persisted keys.
         for (key, value) in &rows {
             match key.as_str() {
+                "scene.voice.wake_word" => {
+                    // Restart-class: the KWS engine is built at boot. The
+                    // auto-restart flow (config_apply.auto) applies it.
+                }
                 "scene.voice.follow_up_window_secs" => {
                     let secs: f64 = value.parse().expect("validated number");
                     scene
@@ -431,7 +455,37 @@ pub async fn put_config(
             "scene config updated via /api/config (hot)");
     }
 
-    (StatusCode::OK, Json(json!({"applied": "immediate"}))).into_response()
+    let applied = if body
+        .get("scene")
+        .and_then(|s| s.get("voice"))
+        .and_then(|v| v.get("wake_word"))
+        .is_some()
+    {
+        "restart"
+    } else {
+        "immediate"
+    };
+    (StatusCode::OK, Json(json!({"applied": applied}))).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/system/restart (SPEC §5.1)
+// ---------------------------------------------------------------------------
+
+/// Graceful restart: fires the same shutdown watch as SIGTERM (the
+/// service unit restarts us — deregister + cleanup all run first).
+/// Idempotent — the watch send is a no-op once true.
+#[tracing::instrument(skip_all)]
+pub async fn restart_handler(
+    Extension(restart_tx): Extension<tokio::sync::watch::Sender<bool>>,
+) -> Response {
+    tracing::info!("restart requested via POST /api/system/restart");
+    tokio::spawn(async move {
+        // Let the 200 flush before the listener tears down.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _ = restart_tx.send(true);
+    });
+    (StatusCode::OK, Json(json!({"status": "restarting"}))).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +496,7 @@ pub fn routes() -> Router {
     Router::new()
         .route("/api/status", get(status_handler))
         .route("/api/config", get(get_config).put(put_config))
+        .route("/api/system/restart", axum::routing::post(restart_handler))
 }
 
 #[cfg(test)]
@@ -521,6 +576,10 @@ mod tests {
                 streaming::tools::ToolsConfig::default(),
             )),
             llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+            wake_word: Arc::new(crate::routes::capabilities::WakeWord(
+                streaming::voice::DEFAULT_WAKE_WORD.into(),
+            )),
+            restart_tx: tokio::sync::watch::channel(false).0,
         }
     }
 
@@ -624,6 +683,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scene_wake_word_is_restart_class_and_persisted() {
+        let (pool, auth_db) = test_db().await;
+        let token = {
+            let c = auth_db.lock().await;
+            security::auth::create_session(&c, "admin").unwrap()
+        };
+        let app = crate::server::build_app_with_state(build_state(pool.clone(), auth_db));
+
+        // GET default
+        let res = app
+            .clone()
+            .oneshot(config_req("GET", &token, None))
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            body["data"]["scene"]["voice"]["wake_word"],
+            streaming::voice::DEFAULT_WAKE_WORD
+        );
+
+        // PUT a custom word → applied restart + persisted
+        let res = app
+            .clone()
+            .oneshot(config_req(
+                "PUT",
+                &token,
+                Some(json!({"scene": {"voice": {"wake_word": "你好小蜂"}}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["applied"], "restart");
+        let rows = db::list_settings(&pool).await.unwrap();
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "scene.voice.wake_word" && v == "你好小蜂")
+        );
+
+        // GET reflects it
+        let res = app
+            .clone()
+            .oneshot(config_req("GET", &token, None))
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["data"]["scene"]["voice"]["wake_word"], "你好小蜂");
+
+        // Non-wake-word scene saves stay immediate
+        let res = app
+            .clone()
+            .oneshot(config_req(
+                "PUT",
+                &token,
+                Some(json!({"scene": {"tools": {"weather_city": "Shenzhen"}}})),
+            ))
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["applied"], "immediate");
+    }
+
+    #[tokio::test]
+    async fn restart_endpoint_returns_restarting_and_signals() {
+        let (pool, auth_db) = test_db().await;
+        let token = {
+            let c = auth_db.lock().await;
+            security::auth::create_session(&c, "admin").unwrap()
+        };
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let mut state = build_state(pool, auth_db);
+        state.restart_tx = tx;
+        let app = crate::server::build_app_with_state(state);
+
+        let req = Request::builder()
+            .uri("/api/system/restart")
+            .method("POST")
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["status"], "restarting");
+        let req2 = Request::builder()
+            .uri("/api/system/restart")
+            .method("POST")
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.oneshot(req2).await.unwrap().status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed())
+            .await
+            .expect("restart signal within 2s")
+            .unwrap();
+        assert!(*rx.borrow());
+    }
+
+    #[tokio::test]
     async fn scene_put_rejects_invalid_payloads() {
         let (pool, auth_db) = test_db().await;
         let token = {
@@ -640,6 +816,8 @@ mod tests {
             json!({"scene": {"tools": {"weather_timeout_secs": 0}}}),
             json!({"scene": {"tools": {"weather_timeout_secs": 2.5}}}),
             json!({"scene": {"tools": {"weather_enabled": "yes"}}}),
+            json!({"scene": {"voice": {"wake_word": "bee"}}}),
+            json!({"scene": {"voice": {"wake_word": "一二三四五六七"}}}),
             json!({"scene": "not-an-object"}),
         ] {
             let res = app

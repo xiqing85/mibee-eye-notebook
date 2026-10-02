@@ -45,6 +45,10 @@ pub struct CapabilitiesResponse {
 #[derive(Debug, Clone)]
 pub struct LlmTier(pub String);
 
+/// Configured wake word (#32) — newtype so its `Arc<...>` Extension
+/// cannot collide with `Arc<String>` advertised-host.
+pub struct WakeWord(pub String);
+
 #[tracing::instrument(skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub async fn get_capabilities(
@@ -161,7 +165,9 @@ pub async fn get_capabilities(
         "substream": stream_manager.any_substream_active().await,
         "webrtc": false,
         "events": events,
-        "config_apply": {"default": "immediate", "sections": {"scene": "immediate"}},
+        "config_apply": {"default": "immediate", "sections": {"scene": "immediate"},
+                         "auto": true},
+        "restart": true,
         "observability": {"metrics": true, "logs": true, "requests": true},
         // Device-specific extension: the host hardware probe.
         "system": cached.system,

@@ -142,6 +142,10 @@ mod tests {
                 streaming::tools::ToolsConfig::default(),
             )),
             llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+            wake_word: Arc::new(crate::routes::capabilities::WakeWord(
+                streaming::voice::DEFAULT_WAKE_WORD.into(),
+            )),
+            restart_tx: tokio::sync::watch::channel(false).0,
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),
