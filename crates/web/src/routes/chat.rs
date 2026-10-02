@@ -220,7 +220,7 @@ pub async fn chat(
     Extension(vlm): Extension<Arc<VlmEngine>>,
     Extension(streams): Extension<Arc<StreamManager>>,
     Extension(grounding): Extension<Arc<GroundingState>>,
-    Extension(tools): Extension<Arc<streaming::tools::ToolsConfig>>,
+    Extension(tools): Extension<crate::server::SharedTools>,
     Extension(pool): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     body: axum::extract::Json<ChatRequest>,
@@ -235,12 +235,13 @@ pub async fn chat(
         )));
     }
     let camera_id = primary_camera_id(&pool).await;
+    let tools_now = tools.read().expect("tools config lock poisoned").clone();
     let ctx = TurnContext {
         scene: camera_id
             .as_deref()
             .and_then(|id| grounding.scene_summary(id, unix_now_ms())),
         local: Some(local_block(&pool).await),
-        web: web_block(&tools, &body.text).await,
+        web: web_block(&tools_now, &body.text).await,
     };
     let scene = ctx.scene.clone();
 

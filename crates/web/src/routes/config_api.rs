@@ -17,6 +17,7 @@
 //! `config_apply.default = "immediate"`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::Extension;
 use axum::http::StatusCode;
@@ -32,11 +33,119 @@ use crate::protocol_runtime::{
     ProtocolRuntime, build_onvif_config_from_json, extract_gb28181_config,
 };
 use crate::routes::protocols::Db;
+use crate::server::SharedTools;
 use crate::stream_manager::StreamManager;
 
 use super::protocols::validate_and_coerce;
 
 static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Runtime handles behind the `scene` config section (SPEC appendix A
+/// #31): the hot-adjustable capability knobs. GET reads live values from
+/// these; PUT validates, persists `scene.*` dotted keys into the settings
+/// store and stores the new values here.
+#[derive(Clone)]
+pub struct SceneHandles {
+    /// Follow-up window length in ms (0 = off) — shared with the voice
+    /// engine's `arm_follow_up`.
+    pub follow_up_window_ms: Arc<AtomicU64>,
+    /// Weather tool config — read per dialogue turn.
+    pub tools: SharedTools,
+}
+
+/// Validate a `scene` section and return the dotted key/value rows to
+/// persist (settings bag, `scene.` prefix). Strict: unknown keys, wrong
+/// types and out-of-range values reject the whole update.
+fn validate_scene(scene: &Value) -> Result<Vec<(String, String)>, String> {
+    let mut rows = Vec::new();
+    let voice = scene.get("voice");
+    if let Some(v) = voice {
+        let obj = v.as_object().ok_or("scene.voice must be an object")?;
+        for (k, val) in obj {
+            match k.as_str() {
+                "follow_up_window_secs" => {
+                    let n = val
+                        .as_f64()
+                        .ok_or("scene.voice.follow_up_window_secs must be a number")?;
+                    if !(0.0..=120.0).contains(&n) {
+                        return Err(
+                            "scene.voice.follow_up_window_secs must be within 0..=120".into()
+                        );
+                    }
+                    rows.push(("scene.voice.follow_up_window_secs".into(), format_number(n)));
+                }
+                other => return Err(format!("unknown scene.voice key: {other}")),
+            }
+        }
+    }
+    let tools = scene.get("tools");
+    if let Some(t) = tools {
+        let obj = t.as_object().ok_or("scene.tools must be an object")?;
+        for (k, val) in obj {
+            match k.as_str() {
+                "weather_enabled" => {
+                    let b = val
+                        .as_bool()
+                        .ok_or("scene.tools.weather_enabled must be a boolean")?;
+                    rows.push(("scene.tools.weather_enabled".into(), b.to_string()));
+                }
+                "weather_city" => {
+                    let c = val
+                        .as_str()
+                        .ok_or("scene.tools.weather_city must be a string")?;
+                    if c.chars().count() > 64 {
+                        return Err("scene.tools.weather_city too long (max 64 chars)".into());
+                    }
+                    rows.push(("scene.tools.weather_city".into(), c.to_string()));
+                }
+                "weather_timeout_secs" => {
+                    let n = val
+                        .as_f64()
+                        .ok_or("scene.tools.weather_timeout_secs must be a number")?;
+                    if !(1.0..=30.0).contains(&n) || n.fract() != 0.0 {
+                        return Err(
+                            "scene.tools.weather_timeout_secs must be an integer within 1..=30"
+                                .into(),
+                        );
+                    }
+                    rows.push(("scene.tools.weather_timeout_secs".into(), format_number(n)));
+                }
+                other => return Err(format!("unknown scene.tools key: {other}")),
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Canonical numeric serialization for the settings bag: integers without
+/// a decimal tail, fractional values as-is (round-trips through the boot
+/// overlay parser).
+fn format_number(n: f64) -> String {
+    if n.fract() == 0.0 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+/// Snapshot of the live scene values (GET shape, SPEC #31).
+fn scene_document(scene: &SceneHandles) -> Value {
+    let window_ms = scene.follow_up_window_ms.load(Ordering::SeqCst);
+    let tools = tools_snapshot(&scene.tools);
+    json!({
+        "voice": { "follow_up_window_secs": window_ms as f64 / 1000.0 },
+        "tools": tools,
+    })
+}
+
+fn tools_snapshot(tools: &SharedTools) -> Value {
+    let t = tools.read().expect("tools config lock poisoned");
+    json!({
+        "weather_enabled": t.weather_enabled,
+        "weather_city": t.weather_city,
+        "weather_timeout_secs": t.timeout_secs,
+    })
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/status (SPEC §3)
@@ -111,9 +220,16 @@ fn flatten_to_dotted(prefix: &str, value: &Value, out: &mut Vec<(String, String)
 }
 
 #[tracing::instrument(skip_all)]
-pub async fn get_config(Extension(db): Extension<Db>) -> Response {
+pub async fn get_config(
+    Extension(db): Extension<Db>,
+    Extension(scene): Extension<SceneHandles>,
+) -> Response {
     let settings = match db::list_settings(&db).await {
-        Ok(rows) => nest_dotted(rows),
+        Ok(rows) => nest_dotted(
+            rows.into_iter()
+                .filter(|(k, _)| !k.starts_with("scene."))
+                .collect(),
+        ),
         Err(e) => {
             tracing::error!(error = %e, "failed to list settings");
             return ApiError::internal("failed to list settings").into_response();
@@ -144,6 +260,7 @@ pub async fn get_config(Extension(db): Extension<Db>) -> Response {
         Json(json!({
             "settings": settings,
             "protocols": protocols,
+            "scene": scene_document(&scene),
         })),
     )
         .into_response()
@@ -159,10 +276,15 @@ pub async fn put_config(
     Extension(protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
     Extension(stream_manager): Extension<Arc<StreamManager>>,
     Extension(advertised_host): Extension<Arc<String>>,
+    Extension(scene): Extension<SceneHandles>,
     Json(body): Json<Value>,
 ) -> Response {
-    if !body.is_object() || (body.get("settings").is_none() && body.get("protocols").is_none()) {
-        return ApiError::bad_request("body must contain settings and/or protocols")
+    if !body.is_object()
+        || (body.get("settings").is_none()
+            && body.get("protocols").is_none()
+            && body.get("scene").is_none())
+    {
+        return ApiError::bad_request("body must contain settings, protocols and/or scene")
             .into_response();
     }
 
@@ -255,6 +377,60 @@ pub async fn put_config(
         }
     }
 
+    // -- scene section (#31): validate + persist + hot-apply --
+    if let Some(scene_body) = body.get("scene") {
+        if !scene_body.is_object() {
+            return ApiError::bad_request("scene must be an object").into_response();
+        }
+        let rows = match validate_scene(scene_body) {
+            Ok(rows) => rows,
+            Err(msg) => return ApiError::bad_request(&msg).into_response(),
+        };
+        for (key, value) in &rows {
+            if let Err(e) = db::set_setting(&db, key, value).await {
+                tracing::error!(error = %e, setting_key = %key, "failed to persist scene key");
+                return ApiError::internal("failed to update scene config").into_response();
+            }
+        }
+        // Hot-apply AFTER every row persisted — a late failure can't leave
+        // the runtime diverged from the store on the persisted keys.
+        for (key, value) in &rows {
+            match key.as_str() {
+                "scene.voice.follow_up_window_secs" => {
+                    let secs: f64 = value.parse().expect("validated number");
+                    scene
+                        .follow_up_window_ms
+                        .store((secs * 1000.0) as u64, Ordering::SeqCst);
+                }
+                "scene.tools.weather_enabled" => {
+                    scene
+                        .tools
+                        .write()
+                        .expect("tools config lock poisoned")
+                        .weather_enabled = value == "true";
+                }
+                "scene.tools.weather_city" => {
+                    scene
+                        .tools
+                        .write()
+                        .expect("tools config lock poisoned")
+                        .weather_city = value.clone();
+                }
+                "scene.tools.weather_timeout_secs" => {
+                    let secs: f64 = value.parse().expect("validated number");
+                    scene
+                        .tools
+                        .write()
+                        .expect("tools config lock poisoned")
+                        .timeout_secs = secs as u64;
+                }
+                other => tracing::warn!(key = other, "scene key persisted but not hot-applied"),
+            }
+        }
+        tracing::info!(keys = ?rows.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            "scene config updated via /api/config (hot)");
+    }
+
     (StatusCode::OK, Json(json!({"applied": "immediate"}))).into_response()
 }
 
@@ -266,4 +442,215 @@ pub fn routes() -> Router {
     Router::new()
         .route("/api/status", get(status_handler))
         .route("/api/config", get(get_config).put(put_config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use rusqlite::Connection;
+    use tokio::sync::Mutex;
+    use tower::ServiceExt;
+
+    async fn test_db() -> (sqlx::SqlitePool, Arc<Mutex<Connection>>) {
+        let (pool, auth_db) = crate::db::create_test_dbs().await;
+        crate::db::run_migrations(&pool).await.unwrap();
+        {
+            let conn = auth_db.lock().await;
+            conn.execute_batch(include_str!("../../../../migrations/001_initial.sql"))
+                .unwrap();
+            security::auth::init_users_table(&conn).unwrap();
+            let hash = security::password::hash_password("test_pass").unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO users (username, password_hash) VALUES (?1, ?2)",
+                rusqlite::params!["admin", hash],
+            )
+            .unwrap();
+        }
+        (pool, auth_db)
+    }
+
+    fn build_state(
+        db: sqlx::SqlitePool,
+        auth_db: Arc<Mutex<Connection>>,
+    ) -> crate::server::AppRouterState {
+        // Reuse the settings tests' default-state shape via a fresh build:
+        // every engine is a fail-open default instance.
+        crate::server::AppRouterState {
+            db,
+            auth_db,
+            active: crate::server::ActiveStreams::default(),
+            stream_manager: Arc::new(crate::stream_manager::StreamManager::new()),
+            rtsp_server: Arc::new(protocols::rtsp_server::RtspServer::new(
+                protocols::rtsp_server::RtspServerConfig::default(),
+            )),
+            protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            protocol_runtime: Arc::new(Mutex::new(crate::protocol_runtime::ProtocolRuntime::new())),
+            event_tx: Arc::new(crate::routes::events::new_event_bus()),
+            advertised_host: Arc::new("localhost".to_string()),
+            ai: Arc::new(streaming::ai::AiEngine::from_parts(
+                streaming::ai::AiConfig::default(),
+                None,
+            )),
+            audio_ai: Arc::new(streaming::audio_ai::AudioAiEngine::from_config(
+                &streaming::audio_ai::AudioAiConfig::default(),
+            )),
+            zones: crate::zones::new_shared(),
+            ocr: Arc::new(streaming::ocr::OcrEngine::from_config(
+                &streaming::ocr::OcrConfig::default(),
+            )),
+            voice: Arc::new(streaming::voice::VoiceEngine::from_config(
+                &streaming::voice::VoiceConfig::default(),
+            )),
+            chat: Arc::new(streaming::llm::ChatEngine::from_config(
+                &streaming::llm::LlmConfig::default(),
+            )),
+            vlm: Arc::new(streaming::vlm::VlmEngine::from_config(
+                &streaming::vlm::VlmConfig::default(),
+            )),
+            decision: Arc::new(streaming::decision::DecisionEngine::from_config(
+                &streaming::decision::DecisionConfig::default(),
+            )),
+            meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
+                &streaming::meeting::MeetingConfig::default(),
+                &streaming::voice::VoiceConfig::default(),
+            )),
+            grounding: Arc::new(crate::grounding::GroundingState::new()),
+            tools: Arc::new(std::sync::RwLock::new(
+                streaming::tools::ToolsConfig::default(),
+            )),
+            llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+        }
+    }
+
+    fn config_req(method: &str, token: &str, body: Option<Value>) -> Request<Body> {
+        let mut b = Request::builder()
+            .uri("/api/config")
+            .method(method)
+            .header("cookie", format!("session={token}; csrf-token=test-csrf"))
+            .header("x-csrf-token", "test-csrf");
+        if let Some(v) = body {
+            b = b.header("content-type", "application/json");
+            b.body(Body::from(serde_json::to_vec(&v).unwrap())).unwrap()
+        } else {
+            b.body(Body::empty()).unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn scene_get_put_roundtrip_hot_and_persisted() {
+        let (pool, auth_db) = test_db().await;
+        // create a session directly in the auth db
+        let token = {
+            let c = auth_db.lock().await;
+            security::auth::create_session(&c, "admin").unwrap()
+        };
+        let app = crate::server::build_app_with_state(build_state(pool.clone(), auth_db));
+
+        // Defaults visible in GET (voice window 0 = boot default)
+        let res = app
+            .clone()
+            .oneshot(config_req("GET", &token, None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["data"]["scene"]["voice"]["follow_up_window_secs"], 0.0);
+        assert_eq!(body["data"]["scene"]["tools"]["weather_city"], "");
+
+        // PUT partial scene
+        let res = app
+            .clone()
+            .oneshot(config_req(
+                "PUT",
+                &token,
+                Some(json!({
+                    "scene": {
+                        "voice": {"follow_up_window_secs": 8},
+                        "tools": {"weather_city": "Shanghai", "weather_enabled": true}
+                    }
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(body["data"]["applied"], "immediate");
+
+        // GET reflects the hot values and does NOT leak scene.* into settings
+        let res = app
+            .clone()
+            .oneshot(config_req("GET", &token, None))
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["data"]["scene"]["voice"]["follow_up_window_secs"], 8.0);
+        assert_eq!(body["data"]["scene"]["tools"]["weather_city"], "Shanghai");
+        assert!(
+            body["data"]["scene"]["tools"]["weather_enabled"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            body["data"]["settings"].get("scene").is_none(),
+            "scene.* rows must not surface under settings: {}",
+            body["data"]["settings"]
+        );
+
+        // Persisted as dotted scene.* rows (boot overlay source)
+        let rows = db::list_settings(&pool).await.unwrap();
+        let row = rows
+            .iter()
+            .find(|(k, _)| k == "scene.voice.follow_up_window_secs")
+            .expect("persisted");
+        assert_eq!(row.1, "8");
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "scene.tools.weather_city" && v == "Shanghai")
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_put_rejects_invalid_payloads() {
+        let (pool, auth_db) = test_db().await;
+        let token = {
+            let c = auth_db.lock().await;
+            security::auth::create_session(&c, "admin").unwrap()
+        };
+        let app = crate::server::build_app_with_state(build_state(pool.clone(), auth_db));
+
+        for bad in [
+            json!({"scene": {"voice": {"follow_up_window_secs": -1}}}),
+            json!({"scene": {"voice": {"follow_up_window_secs": 121}}}),
+            json!({"scene": {"voice": {"follow_up_window_secs": "eight"}}}),
+            json!({"scene": {"voice": {"no_such_key": 1}}}),
+            json!({"scene": {"tools": {"weather_timeout_secs": 0}}}),
+            json!({"scene": {"tools": {"weather_timeout_secs": 2.5}}}),
+            json!({"scene": {"tools": {"weather_enabled": "yes"}}}),
+            json!({"scene": "not-an-object"}),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(config_req("PUT", &token, Some(bad.clone())))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "payload: {bad}");
+        }
+        // Nothing persisted by the rejected writes
+        let rows = db::list_settings(&pool).await.unwrap();
+        assert!(rows.iter().all(|(k, _)| !k.starts_with("scene.")));
+    }
 }

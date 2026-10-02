@@ -217,6 +217,12 @@ pub struct VoiceEngine {
     /// own TTS output.
     #[cfg_attr(not(feature = "voice"), allow(dead_code))]
     follow_until_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Follow-up window length in ms (#31 hot config). Initialized from
+    /// `follow_up_window_secs` and shared with the web config API —
+    /// `/api/config scene.voice.follow_up_window_secs` stores here at
+    /// runtime. 0 disables arming; the VAD engine itself is still built
+    /// from the boot-time config value.
+    follow_up_window_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl VoiceEngine {
@@ -244,6 +250,9 @@ impl VoiceEngine {
                     internals: Some(internals),
                     speakers: Arc::new(std::sync::Mutex::new(SpeakerRegistry::new(dim))),
                     follow_until_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    follow_up_window_ms: Arc::new(std::sync::atomic::AtomicU64::new(
+                        (config.follow_up_window_secs.max(0.0) * 1000.0) as u64,
+                    )),
                 }
             }
             #[cfg(not(feature = "voice"))]
@@ -260,6 +269,9 @@ impl VoiceEngine {
                     internals: None,
                     speakers: Arc::new(std::sync::Mutex::new(SpeakerRegistry::empty())),
                     follow_until_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    follow_up_window_ms: Arc::new(std::sync::atomic::AtomicU64::new(
+                        (config.follow_up_window_secs.max(0.0) * 1000.0) as u64,
+                    )),
                 }
             }
         }
@@ -329,12 +341,16 @@ impl VoiceEngine {
     }
 
     /// Subscribe to completed voice interactions.
-    /// Open the follow-up window for `follow_up_window_secs` from now
-    /// (#30-B). No-op when the window length is 0 or the VAD is absent.
+    /// Open the follow-up window for the CURRENT `follow_up_window_ms`
+    /// share value (#30-B; hot-adjustable via #31). No-op when the
+    /// window length is 0 or the VAD is absent.
     pub fn arm_follow_up(&self) {
         #[cfg(feature = "voice")]
         {
-            if self.config.follow_up_window_secs <= 0.0 {
+            let window_ms = self
+                .follow_up_window_ms
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if window_ms == 0 {
                 return;
             }
             if self
@@ -345,11 +361,11 @@ impl VoiceEngine {
             {
                 return;
             }
-            let until = unix_now_ms() + (self.config.follow_up_window_secs * 1000.0) as u64;
+            let until = unix_now_ms() + window_ms;
             self.follow_until_ms
                 .store(until, std::sync::atomic::Ordering::SeqCst);
             info!(
-                window_secs = self.config.follow_up_window_secs,
+                window_secs = window_ms as f64 / 1000.0,
                 "voice: follow-up window armed"
             );
         }
@@ -357,6 +373,13 @@ impl VoiceEngine {
         {
             let _ = self;
         }
+    }
+
+    /// Shared handle to the follow-up window length (ms) — the web
+    /// config API stores the hot value here (SPEC appendix A #31).
+    #[must_use]
+    pub fn follow_up_window_share(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.follow_up_window_ms)
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<VoiceEvent> {
@@ -1161,6 +1184,28 @@ mod tests {
             ..VoiceConfig::default()
         });
         assert!(!e.is_active(), "missing models must not fake activity");
+    }
+
+    #[test]
+    fn follow_up_window_share_initialized_and_hot_adjustable() {
+        // #31: the share starts from the boot config value and the web
+        // config API can retune or zero it at runtime (0 disables arming).
+        let cfg = VoiceConfig {
+            follow_up_window_secs: 12.5,
+            ..VoiceConfig::default()
+        };
+        let e = VoiceEngine::from_config(&cfg);
+        let share = e.follow_up_window_share();
+        assert_eq!(
+            share.load(std::sync::atomic::Ordering::SeqCst),
+            12_500,
+            "share initialized from config"
+        );
+        share.store(8_000, std::sync::atomic::Ordering::SeqCst);
+        share.store(0, std::sync::atomic::Ordering::SeqCst);
+        // Inactive engine (no models): arming must stay a safe no-op
+        // whatever the share holds.
+        e.arm_follow_up();
     }
 
     #[test]

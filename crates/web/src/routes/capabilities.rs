@@ -161,7 +161,7 @@ pub async fn get_capabilities(
         "substream": stream_manager.any_substream_active().await,
         "webrtc": false,
         "events": events,
-        "config_apply": {"default": "immediate", "sections": {}},
+        "config_apply": {"default": "immediate", "sections": {"scene": "immediate"}},
         "observability": {"metrics": true, "logs": true, "requests": true},
         // Device-specific extension: the host hardware probe.
         "system": cached.system,
