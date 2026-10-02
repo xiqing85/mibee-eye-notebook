@@ -382,6 +382,19 @@
         <div id="speaker-progress" class="record-empty hidden"></div>
         <div id="speakers-list"></div>
       </div>
+      <div id="faces-card" class="card hidden">
+        <div class="view-head">
+          <h3 data-i18n="facesTitle">Enrolled faces</h3>
+          <p class="view-desc" data-i18n="facesDesc"></p>
+        </div>
+        <div class="live-toolbar records-toolbar">
+          <input id="face-name" type="text" maxlength="32" data-i18n-placeholder="facesNamePlaceholder" placeholder="Person name">
+          <button type="button" id="face-enroll" class="btn-small" data-i18n="facesEnroll">Enroll</button>
+          <button type="button" id="face-cancel" class="btn-small hidden" data-i18n="facesCancel">Cancel</button>
+        </div>
+        <div id="face-progress" class="record-empty hidden"></div>
+        <div id="faces-list"></div>
+      </div>
       <div class="card">
         <div class="live-toolbar records-toolbar">
           <select id="records-kind" aria-label="Kind">

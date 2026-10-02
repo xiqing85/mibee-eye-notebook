@@ -320,6 +320,17 @@ async fn main() -> anyhow::Result<()> {
     // the VLM alarm descriptions, read by the chat routes and the voice
     // auto-reply — one shared instance keeps every answer equally fresh.
     let grounding_state = Arc::new(web::grounding::GroundingState::new());
+    let face_engine = Arc::new(streaming::face::FaceEngine::from_config(&config.face));
+    if face_engine.is_active() {
+        match web::db::load_face_templates(&pool).await {
+            Ok(templates) => {
+                let n = templates.len();
+                face_engine.with_registry(|r| r.load(templates));
+                tracing::info!(enrolled = n, "face: registry loaded");
+            }
+            Err(e) => tracing::warn!(error = %e, "face: registry load failed (starting empty)"),
+        }
+    }
     if !vlm_engine.is_active() {
         tracing::info!(reason = %vlm_engine.inactive_reason(), "vlm: descriptions disabled");
     }
@@ -336,6 +347,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let vlm_engine = Arc::clone(&vlm_engine);
         let grounding_feed = Arc::clone(&grounding_state);
+        let face_for_ai = Arc::clone(&face_engine);
         let mut ai_events = ai_engine.subscribe_events();
         let bridge_tx = event_tx.clone();
         let mut alarm_bridge =
@@ -363,6 +375,56 @@ async fn main() -> anyhow::Result<()> {
                             frame_w,
                             &ev.detections,
                         );
+                        // Face recognition (#33): names + enrollment feed
+                        // on the same frame the detection ran on.
+                        if face_for_ai.is_active()
+                            && let Some(jpeg) = ev.jpeg.clone()
+                        {
+                            let face = Arc::clone(&face_for_ai);
+                            let cam_id = ev.camera_id.clone();
+                            let feed = Arc::clone(&grounding_feed);
+                            tokio::task::spawn_blocking(move || {
+                                let hits = face.match_jpeg(&jpeg);
+                                if !hits.is_empty() {
+                                    let mut named: std::collections::BTreeMap<String, usize> =
+                                        std::collections::BTreeMap::new();
+                                    let mut unknown = 0usize;
+                                    for h in &hits {
+                                        match &h.name {
+                                            Some(n) => {
+                                                *named.entry(n.clone()).or_default() += 1;
+                                            }
+                                            None => unknown += 1,
+                                        }
+                                    }
+                                    let mut text: Vec<String> = named
+                                        .into_iter()
+                                        .map(|(n, c)| format!("{n}×{c}"))
+                                        .collect();
+                                    if unknown > 0 {
+                                        text.push(format!("未识别×{unknown}"));
+                                    }
+                                    let ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0);
+                                    feed.record_face_labels(&cam_id, ts, &text.join("、"));
+                                }
+                                // Enrollment feed: any face in frame
+                                // advances the pending session.
+                                let in_session = face.with_registry(|r| {
+                                    r.enrollment_status(face.enroll_frames()).is_some()
+                                });
+                                if in_session {
+                                    let needed = face.enroll_frames();
+                                    if let Ok(emb) = face.embed_jpeg(&jpeg) {
+                                        face.with_registry(|r| {
+                                            r.feed_enroll(emb, needed);
+                                        });
+                                    }
+                                }
+                            });
+                        }
                         let _ = bridge_tx.send(web::routes::events::CameraEvent::AiDetection {
                             camera_id: ev.camera_id.clone(),
                             detections: ev.detections,
@@ -1421,6 +1483,7 @@ async fn main() -> anyhow::Result<()> {
         shared_zones,
         ocr_engine,
         voice_engine,
+        face_engine,
         chat_engine,
         vlm_engine,
         decision_engine,

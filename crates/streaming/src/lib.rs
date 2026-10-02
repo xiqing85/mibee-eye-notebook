@@ -16,6 +16,7 @@ pub mod decision;
 /// Native (ffmpeg-free) codec stack: H.264 encode (openh264), pixel-format
 /// conversion (MJPEG/YUYV → YUV420p), and audio encode (G.711 / AAC).
 pub mod encoder;
+pub mod face;
 /// Fragmented-MP4 remuxer for MSE / `MediaSource` playback.
 pub mod fmp4;
 pub mod hub;

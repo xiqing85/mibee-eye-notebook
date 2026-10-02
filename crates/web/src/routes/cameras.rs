@@ -311,6 +311,9 @@ mod tests {
             voice: Arc::new(streaming::voice::VoiceEngine::from_config(
                 &streaming::voice::VoiceConfig::default(),
             )),
+            face: Arc::new(streaming::face::FaceEngine::from_config(
+                &streaming::face::FaceConfig::default(),
+            )),
             chat: Arc::new(streaming::llm::ChatEngine::from_config(
                 &streaming::llm::LlmConfig::default(),
             )),
