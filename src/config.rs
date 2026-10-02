@@ -471,6 +471,12 @@ pub fn overlay_scene_from_rows(config: &mut AppConfig, rows: &[(String, String)]
             "scene.tools.weather_enabled" => value.parse::<bool>().ok().map(|v| {
                 config.tools.weather_enabled = v;
             }),
+            "scene.voice.wake_word" => {
+                if streaming::voice::wake_word_to_keyword_line(value).is_ok() {
+                    config.voice.wake_word = value.clone();
+                }
+                Some(())
+            }
             "scene.tools.weather_city" => {
                 config.tools.weather_city = value.clone();
                 Some(())
@@ -498,6 +504,7 @@ mod tests {
             &mut cfg,
             &[
                 ("scene.voice.follow_up_window_secs".into(), "12.5".into()),
+                ("scene.voice.wake_word".into(), "你好小蜂".into()),
                 ("scene.tools.weather_enabled".into(), "true".into()),
                 ("scene.tools.weather_city".into(), "Guangzhou".into()),
                 ("scene.tools.weather_timeout_secs".into(), "8".into()),
@@ -507,6 +514,7 @@ mod tests {
             ],
         );
         assert_eq!(cfg.voice.follow_up_window_secs, 12.5);
+        assert_eq!(cfg.voice.wake_word, "你好小蜂");
         assert!(cfg.tools.weather_enabled);
         assert_eq!(cfg.tools.weather_city, "Guangzhou");
         assert_eq!(cfg.tools.timeout_secs, 8);

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/mibee-eye --config /etc/mibee-eye/config.toml
-Restart=on-failure
+Restart=always
 RestartSec=5
 User=mibee-eye
 SupplementaryGroups=video

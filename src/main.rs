@@ -178,6 +178,31 @@ async fn main() -> anyhow::Result<()> {
         }
         mibee_eye::config::overlay_scene_from_rows(&mut config, &rows);
     }
+    // Custom wake word (#32): regenerate the keywords override next to
+    // the DB and point the KWS at it. Default word keeps the shipped
+    // model file (zero behavior change for existing deployments).
+    if config.voice.wake_word != streaming::voice::DEFAULT_WAKE_WORD {
+        match streaming::voice::wake_word_to_keyword_line(&config.voice.wake_word) {
+            Ok(line) => {
+                let kw_path = args.db_path.with_file_name("kws-keywords.txt");
+                match std::fs::write(&kw_path, format!("{line}\n")) {
+                    Ok(()) => {
+                        tracing::info!(
+                            wake_word = %config.voice.wake_word,
+                            path = %kw_path.display(),
+                            "voice: custom wake word active"
+                        );
+                        config.voice.keywords_file = kw_path.to_string_lossy().into_owned();
+                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "failed to write wake-word override; keeping default keywords"
+                    ),
+                }
+            }
+            Err(msg) => tracing::warn!(%msg, "invalid persisted wake word; keeping default"),
+        }
+    }
     // One shared tools handle (#31): the voice bridge, the web routes and
     // the scene config API all see hot updates.
     let shared_tools: web::server::SharedTools =
@@ -825,6 +850,7 @@ async fn main() -> anyhow::Result<()> {
         let grounding_for_voice = Arc::clone(&grounding_state);
         let streams_for_voice = Arc::clone(&segment_registry);
         let tools_for_voice = Arc::clone(&shared_tools);
+        let wake_word_for_voice = config.voice.wake_word.clone();
         let voice_engine_for_arming = Arc::clone(&voice_engine);
         // Conversation session (#30-B): the last 120 s of turns give
         // follow-ups ("再说详细点") their context.
@@ -964,6 +990,7 @@ async fn main() -> anyhow::Result<()> {
                                         .clone();
                                     web::routes::chat::web_block(&t, &ev.transcript).await
                                 },
+                                wake_word: wake_word_for_voice.clone(),
                             };
                             let grounded =
                                 if ctx.scene.is_some() { "scene" } else { "none" }.to_string();
@@ -1328,6 +1355,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Shutdown coordination signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // Restart endpoint channel (#32) — same graceful path as SIGTERM.
+    let restart_tx = shutdown_tx.clone();
 
     // Signal handler task: listen for SIGINT (ctrl-c) and SIGTERM
     let signal_handle = tokio::spawn(async move {
@@ -1399,6 +1428,10 @@ async fn main() -> anyhow::Result<()> {
         grounding_state,
         Arc::clone(&shared_tools),
         Arc::new(web::routes::capabilities::LlmTier(llm_tier.to_string())),
+        Arc::new(web::routes::capabilities::WakeWord(
+            config.voice.wake_word.clone(),
+        )),
+        restart_tx,
     )
     .await?;
 

@@ -54,6 +54,47 @@ pub struct VoiceEvent {
 }
 
 /// `[voice]` configuration section.
+/// Default wake word — also the shipped keywords.txt content.
+pub const DEFAULT_WAKE_WORD: &str = "小蜜蜂";
+
+/// 声母表（最长优先匹配；零声母音节不拆）。KWS tokens.txt 的词表就是
+/// 声母+带调韵母，所以 keywords 行必须按 声母/韵母 拆分拼写。
+const INITIALS: &[&str] = &[
+    "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x", "r",
+    "z", "c", "s", "y", "w",
+];
+
+/// Convert a Mandarin wake word into a sherpa-onnx KWS keywords line
+/// (`x iǎo m ì f ēng @小蜜蜂`). Rejects non-hanzi / unpinyinable
+/// characters and out-of-range lengths — the caller must not write a
+/// broken keywords file (it would deafen the wake word entirely).
+pub fn wake_word_to_keyword_line(word: &str) -> Result<String, String> {
+    let chars: Vec<char> = word.chars().collect();
+    if !(2..=6).contains(&chars.len()) {
+        return Err("唤醒词长度须为 2-6 个汉字".into());
+    }
+    use pinyin::ToPinyin;
+    let mut tokens: Vec<String> = Vec::new();
+    for &c in &chars {
+        let syllable = c
+            .to_pinyin()
+            .map(|p| p.with_tone().to_string())
+            .ok_or_else(|| format!("「{c}」不是可发音的汉字（唤醒词仅支持普通话汉字）"))?;
+        let initial = INITIALS
+            .iter()
+            .filter(|i| syllable.starts_with(*i) && syllable.len() > (*i).len())
+            .max_by_key(|i| i.len());
+        match initial {
+            Some(ini) => {
+                tokens.push((*ini).to_string());
+                tokens.push(syllable[ini.len()..].to_string());
+            }
+            None => tokens.push(syllable),
+        }
+    }
+    Ok(format!("{} @{}", tokens.join(" "), word))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceConfig {
@@ -66,6 +107,11 @@ pub struct VoiceConfig {
     /// Keywords file — one keyword per line, `tokens… @display-name`
     /// (zh-en phoneme model: `x iǎo m ì f ēng @小蜜蜂`).
     pub keywords_file: String,
+    /// Wake word (display name). Customized via the web scene config
+    /// (#32); at boot a non-default value regenerates the keywords
+    /// override file. Mandarin pronunciation only — the KWS model is a
+    /// zh syllable transducer.
+    pub wake_word: String,
     /// Wake-word sensitivity: lower threshold = easier to fire.
     pub keywords_threshold: f32,
     pub keywords_score: f32,
@@ -105,6 +151,7 @@ impl Default for VoiceConfig {
             kws_joiner: "models/voice/kws/joiner.int8.onnx".into(),
             kws_tokens: "models/voice/kws/tokens.txt".into(),
             keywords_file: "models/voice/kws/keywords.txt".into(),
+            wake_word: DEFAULT_WAKE_WORD.into(),
             keywords_threshold: 0.25,
             keywords_score: 1.0,
             paraformer_model: "models/voice/paraformer/model.int8.onnx".into(),
@@ -1240,6 +1287,43 @@ mod tests {
             ..VoiceConfig::default()
         });
         assert!(!e.is_active(), "missing models must not fake activity");
+    }
+
+    #[test]
+    fn wake_word_line_matches_shipped_keywords_file() {
+        // Golden: byte-identical to the shipped models/voice/kws/keywords.txt
+        // line — the exact format the zh syllable transducer consumes.
+        assert_eq!(
+            wake_word_to_keyword_line(DEFAULT_WAKE_WORD).unwrap(),
+            "x iǎo m ì f ēng @小蜜蜂"
+        );
+        assert_eq!(
+            wake_word_to_keyword_line("你好小蜂").unwrap(),
+            "n ǐ h ǎo x iǎo f ēng @你好小蜂"
+        );
+        // Zero-initial syllables stay whole (安 = ān, no initial to strip).
+        assert!(
+            wake_word_to_keyword_line("平安")
+                .unwrap()
+                .contains(" ān @平安")
+        );
+        // Multi-char initials must win over their prefixes (吃 = chī → ch ī).
+        assert!(
+            wake_word_to_keyword_line("吃饭饭")
+                .unwrap()
+                .starts_with("ch ī f àn")
+        );
+    }
+
+    #[test]
+    fn wake_word_rejects_unusable_words() {
+        assert!(wake_word_to_keyword_line("蜂").is_err(), "too short");
+        assert!(
+            wake_word_to_keyword_line("一二三四五六七").is_err(),
+            "too long"
+        );
+        assert!(wake_word_to_keyword_line("小蜜bee").is_err(), "non-hanzi");
+        assert!(wake_word_to_keyword_line("你好。").is_err(), "punctuation");
     }
 
     #[test]

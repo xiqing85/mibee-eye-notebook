@@ -79,6 +79,12 @@ pub struct AppRouterState {
     /// Newtype — a bare `Arc<String>` Extension would collide with the
     /// advertised-host extension of the same type.
     pub llm_tier: Arc<crate::routes::capabilities::LlmTier>,
+    /// Configured wake word (persona + display). Newtype to avoid an
+    /// Extension type collision with `Arc<String>` advertised-host.
+    pub wake_word: Arc<crate::routes::capabilities::WakeWord>,
+    /// Fires the graceful shutdown path (SIGTERM-equivalent) for
+    /// POST /api/system/restart (SPEC §5.1).
+    pub restart_tx: watch::Sender<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +291,10 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // and the per-protocol GET/PUT endpoints (dialect A7).
         .route("/api/config", get(routes::config_api::get_config))
         .route("/api/config", put(routes::config_api::put_config))
+        .route(
+            "/api/system/restart",
+            post(routes::config_api::restart_handler),
+        )
         .route("/api/status", get(routes::config_api::status_handler))
         // Observability (SPEC v1 §3.2)
         .route("/api/metrics/summary", get(crate::observe::metrics_summary))
@@ -358,6 +368,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(tools))
         .layer(Extension(scene))
         .layer(Extension(llm_tier))
+        .layer(Extension(state.wake_word.clone()))
+        .layer(Extension(state.restart_tx.clone()))
         .layer(Extension(meeting))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
@@ -420,6 +432,10 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
             streaming::tools::ToolsConfig::default(),
         )),
         llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+        wake_word: Arc::new(crate::routes::capabilities::WakeWord(
+            streaming::voice::DEFAULT_WAKE_WORD.into(),
+        )),
+        restart_tx: tokio::sync::watch::channel(false).0,
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -484,6 +500,10 @@ pub async fn test_app_with_user() -> Router {
             streaming::tools::ToolsConfig::default(),
         )),
         llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+        wake_word: Arc::new(crate::routes::capabilities::WakeWord(
+            streaming::voice::DEFAULT_WAKE_WORD.into(),
+        )),
+        restart_tx: tokio::sync::watch::channel(false).0,
         meeting: Arc::new(streaming::meeting::MeetingEngine::from_config(
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
@@ -687,6 +707,10 @@ pub async fn run(
     observability::register_metrics()?;
 
     let auth_db = Arc::new(Mutex::new(auth_db));
+    let (restart_tx, _unused_rx) = watch::channel(false);
+    let wake_word = Arc::new(crate::routes::capabilities::WakeWord(
+        streaming::voice::DEFAULT_WAKE_WORD.into(),
+    ));
     let state = AppRouterState {
         db,
         auth_db,
@@ -709,6 +733,8 @@ pub async fn run(
         grounding,
         tools,
         llm_tier,
+        wake_word,
+        restart_tx,
     };
     let app = build_app_with_state(state);
 
@@ -777,6 +803,8 @@ pub async fn run_with_shutdown(
     grounding: Arc<crate::grounding::GroundingState>,
     tools: SharedTools,
     llm_tier: Arc<crate::routes::capabilities::LlmTier>,
+    wake_word: Arc<crate::routes::capabilities::WakeWord>,
+    restart_tx: watch::Sender<bool>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -805,6 +833,8 @@ pub async fn run_with_shutdown(
         grounding,
         tools,
         llm_tier,
+        wake_word,
+        restart_tx,
     };
     let app = build_app_with_state(state);
 

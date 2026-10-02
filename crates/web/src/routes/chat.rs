@@ -51,6 +51,8 @@ pub struct TurnContext {
     pub local: Option<String>,
     /// 【联网】 — intent-gated lookup result (weather).
     pub web: Option<String>,
+    /// Configured wake word — the assistant's name (#32 persona).
+    pub wake_word: String,
 }
 
 fn language_hint(user_text: &str) -> Option<&'static str> {
@@ -69,12 +71,13 @@ fn language_hint(user_text: &str) -> Option<&'static str> {
 /// (Cantonese/English are nudged explicitly — a small model does not
 /// follow a generic instruction; Mandarin needs no hint).
 pub fn build_system_turn(ctx: &TurnContext, user_text: &str) -> ChatTurn {
-    let mut content = String::from(
-        "你是一台家庭安防摄像头上的语音助手，名叫小蜜蜂（唤醒词就是你的名字，\
+    let mut content = String::from(&format!(
+        "你是一台家庭安防摄像头上的语音助手，名叫{}（唤醒词就是你的名字，\
          不要说自己是其他助手）。用用户所用的语言回复（普通话、粤语或英语），\
          回答简洁。涉及时间、天气、画面等问题时，只依据下面给出的【】资料回答；没有资料就\
          如实说不知道。\n",
-    );
+        ctx.wake_word
+    ));
     if let Some(hint) = language_hint(user_text) {
         content.push_str(hint);
         content.push('\n');
@@ -222,6 +225,7 @@ pub async fn chat(
     Extension(streams): Extension<Arc<StreamManager>>,
     Extension(grounding): Extension<Arc<GroundingState>>,
     Extension(tools): Extension<crate::server::SharedTools>,
+    Extension(wake_word): Extension<Arc<crate::routes::capabilities::WakeWord>>,
     Extension(pool): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     body: axum::extract::Json<ChatRequest>,
@@ -243,6 +247,7 @@ pub async fn chat(
             .and_then(|id| grounding.scene_summary(id, unix_now_ms())),
         local: Some(local_block(&pool).await),
         web: web_block(&tools_now, &body.text).await,
+        wake_word: wake_word.0.clone(),
     };
     let scene = ctx.scene.clone();
 
@@ -306,6 +311,7 @@ mod tests {
             scene: scene.map(String::from),
             local: Some("当前时间 2026-10-01 21:00:00 周四；本机已运行 3小时5分".into()),
             web: None,
+            wake_word: streaming::voice::DEFAULT_WAKE_WORD.into(),
         }
     }
 
@@ -332,6 +338,15 @@ mod tests {
         let t = build_system_turn(&ctx(None), "你好");
         assert!(!t.content.contains("【画面】"), "{}", t.content);
         assert!(t.content.contains("【本机】"), "{}", t.content);
+    }
+
+    #[test]
+    fn system_turn_persona_follows_configured_wake_word() {
+        let mut c = ctx(None);
+        c.wake_word = "你好小蜂".into();
+        let t = build_system_turn(&c, "你叫什么名字");
+        assert!(t.content.contains("名叫你好小蜂"), "{}", t.content);
+        assert!(!t.content.contains("小蜜蜂"), "{}", t.content);
     }
 
     #[test]
