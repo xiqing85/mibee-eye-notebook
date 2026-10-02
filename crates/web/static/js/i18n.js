@@ -107,6 +107,13 @@ const DICT = {
     recordsSound: '声音', recordsVoice: '语音',
     // Voiceprint speakers (SPEC appendix A #25)
     speakersTitle: '说话人声纹', speakersDesc: '注册家人的唤醒词声纹：开启验证后，只有已注册的说话人能唤醒语音交互；语音记录会标注说话人',
+    // Face recognition (SPEC appendix A #33)
+    facesTitle: '已注册人脸', facesDesc: '注册家人人脸后，语音问「你看到谁」能直接回答名字',
+    facesNamePlaceholder: '姓名（如：张三）', facesEnroll: '注册人脸', facesCancel: '取消注册',
+    facesProgress: '人脸帧采集：{collected}/{needed}', facesEmpty: '暂无已注册人脸',
+    facesEnrolled: '人脸注册完成', facesCommitFailed: '人脸注册提交失败',
+    facesEnrollFailed: '无法开始人脸注册', facesLookAtCamera: '请正对摄像头，正在采集人脸…',
+    facesDeleteConfirm: '删除 {name} 的人脸注册？',
     speakersEnroll: '开始注册', speakersCancel: '取消注册',
     speakersNamePlaceholder: '说话人名字（如：小明）',
     speakersProgress: '请对着设备说唤醒词：已采集 {collected}/{needed}',
@@ -292,6 +299,13 @@ const DICT = {
     recordsSound: 'Sound', recordsVoice: 'Voice',
     // Voiceprint speakers (SPEC appendix A #25)
     speakersTitle: 'Enrolled speakers', speakersDesc: 'Enroll family wake-word voiceprints: with verification on, only enrolled speakers wake the voice loop; voice records are attributed',
+    // Face recognition (SPEC appendix A #33)
+    facesTitle: 'Enrolled faces', facesDesc: 'Enroll family faces; asking who is on screen then answers with names',
+    facesNamePlaceholder: 'Person name', facesEnroll: 'Enroll face', facesCancel: 'Cancel',
+    facesProgress: 'Face frames: {collected}/{needed}', facesEmpty: 'No faces enrolled yet',
+    facesEnrolled: 'Face enrolled', facesCommitFailed: 'Face enrollment commit failed',
+    facesEnrollFailed: 'Cannot start face enrollment', facesLookAtCamera: 'Please face the camera — capturing face frames…',
+    facesDeleteConfirm: 'Delete the face enrollment for {name}?',
     speakersEnroll: 'Enroll', speakersCancel: 'Cancel',
     speakersNamePlaceholder: 'Speaker name (e.g. Alice)',
     speakersProgress: 'Say the wake word at the device: {collected}/{needed} collected',

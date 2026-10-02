@@ -335,6 +335,9 @@ pub struct AppConfig {
     /// Dialogue task tools (weather lookup; SPEC appendix A #30-A).
     #[serde(default)]
     pub tools: streaming::tools::ToolsConfig,
+    /// Face recognition (#33) — off by default.
+    #[serde(default)]
+    pub face: streaming::face::FaceConfig,
     /// Resource-adaptive capability tiering (#30-E).
     #[serde(default)]
     pub resources: streaming::tools::ResourcesConfig,

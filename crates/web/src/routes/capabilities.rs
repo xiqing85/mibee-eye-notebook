@@ -168,6 +168,7 @@ pub async fn get_capabilities(
         "config_apply": {"default": "immediate", "sections": {"scene": "immediate"},
                          "auto": true},
         "restart": true,
+        "face": true,
         "observability": {"metrics": true, "logs": true, "requests": true},
         // Device-specific extension: the host hardware probe.
         "system": cached.system,

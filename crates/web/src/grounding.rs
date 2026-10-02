@@ -34,6 +34,9 @@ struct CameraGrounding {
     /// scene block for multi-dimensional visual judgment.
     zone_ts_ms: Option<u64>,
     zone_text: Option<String>,
+    /// Last face-recognition labels (#33) — e.g. `张三×1、未识别×1`.
+    face_ts_ms: Option<u64>,
+    face_text: Option<String>,
 }
 
 /// Shared, lock-guarded per-camera grounding state.
@@ -98,6 +101,8 @@ impl GroundingState {
                 vlm_text: None,
                 zone_ts_ms: None,
                 zone_text: None,
+                face_ts_ms: None,
+                face_text: None,
             });
         // Only move the timestamp forward — events can arrive out of
         // order across threads.
@@ -119,10 +124,37 @@ impl GroundingState {
                 vlm_text: None,
                 zone_ts_ms: None,
                 zone_text: None,
+                face_ts_ms: None,
+                face_text: None,
             });
         if cam.vlm_ts_ms.is_none_or(|old| ts_ms >= old) {
             cam.vlm_ts_ms = Some(ts_ms);
             cam.vlm_text = Some(text.to_string());
+        }
+    }
+
+    /// Feed from the face-recognition loop (#33): named/unknown face
+    /// labels become part of the scene (「画面人员：张三×1」).
+    pub fn record_face_labels(&self, camera_id: &str, ts_ms: u64, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let mut cams = self.cameras.lock().expect("grounding lock");
+        let cam = cams
+            .entry(camera_id.to_string())
+            .or_insert(CameraGrounding {
+                detection_ts_ms: 0,
+                labels: String::new(),
+                vlm_ts_ms: None,
+                vlm_text: None,
+                zone_ts_ms: None,
+                zone_text: None,
+                face_ts_ms: None,
+                face_text: None,
+            });
+        if cam.face_ts_ms.is_none_or(|old| ts_ms >= old) {
+            cam.face_ts_ms = Some(ts_ms);
+            cam.face_text = Some(text.to_string());
         }
     }
 
@@ -139,6 +171,8 @@ impl GroundingState {
                 vlm_text: None,
                 zone_ts_ms: None,
                 zone_text: None,
+                face_ts_ms: None,
+                face_text: None,
             });
         if cam.zone_ts_ms.is_none_or(|old| ts_ms >= old) {
             cam.zone_ts_ms = Some(ts_ms);
@@ -162,6 +196,11 @@ impl GroundingState {
         if let (Some(ts), Some(text)) = (cam.vlm_ts_ms, cam.vlm_text.as_deref()) {
             let age_s = now_ms.saturating_sub(ts) / 1000;
             parts.push(format!("画面描述（{age_s} 秒前，可能滞后）：{text}"));
+        }
+        if let (Some(ts), Some(text)) = (cam.face_ts_ms, cam.face_text.as_deref())
+            && now_ms.saturating_sub(ts) <= DETECTION_TTL.as_millis() as u64
+        {
+            parts.push(format!("画面人员：{text}"));
         }
         if let (Some(ts), Some(text)) = (cam.zone_ts_ms, cam.zone_text.as_deref())
             && now_ms.saturating_sub(ts) <= 60_000

@@ -60,6 +60,8 @@ pub struct AppRouterState {
     pub ocr: Arc<streaming::ocr::OcrEngine>,
     /// Voice interaction engine (inactive without `voice` feature/models).
     pub voice: Arc<streaming::voice::VoiceEngine>,
+    /// Face recognition engine (inactive when disabled/unavailable).
+    pub face: Arc<streaming::face::FaceEngine>,
     /// Local LLM dialogue engine (inactive without `llm` feature/model).
     pub chat: Arc<streaming::llm::ChatEngine>,
     /// VLM alarm-description engine (inactive without `llm`/models).
@@ -295,6 +297,15 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             "/api/system/restart",
             post(routes::config_api::restart_handler),
         )
+        // Face recognition enrollments (SPEC appendix A #33)
+        .route("/api/faces", get(routes::faces::list_faces))
+        .route("/api/faces", post(routes::faces::begin_enroll))
+        .route("/api/faces/commit", post(routes::faces::commit_enroll))
+        .route("/api/faces/cancel", post(routes::faces::cancel_enroll))
+        .route(
+            "/api/faces/{name}",
+            axum::routing::delete(routes::faces::delete_face),
+        )
         .route("/api/status", get(routes::config_api::status_handler))
         // Observability (SPEC v1 §3.2)
         .route("/api/metrics/summary", get(crate::observe::metrics_summary))
@@ -361,6 +372,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(zones))
         .layer(Extension(ocr))
         .layer(Extension(voice))
+        .layer(Extension(state.face.clone()))
         .layer(Extension(chat))
         .layer(Extension(vlm))
         .layer(Extension(decision))
@@ -417,6 +429,9 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         )),
         voice: Arc::new(streaming::voice::VoiceEngine::from_config(
             &streaming::voice::VoiceConfig::default(),
+        )),
+        face: Arc::new(streaming::face::FaceEngine::from_config(
+            &streaming::face::FaceConfig::default(),
         )),
         chat: Arc::new(streaming::llm::ChatEngine::from_config(
             &streaming::llm::LlmConfig::default(),
@@ -485,6 +500,9 @@ pub async fn test_app_with_user() -> Router {
         )),
         voice: Arc::new(streaming::voice::VoiceEngine::from_config(
             &streaming::voice::VoiceConfig::default(),
+        )),
+        face: Arc::new(streaming::face::FaceEngine::from_config(
+            &streaming::face::FaceConfig::default(),
         )),
         chat: Arc::new(streaming::llm::ChatEngine::from_config(
             &streaming::llm::LlmConfig::default(),
@@ -696,6 +714,7 @@ pub async fn run(
     zones: crate::zones::SharedZones,
     ocr: Arc<streaming::ocr::OcrEngine>,
     voice: Arc<streaming::voice::VoiceEngine>,
+    face: Arc<streaming::face::FaceEngine>,
     chat: Arc<streaming::llm::ChatEngine>,
     vlm: Arc<streaming::vlm::VlmEngine>,
     decision: Arc<streaming::decision::DecisionEngine>,
@@ -726,6 +745,7 @@ pub async fn run(
         zones,
         ocr,
         voice,
+        face,
         chat,
         vlm,
         decision,
@@ -796,6 +816,7 @@ pub async fn run_with_shutdown(
     zones: crate::zones::SharedZones,
     ocr: Arc<streaming::ocr::OcrEngine>,
     voice: Arc<streaming::voice::VoiceEngine>,
+    face: Arc<streaming::face::FaceEngine>,
     chat: Arc<streaming::llm::ChatEngine>,
     vlm: Arc<streaming::vlm::VlmEngine>,
     decision: Arc<streaming::decision::DecisionEngine>,
@@ -826,6 +847,7 @@ pub async fn run_with_shutdown(
         zones,
         ocr,
         voice,
+        face,
         chat,
         vlm,
         decision,

@@ -246,6 +246,90 @@ pub async fn delete_voice_speaker(pool: &SqlitePool, name: &str) -> Result<bool>
 }
 
 /// List enrolled speakers (metadata only).
+/// Face enrollment row (SPEC appendix A #33) — the embedding BLOB is
+/// LE f32, `dim` values.
+#[derive(Debug, serde::Serialize)]
+pub struct FaceRow {
+    pub id: i64,
+    pub name: String,
+    pub dim: i64,
+    pub created_at: String,
+}
+
+fn face_to_blob(v: &[f32]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(v.len() * 4);
+    for x in v {
+        b.extend_from_slice(&x.to_le_bytes());
+    }
+    b
+}
+
+fn blob_to_face(b: &[u8], dim: i64) -> Vec<f32> {
+    let n = (b.len() / 4).min(dim.max(0) as usize);
+    b.as_chunks::<4>()
+        .0
+        .iter()
+        .take(n)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+pub async fn insert_face(pool: &SqlitePool, name: &str, dim: i64, embedding: &[f32]) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO faces (name, dim, embedding) VALUES (?1, ?2, ?3)
+         ON CONFLICT(name) DO UPDATE SET dim = excluded.dim, embedding = excluded.embedding",
+    )
+    .bind(name)
+    .bind(dim)
+    .bind(face_to_blob(embedding))
+    .execute(pool)
+    .await
+    .context("face: insert")?;
+    Ok(())
+}
+
+pub async fn list_faces(pool: &SqlitePool) -> Result<Vec<FaceRow>> {
+    let rows: Vec<(i64, String, i64, String)> =
+        sqlx::query_as("SELECT id, name, dim, created_at FROM faces ORDER BY name")
+            .fetch_all(pool)
+            .await
+            .context("face: list")?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, dim, created_at)| FaceRow {
+            id,
+            name,
+            dim,
+            created_at,
+        })
+        .collect())
+}
+
+/// All enrolled templates for the boot-time registry load.
+pub async fn load_face_templates(pool: &SqlitePool) -> Result<Vec<streaming::face::EnrolledFace>> {
+    let rows: Vec<(String, i64, Vec<u8>)> =
+        sqlx::query_as("SELECT name, dim, embedding FROM faces ORDER BY name")
+            .fetch_all(pool)
+            .await
+            .context("face: load templates")?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, dim, embedding)| streaming::face::EnrolledFace {
+            name,
+            embedding: blob_to_face(&embedding, dim),
+        })
+        .collect())
+}
+
+pub async fn delete_face(pool: &SqlitePool, name: &str) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM faces WHERE name = ?1")
+        .bind(name)
+        .execute(pool)
+        .await
+        .context("face: delete")?;
+    Ok(r.rows_affected() > 0)
+}
+
 pub async fn list_voice_speakers(pool: &SqlitePool) -> Result<Vec<VoiceSpeakerRow>> {
     let rows: Vec<(i64, String, i64, i64, String)> =
         sqlx::query_as("SELECT id, name, dim, count, created_at FROM voice_speakers ORDER BY name")

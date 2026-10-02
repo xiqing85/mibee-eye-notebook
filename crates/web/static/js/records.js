@@ -77,6 +77,7 @@ export function updateRecordsVisibility() {
     tab.classList.toggle('hidden', !show);
   });
   updateSpeakersVisibility();
+  updateFacesVisibility();
   updateMeetingsVisibility();
 }
 
@@ -91,6 +92,7 @@ export function initRecords() {
   const refresh = $('records-refresh');
   if (refresh) refresh.addEventListener('click', renderRecords);
   initSpeakers();
+  initFaces();
   initMeetings();
   const clear = $('records-clear');
   if (clear) {
@@ -102,6 +104,117 @@ export function initRecords() {
     });
   }
   updateRecordsVisibility();
+}
+
+// -- Face recognition card (SPEC appendix A #33) --------------------------
+
+let faceEnrollPolling = false;
+
+function fmtFaceProgress(collected, needed) {
+  return t('facesProgress').replace('{collected}', String(collected)).replace('{needed}', String(needed));
+}
+
+export async function renderFaces() {
+  const card = $('faces-card');
+  if (!card || card.classList.contains('hidden')) return;
+  const listEl = $('faces-list');
+  if (!listEl) return;
+  const r = await api.get('/api/faces');
+  if (!r.ok) return;
+  const faces = r.data && r.data.faces ? r.data.faces : [];
+  listEl.innerHTML = '';
+  if (faces.length === 0) {
+    listEl.appendChild(el('div', { className: 'record-empty', textContent: t('facesEmpty') }));
+    return;
+  }
+  for (const f of faces) {
+    listEl.appendChild(el('span', { className: 'speaker-chip' }, [
+      el('span', { className: 'speaker-name', textContent: f.name }),
+      el('button', {
+        type: 'button', className: 'speaker-del', textContent: '✕',
+        title: t('facesDeleteConfirm').replace('{name}', f.name),
+        onclick: async () => {
+          const ok = await confirmDlg({ message: t('facesDeleteConfirm').replace('{name}', f.name), danger: true });
+          if (!ok) return;
+          await api.del('/api/faces/' + encodeURIComponent(f.name));
+          renderFaces();
+        },
+      }),
+    ]));
+  }
+}
+
+function setFaceEnrollUi(active, collected, needed) {
+  const prog = $('face-progress');
+  const cancel = $('face-cancel');
+  if (prog) {
+    prog.classList.toggle('hidden', !active);
+    if (active) prog.textContent = fmtFaceProgress(collected, needed);
+  }
+  if (cancel) cancel.classList.toggle('hidden', !active);
+  const enroll = $('face-enroll');
+  if (enroll) enroll.disabled = active;
+}
+
+async function pollFaceEnrollment() {
+  if (faceEnrollPolling) return;
+  faceEnrollPolling = true;
+  try {
+    for (;;) {
+      const r = await api.get('/api/faces');
+      if (!r.ok) break;
+      const st = r.data && r.data.enrollment;
+      if (!st) break;
+      setFaceEnrollUi(true, st.collected, st.needed);
+      if (st.collected >= st.needed) {
+        const c = await api.post('/api/faces/commit', {});
+        if (c.ok) toast(t('facesEnrolled'), 'success');
+        else toast(t('facesCommitFailed'), 'error');
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  } finally {
+    faceEnrollPolling = false;
+    setFaceEnrollUi(false, 0, 0);
+    renderFaces();
+  }
+}
+
+async function startFaceEnroll() {
+  const input = $('face-name');
+  if (!input) return;
+  const name = input.value.trim();
+  if (!name) {
+    input.focus();
+    return;
+  }
+  const r = await api.post('/api/faces', { name });
+  if (!r.ok) {
+    toast(r.message || t('facesEnrollFailed'), 'error');
+    return;
+  }
+  input.value = '';
+  toast(t('facesLookAtCamera'), 'info');
+  pollFaceEnrollment();
+}
+
+function initFaces() {
+  const enroll = $('face-enroll');
+  if (enroll) enroll.addEventListener('click', startFaceEnroll);
+  const cancel = $('face-cancel');
+  if (cancel) {
+    cancel.addEventListener('click', async () => {
+      await api.post('/api/faces/cancel', {});
+      renderFaces();
+    });
+  }
+}
+
+function updateFacesVisibility() {
+  const card = $('faces-card');
+  if (card) card.classList.toggle('hidden', !hasCap('face'));
+  renderFaces();
 }
 
 // -- Voiceprint speakers card (SPEC appendix A #25) ----------------------
