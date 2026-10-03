@@ -2,6 +2,7 @@
 
 export const store = {
   caps: null,          // /api/capabilities data (SPEC §3.1)
+  view: 'preview',     // currently active view (main.showView keeps it fresh)
   user: null,          // {username, role} after login
   cameras: [],         // Camera[] (SPEC §4)
   currentCameraId: null,

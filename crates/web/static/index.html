@@ -56,7 +56,13 @@
     </div>
   </div>
 
-  <!-- ===== Main App Shell ===== -->
+  <!-- ===== Main App Shell =====
+       Five primary destinations (2026-10 redesign): 监控 Live · 助手
+       Assistant · 记录 Records · AI · 系统 System. Capability-gated tabs
+       carry class="hidden" until their module unhides them. The old
+       cameras/settings/status/devices views folded in: the camera grid
+       lives at the bottom of Live; settings/status/devices are sub-views
+       of System (hashes #/settings #/status #/devices keep working). -->
   <div id="app" class="hidden">
     <!-- Top Navigation -->
     <header id="nav">
@@ -70,12 +76,10 @@
       </div>
       <nav class="nav-tabs" aria-label="Views">
         <button class="nav-tab active" data-view="preview"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none"/></svg><span data-i18n="live">Live</span></button>
-        <button class="nav-tab hidden" data-view="cameras"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg><span data-i18n="cameras">Cameras</span></button>
-        <button class="nav-tab" data-view="settings"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7.5M16.5 7H20M4 17h3.5M12.5 17H20"/><circle cx="14" cy="7" r="2.3"/><circle cx="10" cy="17" r="2.3"/></svg><span data-i18n="settings">Settings</span></button>
-        <button class="nav-tab hidden" data-view="models"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="12" rx="2"/><path d="M12 3.5v3M12 9.5v3m0 0-2-2m2 2 2-2M8.5 16.5h7"/></svg><span data-i18n="models">AI Models</span></button>
-        <button class="nav-tab" data-view="status"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h3.5L9 5.5l4.5 13L16 12h5"/></svg><span data-i18n="status">Status</span></button>
+        <button class="nav-tab hidden" data-view="assistant"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9.5h7M8.5 12h4.5"/></svg><span data-i18n="assistant">Assistant</span></button>
         <button class="nav-tab hidden" data-view="records"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.5h9.5L19 8v12.5H5z"/><path d="M8 11h8M8 14.5h8M8 18h5"/></svg><span data-i18n="records">Records</span></button>
-        <button class="nav-tab hidden" data-view="devices"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 10.5h4M10 13.5h4M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="devices">Devices</span></button>
+        <button class="nav-tab hidden" data-view="models"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="12" rx="2"/><path d="M12 3.5v3M12 9.5v3m0 0-2-2m2 2 2-2M8.5 16.5h7"/></svg><span data-i18n="aiNav">AI</span></button>
+        <button class="nav-tab" data-view="system"><svg class="icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7.5M16.5 7H20M4 17h3.5M12.5 17H20"/><circle cx="14" cy="7" r="2.3"/><circle cx="10" cy="17" r="2.3"/></svg><span data-i18n="system">System</span></button>
       </nav>
       <div class="nav-tools">
         <button class="tool-btn lang-btn" aria-pressed="false" title="Language">中/EN</button>
@@ -93,15 +97,13 @@
     <!-- Mobile Nav (bottom tab bar; tools stay in the top bar) -->
     <nav id="nav-mobile" aria-label="Views">
       <button class="nav-tab active" data-view="preview"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none"/></svg><span data-i18n="live">Live</span></button>
-      <button class="nav-tab hidden" data-view="cameras"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg><span data-i18n="cameras">Cameras</span></button>
-      <button class="nav-tab" data-view="settings"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7.5M16.5 7H20M4 17h3.5M12.5 17H20"/><circle cx="14" cy="7" r="2.3"/><circle cx="10" cy="17" r="2.3"/></svg><span data-i18n="settings">Settings</span></button>
-      <button class="nav-tab hidden" data-view="models"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="12" rx="2"/><path d="M12 3.5v3M12 9.5v3m0 0-2-2m2 2 2-2M8.5 16.5h7"/></svg><span data-i18n="models">AI Models</span></button>
-      <button class="nav-tab" data-view="status"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h3.5L9 5.5l4.5 13L16 12h5"/></svg><span data-i18n="status">Status</span></button>
+      <button class="nav-tab hidden" data-view="assistant"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9.5h7M8.5 12h4.5"/></svg><span data-i18n="assistant">Assistant</span></button>
       <button class="nav-tab hidden" data-view="records"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3.5h9.5L19 8v12.5H5z"/><path d="M8 11h8M8 14.5h8M8 18h5"/></svg><span data-i18n="records">Records</span></button>
-      <button class="nav-tab hidden" data-view="devices"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 10.5h4M10 13.5h4M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="devices">Devices</span></button>
+      <button class="nav-tab hidden" data-view="models"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="6.5" width="17" height="12" rx="2"/><path d="M12 3.5v3M12 9.5v3m0 0-2-2m2 2 2-2M8.5 16.5h7"/></svg><span data-i18n="aiNav">AI</span></button>
+      <button class="nav-tab" data-view="system"><svg class="icon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h7.5M16.5 7H20M4 17h3.5M12.5 17H20"/><circle cx="14" cy="7" r="2.3"/><circle cx="10" cy="17" r="2.3"/></svg><span data-i18n="system">System</span></button>
     </nav>
 
-    <!-- ===== View: Live Preview ===== -->
+    <!-- ===== View: Live Preview (monitors) ===== -->
     <div id="view-preview" class="view active">
       <div class="live-toolbar">
         <div class="field hidden" id="live-camera-field">
@@ -223,117 +225,187 @@
         </div>
         <div id="imaging-controls"></div>
       </div>
+
+      <!-- All cameras (extension: multi_camera) — the grid used to be its
+           own view; it lives under the live stage now so "监控" is one
+           complete destination. -->
+      <div id="cameras-section" class="cameras-section hidden-cap">
+        <h3 class="panel-title"><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg><span data-i18n="allCameras">All cameras</span></h3>
+        <div id="cameras-grid" class="cameras-grid"></div>
+      </div>
     </div>
 
-    <!-- ===== View: Cameras (multi_camera only) ===== -->
-    <div id="view-cameras" class="view">
+    <!-- ===== View: Assistant (voice chat + who's who) ===== -->
+    <div id="view-assistant" class="view">
       <div class="view-head">
-        <h2 data-i18n="camerasTitle">Cameras</h2>
-        <p class="view-desc" data-i18n="camerasDesc"></p>
+        <h2 data-i18n="assistantTitle">Voice assistant</h2>
+        <p class="view-desc" data-i18n="assistantDesc"></p>
       </div>
-      <div id="cameras-grid" class="cameras-grid"></div>
-    </div>
-
-    <!-- ===== View: Settings ===== -->
-    <div id="view-settings" class="view">
-      <div class="settings-header">
-        <h2 data-i18n="configTitle">Configuration</h2>
-        <div class="settings-actions">
-          <span id="unsaved-indicator" class="unsaved-indicator hidden"><span class="unsaved-dot"></span><span data-i18n="unsaved">Unsaved changes</span></span>
-          <button id="save-config" class="btn-primary" data-i18n="save">Save</button>
-        </div>
-      </div>
-      <div id="config-apply-banner" class="apply-banner hidden">
-        <svg class="icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17.2v.2"/></svg>
-        <span data-i18n="applyRestart">Some settings need a device restart to take effect</span>
-        <button type="button" id="btn-restart-device" class="btn-small btn-restart hidden">
-          <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 0 1 12.9-5.2L20 9.2"/><path d="M20 4.2v5h-5"/><path d="M19.5 12a7.5 7.5 0 0 1-12.9 5.2L4 14.8"/><path d="M4 19.8v-5h5"/></svg>
-          <span data-i18n="restartNow">Restart now</span>
-        </button>
-      </div>
-      <div class="settings-toggles">
-        <div class="toggle-row hidden" id="ptz-toggle-row">
-          <div class="toggle-info">
-            <label for="ptz-toggle" class="toggle-title" data-i18n="ptzControl">PTZ Control</label>
-            <span class="toggle-desc" data-i18n="ptzEnableDesc">Show direction controls on the Live view</span>
+      <div class="assistant-grid">
+        <div class="card chat-card">
+          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9.5h7M8.5 12h4.5"/></svg><span data-i18n="chatTitle">AI chat</span></h3>
+          <div id="chat-log" class="chat-log"></div>
+          <div id="chat-waveform-wrap" class="chat-waveform hidden">
+            <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5v3M12 17.5v3M8.5 8v8M15.5 8v8M5 10.5v3M19 10.5v3"/></svg>
+            <canvas id="chat-waveform" width="308" height="44" data-i18n-title="waveformTitle" aria-label="waveform"></canvas>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="ptz-toggle">
-            <span class="switch-slider"></span>
-          </label>
-        </div>
-      </div>
-      <div id="config-loading" class="loading-state">
-        <div class="spinner"></div>
-        <span data-i18n="loading">Loading...</span>
-      </div>
-      <form id="config-form" class="hidden"></form>
-    </div>
-
-    <!-- ===== View: Status ===== -->
-    <div id="view-status" class="view">
-      <div class="view-head">
-        <h2 data-i18n="statusTitle">System Status</h2>
-        <p class="view-desc" data-i18n="statusDesc"></p>
-      </div>
-      <div class="status-grid">
-        <div class="card">
-          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5A1.5 1.5 0 0 1 5 7h2.6l1.6-2.2A1.5 1.5 0 0 1 10.4 4h3.2a1.5 1.5 0 0 1 1.2.6L16.4 7H19a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 17z"/><circle cx="12" cy="12.5" r="3.4"/></svg><span data-i18n="cameraInfo">Camera Info</span></h3>
-          <div class="readings" id="camera-info"></div>
-        </div>
-        <div class="card">
-          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="statusTitle">System</span></h3>
-          <div class="readings" id="device-info"></div>
-        </div>
-        <div class="card hidden" id="ptz-status-card">
-          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></svg><span data-i18n="ptzPosition">PTZ Position</span></h3>
-          <div class="readings">
-            <div class="reading"><span class="reading-label" data-i18n="pan">Pan</span><span class="reading-val" id="s-pan">0&deg;</span></div>
-            <div class="reading"><span class="reading-label" data-i18n="tilt">Tilt</span><span class="reading-val" id="s-tilt">0&deg;</span></div>
-            <div class="reading"><span class="reading-label" data-i18n="zoom">Zoom</span><span class="reading-val" id="s-zoom">1.0x</span></div>
+          <div class="chat-input-row">
+            <input id="chat-input" type="text" maxlength="500" autocomplete="off" data-i18n-placeholder="chatPlaceholder">
+            <button type="button" id="chat-vision" class="tool-btn chat-vision hidden" data-i18n-title="chatVisionTitle" aria-label="vision">👁</button>
+            <button type="button" id="chat-send" class="btn-primary" data-i18n="chatSend">Send</button>
           </div>
         </div>
-        <div class="card">
-          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8 15.5a6 6 0 0 1 8 0"/><circle cx="12" cy="18.5" r="1.4" fill="currentColor" stroke="none"/></svg><span data-i18n="connection">Connection</span></h3>
-          <div class="conn-status">
-            <div class="conn-row" id="events-row"><span data-i18n="events">Events</span><span class="status-badge offline" id="events-badge"><span class="badge-dot"></span><span id="events-label" data-i18n="disconnected">Disconnected</span></span></div>
-            <div class="conn-row"><span data-i18n="apiLabel">API</span><span class="status-badge" id="api-badge"><span class="badge-dot"></span><span id="api-label" data-i18n="checking">Checking...</span></span></div>
+        <div class="assistant-side">
+          <!-- Speakers (SPEC appendix A #25) and faces (SPEC appendix A
+               #33) teach the assistant who is who — they belong beside the
+               chat, not inside records. -->
+          <div id="speakers-card" class="card hidden">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8 15.5a6 6 0 0 1 8 0"/><circle cx="12" cy="18.5" r="1.4" fill="currentColor" stroke="none"/></svg><span data-i18n="speakersTitle">Enrolled speakers</span></h3>
+            <p class="card-desc" data-i18n="speakersDesc"></p>
+            <div class="live-toolbar records-toolbar">
+              <input id="speaker-name" type="text" maxlength="32" data-i18n-placeholder="speakersNamePlaceholder" placeholder="Speaker name">
+              <button type="button" id="speaker-enroll" class="btn-small" data-i18n="speakersEnroll">Enroll</button>
+              <button type="button" id="speaker-cancel" class="btn-small hidden" data-i18n="speakersCancel">Cancel</button>
+            </div>
+            <div id="speaker-progress" class="record-empty hidden"></div>
+            <div id="speakers-list"></div>
           </div>
-        </div>
-      </div>
-      <div class="card hidden obs-card" id="obs-card">
-        <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20h18M6 16v-5M10 16V8M14 16v-8M18 16v-3"/></svg><span data-i18n="obsTitle">Resource Monitor</span></h3>
-        <p class="obs-group-label" data-i18n="obsSystem">System</p>
-        <div class="obs-grid">
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsCpu">CPU</span><span class="obs-val" id="obs-cpu-val">-</span></div><canvas id="obs-cpu" class="obs-chart" aria-hidden="true"></canvas></div>
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsMem">Memory</span><span class="obs-val" id="obs-mem-val">-</span></div><canvas id="obs-mem" class="obs-chart" aria-hidden="true"></canvas></div>
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsDisk">Disk</span><span class="obs-val mono" id="obs-disk-path"></span><span class="obs-val" id="obs-disk-val">-</span></div><canvas id="obs-disk" class="obs-chart" aria-hidden="true"></canvas></div>
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsNet">Network</span><span class="obs-val" id="obs-net-val">-</span></div><canvas id="obs-net" class="obs-chart" aria-hidden="true"></canvas></div>
-        </div>
-        <p class="obs-group-label" data-i18n="obsProcess">This Service</p>
-        <div class="obs-grid">
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsCpu">CPU</span><span class="obs-val" id="obs-pcpu-val">-</span></div><canvas id="obs-pcpu" class="obs-chart" aria-hidden="true"></canvas></div>
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsRss">Memory</span><span class="obs-val" id="obs-prss-val">-</span></div><canvas id="obs-prss" class="obs-chart" aria-hidden="true"></canvas></div>
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsStore">Storage</span><span class="obs-val" id="obs-pstore-val">-</span></div><canvas id="obs-pstore" class="obs-chart" aria-hidden="true"></canvas></div>
-          <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsTraffic">Traffic</span><span class="obs-val" id="obs-pnet-val">-</span></div><canvas id="obs-pnet" class="obs-chart" aria-hidden="true"></canvas></div>
-        </div>
-      </div>
-      <div class="obs-panes">
-        <div class="card hidden" id="obs-logs-card">
-          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg><span data-i18n="obsLogs">Recent Logs</span></h3>
-          <ul class="obs-logs" id="obs-logs"></ul>
-        </div>
-        <div class="card hidden" id="obs-requests-card">
-          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.5l3 2"/></svg><span data-i18n="obsRequests">Request Traces</span></h3>
-          <table class="obs-requests">
-            <thead><tr><th data-i18n="obsReqId">ID</th><th data-i18n="obsReqMethod">Method</th><th data-i18n="obsReqPath">Path</th><th data-i18n="obsReqStatus">Status</th><th data-i18n="obsReqDuration">Duration</th></tr></thead>
-            <tbody id="obs-requests"></tbody>
-          </table>
+          <div id="faces-card" class="card hidden">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9 10.5h.01M15 10.5h.01M8.5 14.5a4.5 4.5 0 0 0 7 0"/></svg><span data-i18n="facesTitle">Enrolled faces</span></h3>
+            <p class="card-desc" data-i18n="facesDesc"></p>
+            <div class="live-toolbar records-toolbar">
+              <input id="face-name" type="text" maxlength="32" data-i18n-placeholder="facesNamePlaceholder" placeholder="Person name">
+              <button type="button" id="face-enroll" class="btn-small" data-i18n="facesEnroll">Enroll</button>
+              <button type="button" id="face-cancel" class="btn-small hidden" data-i18n="facesCancel">Cancel</button>
+            </div>
+            <div id="face-progress" class="record-empty hidden"></div>
+            <div id="faces-list"></div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- ===== View: AI models (model_manager capability only, SPEC §4.9/§4.10) ===== -->
+    <!-- ===== View: System (settings / status / devices sub-views) ===== -->
+    <div id="view-system" class="view">
+      <div class="subnav" id="system-subnav" role="tablist" aria-label="System views">
+        <button class="subnav-btn active" data-subview="settings" data-i18n="settings">Settings</button>
+        <button class="subnav-btn" data-subview="status" data-i18n="status">Status</button>
+        <button class="subnav-btn hidden" data-subview="devices" data-i18n="devices">Devices</button>
+      </div>
+
+      <!-- ——— System ▸ Settings ——— -->
+      <div class="sys-pane active" id="sys-settings">
+        <div class="settings-header">
+          <h2 data-i18n="configTitle">Configuration</h2>
+          <div class="settings-actions">
+            <span id="unsaved-indicator" class="unsaved-indicator hidden"><span class="unsaved-dot"></span><span data-i18n="unsaved">Unsaved changes</span></span>
+            <button id="save-config" class="btn-primary" data-i18n="save">Save</button>
+          </div>
+        </div>
+        <div id="config-apply-banner" class="apply-banner hidden">
+          <svg class="icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17.2v.2"/></svg>
+          <span data-i18n="applyRestart">Some settings need a device restart to take effect</span>
+          <button type="button" id="btn-restart-device" class="btn-small btn-restart hidden">
+            <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 0 1 12.9-5.2L20 9.2"/><path d="M20 4.2v5h-5"/><path d="M19.5 12a7.5 7.5 0 0 1-12.9 5.2L4 14.8"/><path d="M4 19.8v-5h5"/></svg>
+            <span data-i18n="restartNow">Restart now</span>
+          </button>
+        </div>
+        <div class="settings-toggles">
+          <div class="toggle-row hidden" id="ptz-toggle-row">
+            <div class="toggle-info">
+              <label for="ptz-toggle" class="toggle-title" data-i18n="ptzControl">PTZ Control</label>
+              <span class="toggle-desc" data-i18n="ptzEnableDesc">Show direction controls on the Live view</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="ptz-toggle">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div id="config-loading" class="loading-state">
+          <div class="spinner"></div>
+          <span data-i18n="loading">Loading...</span>
+        </div>
+        <form id="config-form" class="hidden"></form>
+      </div>
+
+      <!-- ——— System ▸ Status ——— -->
+      <div class="sys-pane" id="sys-status">
+        <div class="status-grid">
+          <div class="card">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5A1.5 1.5 0 0 1 5 7h2.6l1.6-2.2A1.5 1.5 0 0 1 10.4 4h3.2a1.5 1.5 0 0 1 1.2.6L16.4 7H19a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 17z"/><circle cx="12" cy="12.5" r="3.4"/></svg><span data-i18n="cameraInfo">Camera Info</span></h3>
+            <div class="readings" id="camera-info"></div>
+          </div>
+          <div class="card">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="statusTitle">System</span></h3>
+            <div class="readings" id="device-info"></div>
+          </div>
+          <div class="card hidden" id="ptz-status-card">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></svg><span data-i18n="ptzPosition">PTZ Position</span></h3>
+            <div class="readings">
+              <div class="reading"><span class="reading-label" data-i18n="pan">Pan</span><span class="reading-val" id="s-pan">0&deg;</span></div>
+              <div class="reading"><span class="reading-label" data-i18n="tilt">Tilt</span><span class="reading-val" id="s-tilt">0&deg;</span></div>
+              <div class="reading"><span class="reading-label" data-i18n="zoom">Zoom</span><span class="reading-val" id="s-zoom">1.0x</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8 15.5a6 6 0 0 1 8 0"/><circle cx="12" cy="18.5" r="1.4" fill="currentColor" stroke="none"/></svg><span data-i18n="connection">Connection</span></h3>
+            <div class="conn-status">
+              <div class="conn-row" id="events-row"><span data-i18n="events">Events</span><span class="status-badge offline" id="events-badge"><span class="badge-dot"></span><span id="events-label" data-i18n="disconnected">Disconnected</span></span></div>
+              <div class="conn-row"><span data-i18n="apiLabel">API</span><span class="status-badge" id="api-badge"><span class="badge-dot"></span><span id="api-label" data-i18n="checking">Checking...</span></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="card hidden obs-card" id="obs-card">
+          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20h18M6 16v-5M10 16V8M14 16v-8M18 16v-3"/></svg><span data-i18n="obsTitle">Resource Monitor</span></h3>
+          <p class="obs-group-label" data-i18n="obsSystem">System</p>
+          <div class="obs-grid">
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsCpu">CPU</span><span class="obs-val" id="obs-cpu-val">-</span></div><canvas id="obs-cpu" class="obs-chart" aria-hidden="true"></canvas></div>
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsMem">Memory</span><span class="obs-val" id="obs-mem-val">-</span></div><canvas id="obs-mem" class="obs-chart" aria-hidden="true"></canvas></div>
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsDisk">Disk</span><span class="obs-val mono" id="obs-disk-path"></span><span class="obs-val" id="obs-disk-val">-</span></div><canvas id="obs-disk" class="obs-chart" aria-hidden="true"></canvas></div>
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsNet">Network</span><span class="obs-val" id="obs-net-val">-</span></div><canvas id="obs-net" class="obs-chart" aria-hidden="true"></canvas></div>
+          </div>
+          <p class="obs-group-label" data-i18n="obsProcess">This Service</p>
+          <div class="obs-grid">
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsCpu">CPU</span><span class="obs-val" id="obs-pcpu-val">-</span></div><canvas id="obs-pcpu" class="obs-chart" aria-hidden="true"></canvas></div>
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsRss">Memory</span><span class="obs-val" id="obs-prss-val">-</span></div><canvas id="obs-prss" class="obs-chart" aria-hidden="true"></canvas></div>
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsStore">Storage</span><span class="obs-val" id="obs-pstore-val">-</span></div><canvas id="obs-pstore" class="obs-chart" aria-hidden="true"></canvas></div>
+            <div class="obs-cell"><div class="obs-cell-head"><span data-i18n="obsTraffic">Traffic</span><span class="obs-val" id="obs-pnet-val">-</span></div><canvas id="obs-pnet" class="obs-chart" aria-hidden="true"></canvas></div>
+          </div>
+        </div>
+        <div class="obs-panes">
+          <div class="card hidden" id="obs-logs-card">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg><span data-i18n="obsLogs">Recent Logs</span></h3>
+            <ul class="obs-logs" id="obs-logs"></ul>
+          </div>
+          <div class="card hidden" id="obs-requests-card">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v4.5l3 2"/></svg><span data-i18n="obsRequests">Request Traces</span></h3>
+            <table class="obs-requests">
+              <thead><tr><th data-i18n="obsReqId">ID</th><th data-i18n="obsReqMethod">Method</th><th data-i18n="obsReqPath">Path</th><th data-i18n="obsReqStatus">Status</th><th data-i18n="obsReqDuration">Duration</th></tr></thead>
+              <tbody id="obs-requests"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ——— System ▸ Devices ——— -->
+      <div class="sys-pane" id="sys-devices">
+        <div class="card">
+          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6.5" width="13" height="11" rx="2"/><path d="M16 10.5l5-3v9l-5-3"/></svg><span data-i18n="videoDevices">Video devices</span></h3>
+          <div id="video-devices"></div>
+        </div>
+        <div class="card">
+          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9.5" y="3.5" width="5" height="10" rx="2.5"/><path d="M6 11.5a6 6 0 0 0 12 0M12 17.5v3"/></svg><span data-i18n="audioDevices">Audio devices</span></h3>
+          <div id="audio-devices"></div>
+        </div>
+        <div class="card">
+          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="hostCaps">Host capabilities</span></h3>
+          <div class="readings" id="device-caps"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== View: AI (model_manager + cloud_ai, SPEC §4.9/§4.10) ===== -->
     <div id="view-models" class="view">
       <div class="view-head">
         <h2 data-i18n="modelsTitle">AI Models</h2>
@@ -379,33 +451,13 @@
           <button type="button" id="cloud-save" class="btn-primary" data-i18n="save">Save</button>
         </div>
       </div>
-      <div id="models-caps"></div>
+      <div id="models-caps" class="models-grid"></div>
       <div class="live-toolbar records-toolbar">
         <button type="button" id="models-refresh" class="btn-small" data-i18n="modelRefresh">Refresh</button>
       </div>
     </div>
 
-    <!-- ===== View: Devices (devices capability only) ===== -->
-    <div id="view-devices" class="view">
-      <div class="view-head">
-        <h2 data-i18n="devicesTitle">Host Devices</h2>
-        <p class="view-desc" data-i18n="devicesDesc"></p>
-      </div>
-      <div class="card">
-        <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6.5" width="13" height="11" rx="2"/><path d="M16 10.5l5-3v9l-5-3"/></svg><span data-i18n="videoDevices">Video devices</span></h3>
-        <div id="video-devices"></div>
-      </div>
-      <div class="card">
-        <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9.5" y="3.5" width="5" height="10" rx="2.5"/><path d="M6 11.5a6 6 0 0 0 12 0M12 17.5v3"/></svg><span data-i18n="audioDevices">Audio devices</span></h3>
-        <div id="audio-devices"></div>
-      </div>
-      <div class="card">
-        <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg><span data-i18n="hostCaps">Host capabilities</span></h3>
-        <div class="readings" id="device-caps"></div>
-      </div>
-    </div>
-
-    <!-- ===== View: Hearing records (audio_records capability only) ===== -->
+    <!-- ===== View: Records (meetings + hearing records) ===== -->
     <div id="view-records" class="view">
       <div class="view-head">
         <h2 data-i18n="recordsTitle">Hearing records</h2>
@@ -422,32 +474,6 @@
           <button type="button" id="meeting-stop" class="btn-small hidden" data-i18n="meetingsStop">End meeting</button>
         </div>
         <div id="meetings-list"></div>
-      </div>
-      <div id="speakers-card" class="card hidden">
-        <div class="view-head">
-          <h3 data-i18n="speakersTitle">Enrolled speakers</h3>
-          <p class="view-desc" data-i18n="speakersDesc"></p>
-        </div>
-        <div class="live-toolbar records-toolbar">
-          <input id="speaker-name" type="text" maxlength="32" data-i18n-placeholder="speakersNamePlaceholder" placeholder="Speaker name">
-          <button type="button" id="speaker-enroll" class="btn-small" data-i18n="speakersEnroll">Enroll</button>
-          <button type="button" id="speaker-cancel" class="btn-small hidden" data-i18n="speakersCancel">Cancel</button>
-        </div>
-        <div id="speaker-progress" class="record-empty hidden"></div>
-        <div id="speakers-list"></div>
-      </div>
-      <div id="faces-card" class="card hidden">
-        <div class="view-head">
-          <h3 data-i18n="facesTitle">Enrolled faces</h3>
-          <p class="view-desc" data-i18n="facesDesc"></p>
-        </div>
-        <div class="live-toolbar records-toolbar">
-          <input id="face-name" type="text" maxlength="32" data-i18n-placeholder="facesNamePlaceholder" placeholder="Person name">
-          <button type="button" id="face-enroll" class="btn-small" data-i18n="facesEnroll">Enroll</button>
-          <button type="button" id="face-cancel" class="btn-small hidden" data-i18n="facesCancel">Cancel</button>
-        </div>
-        <div id="face-progress" class="record-empty hidden"></div>
-        <div id="faces-list"></div>
       </div>
       <div class="card">
         <div class="live-toolbar records-toolbar">
@@ -497,27 +523,6 @@
         </div>
         <ul id="zones-list" class="zones-list"></ul>
       </div>
-    </div>
-  </div>
-
-  <!-- Local chat panel (extension: chat, SPEC appendix A #22) -->
-  <button type="button" id="chat-fab" class="chat-fab hidden" aria-label="AI chat" title="AI chat">
-    <svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9.5h7M8.5 12h4.5"/></svg>
-  </button>
-  <div id="chat-panel" class="chat-panel hidden">
-    <div class="modal-head">
-      <span data-i18n="chatTitle">AI chat</span>
-      <button type="button" id="chat-close" class="tool-btn" aria-label="Close">✕</button>
-    </div>
-    <div id="chat-log" class="chat-log"></div>
-    <div id="chat-waveform-wrap" class="chat-waveform hidden">
-      <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5v3M12 17.5v3M8.5 8v8M15.5 8v8M5 10.5v3M19 10.5v3"/></svg>
-      <canvas id="chat-waveform" width="308" height="34" data-i18n-title="waveformTitle" aria-label="waveform"></canvas>
-    </div>
-    <div class="chat-input-row">
-      <input id="chat-input" type="text" maxlength="500" autocomplete="off" data-i18n-placeholder="chatPlaceholder">
-      <button type="button" id="chat-vision" class="tool-btn chat-vision hidden" data-i18n-title="chatVisionTitle" aria-label="vision">👁</button>
-      <button type="button" id="chat-send" class="btn-primary" data-i18n="chatSend">Send</button>
     </div>
   </div>
 

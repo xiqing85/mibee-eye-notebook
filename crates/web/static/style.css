@@ -521,6 +521,9 @@ input:focus, select:focus {
    View scaffolding
    ------------------------------------------------------------------- */
 .view-head { padding: var(--space-md) var(--space-md) 0; max-width: var(--content-w); margin: 0 auto; }
+.card .view-head { padding: 0 0 var(--space-sm); margin: 0; max-width: none; }
+.card .view-head h3 { font-size: .95rem; }
+.card .view-head .view-desc { margin-top: 4px; }
 .view-head h2 { font-size: 1.22rem; font-weight: 700; letter-spacing: -.01em; }
 .view-desc { font-size: .82rem; color: var(--text-secondary); margin-top: 2px; }
 
@@ -587,7 +590,10 @@ input:focus, select:focus {
   align-content: start;
   gap: var(--space-md);
   padding: var(--space-md);
-  height: calc(100vh - var(--nav-h));
+  padding-bottom: var(--space-2xl);
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .live-toolbar {
@@ -615,7 +621,7 @@ input:focus, select:focus {
 }
 
 .stream-wrapper {
-  flex: 1;
+  flex: 1 1 460px;
   position: relative;
   background: #000;
   border-radius: var(--radius-md);
@@ -625,7 +631,7 @@ input:focus, select:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 320px;
+  height: clamp(320px, calc(100vh - var(--nav-h) - 200px), 720px);
 }
 .stream-wrapper:fullscreen { border: none; border-radius: 0; }
 
@@ -993,12 +999,46 @@ input[type="range"]::-moz-range-thumb {
 /* -------------------------------------------------------------------
    Settings / Config form
    ------------------------------------------------------------------- */
-#view-settings {
+#view-system {
   padding: var(--space-md);
   padding-bottom: var(--space-2xl);
   max-width: var(--content-w);
   margin: 0 auto;
 }
+
+/* Segmented control for the System sub-views (设置 / 状态 / 设备). */
+.subnav {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: var(--space-md);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.subnav-btn {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: .85rem;
+  font-weight: 550;
+  padding: 7px 18px;
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--ease-fast), background var(--ease-fast), box-shadow var(--ease-fast);
+}
+.subnav-btn:hover { color: var(--text-primary); }
+.subnav-btn.active {
+  color: var(--accent-text);
+  background: var(--card-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.sys-pane { display: none; }
+.sys-pane.active { display: block; animation: view-in var(--ease-normal); }
 
 .settings-header {
   display: flex;
@@ -1159,15 +1199,17 @@ input[type="range"]::-moz-range-thumb {
 /* -------------------------------------------------------------------
    Cameras grid
    ------------------------------------------------------------------- */
-#view-cameras { padding-bottom: var(--space-xl); }
+.cameras-section {
+  flex: 0 0 100%;
+  margin-top: var(--space-xs);
+}
+.cameras-section .panel-title { margin-bottom: 0; }
 
 .cameras-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: var(--space-md);
-  padding: var(--space-md);
-  max-width: 1400px;
-  margin: 0 auto;
+  padding: var(--space-sm) 0 0;
 }
 
 .tile {
@@ -1234,12 +1276,7 @@ input[type="range"]::-moz-range-thumb {
 /* -------------------------------------------------------------------
    Status view
    ------------------------------------------------------------------- */
-#view-status {
-  padding: var(--space-md);
-  padding-bottom: var(--space-2xl);
-  max-width: var(--content-w);
-  margin: 0 auto;
-}
+#sys-status { padding-top: var(--space-xs); }
 
 .status-grid {
   display: grid;
@@ -1388,13 +1425,7 @@ input[type="range"]::-moz-range-thumb {
 /* -------------------------------------------------------------------
    Devices view
    ------------------------------------------------------------------- */
-#view-devices {
-  padding: var(--space-md);
-  padding-bottom: var(--space-2xl);
-  max-width: var(--content-w);
-  margin: 0 auto;
-}
-#view-devices .card { margin-bottom: var(--space-md); }
+#sys-devices .card { margin-bottom: var(--space-md); }
 
 .device-row {
   display: flex;
@@ -1599,7 +1630,7 @@ input[type="range"]::-moz-range-thumb {
      bottom nav off-screen (#6). */
   .live-toolbar { flex: 0 0 auto; width: 100%; flex-wrap: wrap; gap: 8px; }
   .live-toolbar .field { flex-wrap: wrap; min-width: 0; }
-  .stream-wrapper { flex: 0 0 auto; width: 100%; min-height: 230px; }
+  .stream-wrapper { flex: 0 0 auto; width: 100%; height: auto; min-height: 230px; max-height: 46vh; }
   .imaging-section { flex: 0 0 auto; width: 100%; }
   .ptz-panel { width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; }
   .ptz-panel .panel-title { width: 100%; }
@@ -1608,8 +1639,14 @@ input[type="range"]::-moz-range-thumb {
   .ptz-zoom { flex: 1; min-width: 130px; }
   .ptz-status { width: 100%; }
 
-  #view-settings, #view-status, #view-devices { padding-bottom: 90px; }
-  .cameras-grid { padding-bottom: 90px; }
+  #view-system { padding-bottom: 90px; }
+  .assistant-grid { grid-template-columns: 1fr; padding-bottom: 90px; }
+  .chat-log { height: 300px; }
+  .models-grid { grid-template-columns: 1fr; padding-bottom: 90px; }
+  #view-records { padding-bottom: 90px; }
+  #view-models { padding-bottom: 90px; }
+  #view-models .card { margin-left: var(--space-sm); margin-right: var(--space-sm); }
+  .models-grid { padding-left: var(--space-sm); padding-right: var(--space-sm); }
 
   .status-grid { grid-template-columns: 1fr; }
 
@@ -1711,50 +1748,27 @@ input[type="range"]::-moz-range-thumb {
 .zones-list .tool-btn.danger { color: #ff7a7a; }
 
 /* -------------------------------------------------------------------
-   Chat panel (extension: chat, SPEC appendix A #22)
+   Assistant view (voice chat inline + who's-who enrollment)
    ------------------------------------------------------------------- */
-.chat-fab {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 8000;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--card-solid);
-  border: 1px solid var(--border-light);
-  color: var(--text-1, inherit);
-  box-shadow: var(--shadow-lg);
-  cursor: pointer;
-}
-.chat-fab:hover { border-color: var(--accent, #3aa0ff); }
-.chat-panel {
-  position: fixed;
-  right: 20px;
-  bottom: 74px;
-  z-index: 8000;
-  width: min(360px, calc(100vw - 32px));
-  max-height: min(480px, calc(100vh - 120px));
-  display: flex;
-  flex-direction: column;
-  background: var(--card-solid);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
+.assistant-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(260px, 2fr);
+  gap: var(--space-md);
   padding: var(--space-md);
-  box-shadow: var(--shadow-lg);
-  animation: view-in var(--ease-normal);
+  max-width: var(--content-w);
+  margin: 0 auto;
+  align-items: start;
 }
+.assistant-side { display: flex; flex-direction: column; gap: var(--space-md); min-width: 0; }
+.card-desc { font-size: .78rem; color: var(--text-secondary); margin: -8px 0 var(--space-md); }
+.chat-card { display: flex; flex-direction: column; }
 .chat-log {
-  flex: 1;
+  height: clamp(240px, calc(100vh - var(--nav-h) - 320px), 460px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: var(--space-xs) 0;
-  min-height: 120px;
 }
 .chat-bubble {
   max-width: 86%;
@@ -1806,7 +1820,14 @@ input[type="range"]::-moz-range-thumb {
   background: color-mix(in srgb, var(--accent, #3aa0ff) 18%, transparent);
 }
 
-/* ===== Hearing records view (audio_records, SPEC appendix A #24) ===== */
+/* ===== Records view (audio_records, SPEC appendix A #24) ===== */
+#view-records {
+  max-width: var(--content-w);
+  margin: 0 auto;
+  padding: 0 var(--space-md);
+}
+#view-records .card { margin-bottom: var(--space-md); }
+#view-records .view-head { padding-bottom: var(--space-sm); }
 .records-toolbar {
   display: flex;
   align-items: center;
@@ -1924,7 +1945,23 @@ input[type="range"]::-moz-range-thumb {
   color: inherit;
 }
 
-/* ===== AI models page (model_manager + cloud_ai, SPEC §4.9/§4.10) ===== */
+/* ===== AI page (model_manager + cloud_ai, SPEC §4.9/§4.10) ===== */
+#view-models {
+  padding-bottom: var(--space-2xl);
+}
+#view-models > .view-head { padding-bottom: var(--space-sm); }
+#view-models .card { margin: 0 var(--space-md) var(--space-md); }
+.models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: var(--space-md);
+  padding: var(--space-xs) var(--space-md) 0;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+.models-grid .card { margin: 0; }
+.models-grid .view-head { padding-bottom: var(--space-sm); }
 .model-list { display: flex; flex-direction: column; gap: 4px; }
 .model-row {
   display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-sm);
@@ -1964,7 +2001,12 @@ input[type="range"]::-moz-range-thumb {
 /* ===== Voice waveform strip (SPEC §6 audio_level) ===== */
 .chat-waveform {
   display: flex; align-items: center; gap: 8px;
-  padding: 4px 12px 2px; border-top: 1px solid var(--border);
+  padding: 6px 2px 4px; border-top: 1px solid var(--border);
+  transition: border-color var(--ease-normal);
 }
-.chat-waveform .icon { color: var(--text-faint); flex-shrink: 0; }
-.chat-waveform canvas { width: 100%; height: 34px; display: block; }
+.chat-waveform .icon { color: var(--text-faint); flex-shrink: 0; transition: color var(--ease-normal); }
+.chat-waveform canvas { width: 100%; height: 44px; display: block; }
+/* Speaking state: the mic icon and the strip edge light up, so "is a
+   conversation happening" is answerable at a glance. */
+.chat-waveform.speaking { border-top-color: var(--accent-border); }
+.chat-waveform.speaking .icon { color: var(--accent-text); filter: drop-shadow(0 0 4px rgba(0, 200, 160, .6)); }

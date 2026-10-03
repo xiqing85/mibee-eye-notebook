@@ -268,10 +268,8 @@ async function deleteCamera(cam) {
 }
 
 export function initCameras() {
-  const view = $('view-cameras');
-  if (view) view.classList.toggle('hidden-cap', !hasCap('multi_camera'));
-  // Both the top bar and the mobile tab bar carry this tab.
-  document.querySelectorAll('.nav-tab[data-view="cameras"]').forEach((tab) => {
-    tab.classList.toggle('hidden', !hasCap('multi_camera'));
-  });
+  // The camera grid is a section of the Live view since the 2026-10
+  // redesign (no separate nav destination anymore).
+  const section = $('cameras-section');
+  if (section) section.classList.toggle('hidden-cap', !hasCap('multi_camera'));
 }

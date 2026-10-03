@@ -187,11 +187,11 @@ export function initStatus() {
 export function startStatusPolling() {
   if (pollTimer) return;
   pollTimer = setInterval(() => {
-    if (!$('view-status').classList.contains('active')) return;
+    if (!$('sys-status').classList.contains('active')) return;
     checkApi();
     refreshStatus();
   }, 10000);
-  const onStatusView = () => $('view-status').classList.contains('active');
+  const onStatusView = () => $('sys-status').classList.contains('active');
   metricsTimer = setInterval(() => {
     if (obsCaps().metrics && onStatusView()) pollMetrics();
   }, 2000);
