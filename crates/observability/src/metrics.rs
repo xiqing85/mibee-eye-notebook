@@ -349,7 +349,10 @@ impl ModelCallGuard {
             m.record_model_call(&self.model, &self.variant, duration, cpu, errored);
         }
         if errored {
-            tracing::warn!(
+            // Debug, not warn: fail-open engines (e.g. face matching with
+            // no face in frame) can fire this per detection event — the
+            // mibee_model_errors_total counter is the durable signal.
+            tracing::debug!(
                 model = %self.model,
                 variant = %self.variant,
                 duration_ms = duration.as_millis() as u64,

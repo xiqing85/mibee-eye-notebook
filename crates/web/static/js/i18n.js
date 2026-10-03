@@ -259,6 +259,13 @@ const DICT = {
     'gb28181.gb35114.platform_cert_file': '平台 SM2 证书路径',
     'gb28181.gb35114.server_id': '平台 SIP 服务器 ID',
   },
+    // Observability: per-model metrics + conversation traces (SPEC §3.3)
+    modelsMetricsTitle: '模型资源', modelsMetricsDesc: '各 AI 模型的调用量、耗时与 CPU 消耗（每 5 秒刷新）',
+    modelsMetricsEmpty: '暂无模型调用', modelCalls: '调用', modelAvgLatency: '平均耗时',
+    modelCpuTotal: 'CPU 时间', modelErrors: '失败', modelInflight: '进行中',
+    tracesTitle: '对话调用链', tracesDesc: '每次对话经过的模型、调用顺序与资源消耗转移',
+    tracesEmpty: '暂无对话记录', tracesRefresh: '刷新',
+    traceOriginChat: '对话', traceOriginVoice: '语音', traceTurns: '轮',
   en: {
     appTitle: 'MiBee Cam',
     loginSubtitle: 'Live view, AI chat, recordings & alerts',
@@ -509,6 +516,13 @@ const DICT = {
     'gb28181.gb35114.device_key_file': 'Device SM2 private key path',
     'gb28181.gb35114.platform_cert_file': 'Platform SM2 certificate path',
     'gb28181.gb35114.server_id': 'Platform SIP server ID',
+    // Observability: per-model metrics + conversation traces (SPEC §3.3)
+    modelsMetricsTitle: 'Model Resources', modelsMetricsDesc: 'Per-model calls, latency and CPU time (refreshes every 5s)',
+    modelsMetricsEmpty: 'No model calls yet', modelCalls: 'calls', modelAvgLatency: 'avg latency',
+    modelCpuTotal: 'CPU time', modelErrors: 'errors', modelInflight: 'in flight',
+    tracesTitle: 'Call Chains', tracesDesc: 'Models, call order and resource consumption per conversation',
+    tracesEmpty: 'No conversations yet', tracesRefresh: 'Refresh',
+    traceOriginChat: 'Chat', traceOriginVoice: 'Voice', traceTurns: 'turns',
   },
 };
 
