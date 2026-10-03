@@ -522,6 +522,12 @@ input:focus, select:focus {
    ------------------------------------------------------------------- */
 .view-head { padding: var(--space-md) var(--space-md) 0; max-width: var(--content-w); margin: 0 auto; }
 .card .view-head { padding: 0 0 var(--space-sm); margin: 0; max-width: none; }
+.view-head-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
 .card .view-head h3 { font-size: .95rem; }
 .card .view-head .view-desc { margin-top: 4px; }
 .view-head h2 { font-size: 1.22rem; font-weight: 700; letter-spacing: -.01em; }
@@ -539,10 +545,9 @@ input:focus, select:focus {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: .76rem;
+  font-size: .8rem;
   font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: .07em;
+  letter-spacing: .02em;
   color: var(--text-secondary);
   margin-bottom: var(--space-md);
   padding-bottom: var(--space-sm);
@@ -1102,8 +1107,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .apply-restart { color: var(--warning); background: var(--warning-bg); border: 1px solid var(--warning-border); }
 .apply-immediate { color: var(--accent-text); background: var(--accent-bg); border: 1px solid var(--accent-border); }
-.config-section-title .section-apply-badge { margin-left: auto; }
-.config-section-title .chev { margin-left: 8px; }
+.config-section-title .chev { margin-left: auto; }
 
 /* One-click restart overlay (SPEC §5.1) */
 .restart-overlay {
@@ -1136,10 +1140,10 @@ input[type="range"]::-moz-range-thumb {
   gap: 8px;
   width: 100%;
   padding: 13px var(--space-md);
-  font-size: .82rem;
+  font-size: .85rem;
   font-weight: 650;
-  letter-spacing: .04em;
-  color: var(--accent-text);
+  letter-spacing: .02em;
+  color: var(--text-primary);
   cursor: pointer;
   user-select: none;
   background: none;
@@ -1795,6 +1799,26 @@ input[type="range"]::-moz-range-thumb {
   margin-top: var(--space-sm);
 }
 .chat-input-row input { flex: 1; }
+.chat-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin: auto 0;
+  padding: var(--space-md) 0;
+}
+.chat-log:has(.chat-hints) { justify-content: center; }
+.chat-hint {
+  border: 1px solid var(--border-light);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: .8rem;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color var(--ease-fast), border-color var(--ease-fast), background var(--ease-fast);
+}
+.chat-hint:hover { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-bg); }
 
 /* Grounded-chat affordances (SPEC appendix A #29): the 👁 toggle opts a
    turn into direct VLM Q&A; badges on replies disclose which grounding
@@ -1951,6 +1975,7 @@ input[type="range"]::-moz-range-thumb {
 }
 #view-models > .view-head { padding-bottom: var(--space-sm); }
 #view-models .card { margin: 0 var(--space-md) var(--space-md); }
+#cloud-card { max-width: 720px; }
 .models-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));

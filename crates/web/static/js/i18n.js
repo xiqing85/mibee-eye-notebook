@@ -7,7 +7,7 @@ import { $ } from './ui.js';
 const DICT = {
   zh: {
     appTitle: 'MiBee 摄像头',
-    loginSubtitle: '统一设备管理',
+    loginSubtitle: '实时画面 · AI 对话 · 录像与告警',
     username: '用户名', password: '密码', passwordConfirm: '确认密码',
     loginBtn: '登录', setupBtn: '设置管理员并进入',
     newPassword: '设置管理密码', newUsername: '管理员用户名',
@@ -120,7 +120,9 @@ const DICT = {
     // AI models page (SPEC §4.9/§4.10)
     models: 'AI 模型', modelsTitle: 'AI 模型', modelsDesc: '管理全部 AI 能力使用的模型：下载、切换、删除，或接入在线 AI',
     modelsLoadFailed: '模型目录加载失败', modelRefresh: '刷新',
-    modelActive: '使用中', modelInstalled: '已下载', modelDownloadableFalse: '无下载源',
+    modelActive: '使用中', modelInstalled: '已下载', modelDownloadableFalse: '暂无下载源',
+    recordScore: '识别置信度', uploadBtn: '上传',
+    chatHint1: '现在几点了？', chatHint2: '你看到谁？', chatHint3: '今天天气怎么样？',
     modelDownload: '下载', modelRedownload: '重新下载', modelDownloading: '开始下载…',
     modelRedownloadConfirm: '{name} 已安装，重新下载并覆盖？',
     modelActivate: '启用', modelDelete: '删除', modelCancelTask: '取消',
@@ -134,7 +136,7 @@ const DICT = {
     capLabel_ocr: '文字识别', capLabel_decision: '意图分类', capLabel_speaker: '声纹识别',
     cloudTitle: '在线 AI（OpenRouter）',
     cloudDesc: '接入云端大模型：开启后对话与看图问答优先走云端，失败自动回落本地模型',
-    cloudProvider: '服务', cloudOff: '关闭（仅本地）',
+    cloudProvider: '服务商', cloudOff: '关闭（仅本地）',
     cloudApiKey: 'API 密钥', cloudApiKeyPlaceholder: 'sk-or-…（只写不读，留空保持不变）',
     cloudApiKeySet: '已保存密钥', cloudApiKeyUnset: '未设置密钥',
     cloudKeyClear: '清除密钥', cloudKeyClearConfirm: '清除已保存的 API 密钥？清除后回到仅本地模型。',
@@ -208,7 +210,36 @@ const DICT = {
     'protocols.watermark.position': '位置',
     'protocols.watermark.font_size': '字号（像素高）',
     'protocols.watermark.font_path': '字体文件路径（留空=内置 ASCII 字体，配 CJK 字体后支持中文）',
-    gb28181: 'GB28181 设置',
+    settingsSection: 'AI 与模型偏好',
+    // Config section titles (settings editor renders whatever document the
+    // device exposes; these cover the known family sections)
+    protocols: '协议互通', gb28181: 'GB28181 国标监控', gb35114: 'GB35114 国密认证',
+    onvif: 'ONVIF 协议', recording: '本地录像', rtmp_push: 'RTMP 推流',
+    webrtc: 'WebRTC 直播', scene: '场景智能', tools: '联网工具',
+    voice: '语音交互', ai: '视觉识别', model: '模型选择',
+    // Generic config leaves (leaf fallback keeps unknown devices readable)
+    enabled: '启用', username: '用户名', password: '密码', port: '端口',
+    name: '名称', model: '型号', serial: '序列号', manufacturer: '厂商',
+    'gb28181.enabled': '启用国标接入', 'gb28181.username': '认证用户名',
+    'gb35114.enabled': '启用 A 级认证',
+    'onvif.enabled': '启用 ONVIF', 'onvif.device_name': '设备名称',
+    'onvif.firmware_version': '固件版本',
+    'recording.enabled': '启用录像', 'recording.max_capacity_mb': '容量上限（MB）',
+    'recording.segment_duration_secs': '分片时长（秒）',
+    'rtmp_push.enabled': '启用推流', 'rtmp_push.app_name': '推流应用名',
+    'rtmp_push.push_url': '推流地址', 'rtmp_push.stream_name': '流名称',
+    'rtmp_push.max_reconnect_attempts': '最大重连次数',
+    'rtmp_push.reconnect_interval_secs': '重连间隔（秒）',
+    'webrtc.enabled': '启用 WebRTC',
+    'settings.ai.model': '视觉检测模型', 'voice.asr': '语音识别模型',
+    'onvif.events_enabled': '事件订阅', 'onvif.media2_enabled': '启用 Media2',
+    'onvif.deviceio_enabled': '启用 DeviceIO', 'onvif.http_digest': 'HTTP 摘要认证',
+    'onvif.ip_filter': 'IP 白名单过滤',
+    'gb28181.alarm_notify_enabled': '告警 NOTIFY 推送', 'gb28181.alarm_cooldown_secs': '告警冷却（秒）',
+    'gb28181.position_longitude': '经度', 'gb28181.position_latitude': '纬度',
+    'gb28181.talkback_playback': '对讲播放（扬声器）', 'gb28181.talkback_upstream': '对讲上行（麦克风）',
+    features: '功能开关', 'model_path': '模型文件路径', 'cpu_cores': 'CPU 核心',
+    'ai.model': '检测模型',
     'gb28181.enabled': '启用',
     'gb28181.platform_sip_address': '平台 SIP 地址',
     'gb28181.platform_sip_port': '平台 SIP 端口',
@@ -230,7 +261,7 @@ const DICT = {
   },
   en: {
     appTitle: 'MiBee Cam',
-    loginSubtitle: 'Unified device management',
+    loginSubtitle: 'Live view, AI chat, recordings & alerts',
     username: 'Username', password: 'Password', passwordConfirm: 'Confirm password',
     loginBtn: 'Sign In', setupBtn: 'Create admin & sign in',
     newPassword: 'Set admin password', newUsername: 'Admin username',
@@ -344,6 +375,8 @@ const DICT = {
     models: 'AI Models', modelsTitle: 'AI Models', modelsDesc: 'Manage the models every AI capability uses: download, switch, delete — or plug in an online AI',
     modelsLoadFailed: 'Failed to load the model catalog', modelRefresh: 'Refresh',
     modelActive: 'Active', modelInstalled: 'Downloaded', modelDownloadableFalse: 'no download source',
+    recordScore: 'Detection confidence', uploadBtn: 'Upload',
+    chatHint1: 'What time is it?', chatHint2: 'Who do you see?', chatHint3: 'How is the weather?',
     modelDownload: 'Download', modelRedownload: 'Re-download', modelDownloading: 'Download started…',
     modelRedownloadConfirm: '{name} is already installed — download again and overwrite?',
     modelActivate: 'Activate', modelDelete: 'Delete', modelCancelTask: 'Cancel',
@@ -431,7 +464,33 @@ const DICT = {
     'protocols.watermark.position': 'Position',
     'protocols.watermark.font_size': 'Font size (px height)',
     'protocols.watermark.font_path': 'Font file path (empty = built-in ASCII font; set a CJK font for Chinese text)',
-    gb28181: 'GB28181 Settings',
+    settingsSection: 'AI & model preferences',
+    protocols: 'Protocols', gb28181: 'GB28181 monitoring', gb35114: 'GB35114 (SM2 auth)',
+    onvif: 'ONVIF', recording: 'Local recording', rtmp_push: 'RTMP push',
+    webrtc: 'WebRTC', scene: 'Scene intelligence', tools: 'Online tools',
+    voice: 'Voice interaction', ai: 'Visual detection', model: 'Model selection',
+    enabled: 'Enable', username: 'Username', password: 'Password', port: 'Port',
+    name: 'Name', model: 'Model', serial: 'Serial', manufacturer: 'Manufacturer',
+    'gb28181.enabled': 'Enable GB28181', 'gb28181.username': 'Auth username',
+    'gb35114.enabled': 'Enable A-level auth',
+    'onvif.enabled': 'Enable ONVIF', 'onvif.device_name': 'Device name',
+    'onvif.firmware_version': 'Firmware version',
+    'recording.enabled': 'Enable recording', 'recording.max_capacity_mb': 'Capacity cap (MB)',
+    'recording.segment_duration_secs': 'Segment duration (s)',
+    'rtmp_push.enabled': 'Enable push', 'rtmp_push.app_name': 'Push app name',
+    'rtmp_push.push_url': 'Push URL', 'rtmp_push.stream_name': 'Stream name',
+    'rtmp_push.max_reconnect_attempts': 'Max reconnect attempts',
+    'rtmp_push.reconnect_interval_secs': 'Reconnect interval (s)',
+    'webrtc.enabled': 'Enable WebRTC',
+    'settings.ai.model': 'Visual detection model', 'voice.asr': 'Speech recognition model',
+    'onvif.events_enabled': 'Event subscription', 'onvif.media2_enabled': 'Enable Media2',
+    'onvif.deviceio_enabled': 'Enable DeviceIO', 'onvif.http_digest': 'HTTP digest auth',
+    'onvif.ip_filter': 'IP allowlist filter',
+    'gb28181.alarm_notify_enabled': 'Alarm NOTIFY push', 'gb28181.alarm_cooldown_secs': 'Alarm cooldown (s)',
+    'gb28181.position_longitude': 'Longitude', 'gb28181.position_latitude': 'Latitude',
+    'gb28181.talkback_playback': 'Talkback playback (speaker)', 'gb28181.talkback_upstream': 'Talkback upstream (mic)',
+    features: 'Feature flags', 'model_path': 'Model file path', 'cpu_cores': 'CPU cores',
+    'ai.model': 'Detection model',
     'gb28181.enabled': 'Enabled',
     'gb28181.platform_sip_address': 'Platform SIP address',
     'gb28181.platform_sip_port': 'Platform SIP port',
@@ -462,10 +521,54 @@ export function t(key, vars) {
   return s;
 }
 
-/// Config field path label: prefer a translation, fall back to the raw key.
+/// Config field path label: the real config documents nest deep
+/// (protocols.gb28181.device_id) while the dictionary is keyed by the
+/// human section (gb28181.device_id) — try the full path, then the last
+/// two segments, then the bare leaf, before showing the raw key.
+const SECTION_OVERRIDE = { settings: 'settingsSection' };
 export function cfgLabel(path, key) {
-  const v = t(path);
-  return v === path ? key : v;
+  const override = SECTION_OVERRIDE[path.split('.')[0]];
+  if (path.split('.').length === 1 && override) {
+    const o = t(override);
+    if (o !== override) return o;
+  }
+  const parts = path.split('.');
+  for (const cand of [path, parts.slice(-2).join('.'), key]) {
+    const v = t(cand);
+    if (v !== cand) return v;
+  }
+  return key;
+}
+
+/// Sound-event class labels come from the audio engine in English
+/// (YAMNet class names). Translate the common ones for zh readers; unknown
+/// classes and English UI keep the raw label.
+const SOUND_ZH = {
+  'Speech': '人声', 'Conversation': '谈话声', 'Child speech, kid speaking': '儿童说话',
+  'Shout': '喊叫', 'Screaming': '尖叫', 'Crying, sobbing': '哭声',
+  'Baby cry, infant cry': '婴儿啼哭', 'Baby laughter': '婴儿笑声',
+  'Dog': '狗叫', 'Bark': '犬吠', 'Yip': '犬吠', 'Howl': '嚎叫', 'Bow-wow': '狗叫',
+  'Cat': '猫叫', 'Purr': '猫呼噜', 'Moo': '牛叫', 'Oink': '猪叫', 'Roar': '吼叫',
+  'Chicken, rooster': '鸡鸣', 'Bird': '鸟叫', 'Chirp, tweet': '鸟鸣', 'Crow': '鸦叫',
+  'Knock': '敲门', 'Door': '门响', 'Doorbell': '门铃',
+  'Glass': '玻璃声', 'Shatter': '破碎声', 'Breaking': '破碎',
+  'Alarm': '警报', 'Siren': '警笛', 'Smoke detector, smoke alarm': '烟雾报警器',
+  'Fire alarm': '火警', 'Whistle': '口哨',
+  'Vehicle': '车辆', 'Vehicle horn, car horn, honking': '汽车鸣笛',
+  'Car': '汽车', 'Truck': '卡车', 'Motorcycle': '摩托车',
+  'Music': '音乐', 'Crowd': '人群', 'Applause': '掌声',
+  'Gunshot, gunfire': '枪声', 'Gunshot': '枪声', 'Explosion': '爆炸声',
+  'Wind': '风声', 'Rain': '雨声', 'Thunderstorm': '雷声',
+  'Telephone': '电话铃', 'Bell': '铃铛', 'Buzzer': '蜂鸣器',
+  'Mechanical fan': '机械风扇', 'Frog': '蛙鸣', 'Insect': '虫鸣',
+  'Walk footsteps': '脚步声', 'Footsteps': '脚步声',
+};
+
+/// Render a sound-event class label for the current language.
+export function soundText(raw) {
+  const s = String(raw || '');
+  if (store.lang !== 'zh') return s;
+  return SOUND_ZH[s] || s;
 }
 
 export function applyLang() {

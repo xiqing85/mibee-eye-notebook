@@ -11,7 +11,7 @@
 import { api } from './api.js';
 import { hasCap } from './store.js';
 import { $, el, confirmDlg, toast } from './ui.js';
-import { t } from './i18n.js';
+import { t, soundText } from './i18n.js';
 
 let currentKind = '';
 
@@ -42,7 +42,10 @@ export async function renderRecords() {
   }
   for (const rec of records) {
     const isVoice = rec.kind === 'voice';
-    const textCell = el('span', { className: 'record-text' }, [document.createTextNode(rec.text)]);
+    // Sound rows carry the engine's English class label (YAMNet names) —
+    // translate the common ones for zh readers; transcripts stay verbatim.
+    const textCell = el('span', { className: 'record-text' },
+      [document.createTextNode(isVoice ? rec.text : soundText(rec.text))]);
     if (isVoice && rec.keyword) {
       textCell.appendChild(el('span', { className: 'record-keyword', textContent: '«' + rec.keyword + '»' }));
     }
@@ -65,7 +68,11 @@ export async function renderRecords() {
       mediaBadge,
       textCell,
       typeof rec.score === 'number'
-        ? el('span', { className: 'record-score mono', textContent: rec.score.toFixed(2) })
+        ? el('span', {
+            className: 'record-score mono',
+            textContent: Math.round(rec.score * 100) + '%',
+            title: t('recordScore'),
+          })
         : el('span'),
     ]));
   }
