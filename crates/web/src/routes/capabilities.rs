@@ -181,7 +181,7 @@ pub async fn get_capabilities(
                          "auto": true},
         "restart": true,
         "face": true,
-        "observability": {"metrics": true, "logs": true, "requests": true},
+        "observability": observability_document(),
         // Device-specific extension: the host hardware probe.
         "system": cached.system,
         "recommended_profiles": cached.recommended_profiles,
@@ -192,6 +192,22 @@ pub async fn get_capabilities(
 /// Whether the engine can load models at runtime (hot-switch + upload).
 fn ai_has_factory(ai: &AiEngine) -> bool {
     ai.can_load_models()
+}
+
+/// The `observability` capability object (SPEC §3.1/§3.3). Built outside
+/// the big superset literal — one more nesting level there trips the
+/// serde_json macro recursion limit.
+fn observability_document() -> serde_json::Value {
+    serde_json::json!({
+        "metrics": true,
+        "logs": true,
+        "requests": true,
+        // Conversation model-call chains (SPEC §3.3) and per-model
+        // Prometheus families (appendix A #39) — additive keys, absence
+        // means false for older frontends.
+        "traces": true,
+        "model_metrics": true,
+    })
 }
 
 // ---------------------------------------------------------------------------

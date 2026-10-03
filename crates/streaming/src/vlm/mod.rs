@@ -181,13 +181,35 @@ impl VlmEngine {
             let Some(inner) = &self.inner else {
                 anyhow::bail!("vlm inactive: {}", self.inactive_reason);
             };
-            self.run_qa(inner, jpeg, question)
+            let call = observability::model_call("vlm", &self.model_variant());
+            match self.run_qa(inner, jpeg, question) {
+                Ok(reply) => {
+                    call.finish_ok(None, None);
+                    Ok(reply)
+                }
+                Err(e) => {
+                    call.finish_err();
+                    Err(e)
+                }
+            }
         }
         #[cfg(not(feature = "vlm"))]
         {
             let _ = (jpeg, question);
             anyhow::bail!("vlm inactive: {}", self.inactive_reason)
         }
+    }
+
+    /// Per-model metric variant label: the loaded GGUF file stem (SPEC
+    /// appendix A #39). Public so product layers can label
+    /// conversation-trace spans identically.
+    #[must_use]
+    pub fn model_variant(&self) -> String {
+        std::path::Path::new(&self.config.model_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
     }
 
     #[cfg(feature = "vlm")]

@@ -83,6 +83,9 @@ pub(crate) const OPTION_TOKEN_CAP: usize = 48;
 pub struct DecisionEngine {
     active: bool,
     inactive_reason: String,
+    /// File stem of the loaded ONNX model (per-model metric variant,
+    /// SPEC appendix A #39).
+    metric_variant: String,
     min_confidence: f32,
     #[cfg_attr(not(feature = "ai"), allow(dead_code))]
     max_len: usize,
@@ -104,6 +107,15 @@ pub struct DecisionEngine {
     mask_id: i64,
 }
 
+/// File stem label for per-model metric variants.
+fn file_stem(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 impl DecisionEngine {
     /// Build from config (fail-open on every load failure).
     #[must_use]
@@ -115,6 +127,7 @@ impl DecisionEngine {
                 Self {
                     active: true,
                     inactive_reason: String::new(),
+                    metric_variant: file_stem(&config.model_path),
                     min_confidence: config.min_confidence.clamp(0.0, 1.0),
                     max_len: loaded.max_len,
                     head_max_len: loaded.head_max_len,
@@ -134,6 +147,7 @@ impl DecisionEngine {
                 Self {
                     active: false,
                     inactive_reason: format!("{reason:#}"),
+                    metric_variant: file_stem(&config.model_path),
                     min_confidence: config.min_confidence,
                     max_len: 512,
                     head_max_len: 192,
@@ -253,8 +267,21 @@ impl DecisionEngine {
         if !self.active || options.len() < 2 || options.len() > 10 {
             return None;
         }
-        self.decide_choice_inner(state, instructions, options)
-            .and_then(|d| (d.confidence >= self.min_confidence).then_some(d))
+        let call = observability::model_call("decision", &self.metric_variant());
+        let inner = self.decide_choice_inner(state, instructions, options);
+        match &inner {
+            // A low-confidence decision is a successful inference whose
+            // output the caller fails open on — not an engine error.
+            Some(_) => call.finish_ok(None, None),
+            None => call.finish_err(),
+        }
+        inner.and_then(|d| (d.confidence >= self.min_confidence).then_some(d))
+    }
+
+    /// Per-model metric variant label: the ONNX file stem (SPEC appendix
+    /// A #39).
+    fn metric_variant(&self) -> String {
+        self.metric_variant.clone()
     }
 
     #[cfg(feature = "ai")]

@@ -184,7 +184,21 @@ impl TtsEngine {
         if text.trim().is_empty() {
             anyhow::bail!("tts: empty text");
         }
-        let profile = self.profile_for(crate::lang::detect(text));
+        let lang = crate::lang::detect(text);
+        let profile = self.profile_for(lang);
+        // Per-model metric span (SPEC appendix A #39): covers synthesis
+        // and playback; the label names the spoken language's vits voice.
+        let model_id = match lang {
+            crate::lang::SpokenLang::Cantonese => "tts.yue",
+            crate::lang::SpokenLang::English => "tts.en",
+            crate::lang::SpokenLang::Mandarin => "tts.zh",
+        };
+        let variant = std::path::Path::new(&profile.model)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("vits")
+            .to_string();
+        let call = observability::model_call(model_id, &variant);
         let out = std::env::temp_dir().join(format!("mibee-tts-{}.wav", std::process::id()));
         let mut cmd = std::process::Command::new(&self.config.binary);
         cmd.arg(format!("--vits-model={}", profile.model))
@@ -197,6 +211,19 @@ impl TtsEngine {
             .arg("--num-threads=2")
             .arg(format!("--output-filename={}", out.display()))
             .arg(text);
+        let result = self.speak_tail(&mut cmd, out);
+        match &result {
+            Ok(_) => call.finish_ok(None, None),
+            Err(_) => call.finish_err(),
+        }
+        result
+    }
+
+    fn speak_tail(
+        &self,
+        cmd: &mut std::process::Command,
+        out: std::path::PathBuf,
+    ) -> anyhow::Result<PathBuf> {
         let status = cmd
             .status()
             .map_err(|e| anyhow::anyhow!("spawn tts: {e}"))?;

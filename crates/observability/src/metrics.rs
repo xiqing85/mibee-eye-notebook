@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use prometheus::{
-    Encoder, GaugeVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry, TextEncoder,
+    Encoder, Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    IntGaugeVec, Opts, Registry, TextEncoder,
 };
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 /// Container for all custom Prometheus metrics.
 ///
@@ -22,12 +24,28 @@ pub struct Metrics {
     onvif_discovery_requests: IntCounter,
     gb28181_register_status: IntCounterVec,
     audio_level_db: GaugeVec,
-    // ─── New metrics ────────────────────────────────
+    // ─── New metrics ────────────────────────
     http_requests_total: IntCounterVec,
     auth_failures_total: IntCounterVec,
     recording_active: IntGauge,
     frame_drops_total: IntCounter,
     ai_inferences_total: IntCounter,
+    // ─── Per-model resource metrics (SPEC §3.3 + appendix A #39) ──
+    model_inferences_total: IntCounterVec,
+    model_errors_total: IntCounterVec,
+    model_inference_seconds: HistogramVec,
+    model_cpu_seconds: HistogramVec,
+    model_inflight: IntGaugeVec,
+    model_tokens_total: IntCounterVec,
+    // ─── Resource gauges (SPEC appendix A #38) ─────────────────────
+    system_cpu_percent: Gauge,
+    system_memory_total_bytes: IntGauge,
+    system_memory_available_bytes: IntGauge,
+    process_cpu_percent: Gauge,
+    process_resident_memory_bytes: IntGauge,
+    process_open_fds: IntGauge,
+    system_net_rx_bytes: IntGauge,
+    system_net_tx_bytes: IntGauge,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +213,176 @@ pub fn increment_ai_inferences() {
     }
 }
 
+/// Publish the periodic /proc resource sample as Prometheus gauges
+/// (SPEC appendix A #38 — the same numbers `/api/metrics/summary`
+/// serves, on the scrape surface). No-op when metrics are not
+/// registered.
+pub fn publish_resource_gauges(sample: &ResourceSample) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.system_cpu_percent.set(sample.system_cpu_percent);
+        m.system_memory_total_bytes
+            .set(sample.system_memory_total_bytes as i64);
+        m.system_memory_available_bytes
+            .set(sample.system_memory_available_bytes as i64);
+        m.process_cpu_percent.set(sample.process_cpu_percent);
+        m.process_resident_memory_bytes
+            .set(sample.process_resident_memory_bytes as i64);
+        m.process_open_fds.set(sample.process_open_fds as i64);
+        m.system_net_rx_bytes.set(sample.system_net_rx_bytes as i64);
+        m.system_net_tx_bytes.set(sample.system_net_tx_bytes as i64);
+    }
+}
+
+/// One periodic /proc resource sample for [`publish_resource_gauges`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResourceSample {
+    pub system_cpu_percent: f64,
+    pub system_memory_total_bytes: u64,
+    pub system_memory_available_bytes: u64,
+    pub process_cpu_percent: f64,
+    pub process_resident_memory_bytes: u64,
+    pub process_open_fds: u64,
+    pub system_net_rx_bytes: u64,
+    pub system_net_tx_bytes: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Per-model resource metrics (SPEC §3.3 + appendix A #39)
+// ---------------------------------------------------------------------------
+
+/// Histogram buckets for one model invocation (seconds). The range spans
+/// wake-word-sized micro-classifiers (sub-ms) to CPU VLM answers (minutes).
+const MODEL_SECONDS_BUCKETS: &[f64] = &[
+    0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 120.0, 600.0,
+];
+
+/// Guard for one model invocation. Created by [`model_call`]; records
+/// duration / CPU-delta / outcome exactly once — via an explicit
+/// `finish_ok`/`finish_err`, or implicitly on drop (counted as a
+/// non-error inference with unknown token usage).
+///
+/// While alive it holds the `mibee_model_inflight{model}` gauge up and an
+/// OTel `model_call` span open (`model` / `variant` attributes) — the
+/// span's duration is the guard's lifetime, so externally collected
+/// traces see every inference even outside conversations.
+#[must_use = "dropping the guard un-finished still records, but you lose token counts"]
+pub struct ModelCallGuard {
+    model: String,
+    variant: String,
+    started: Instant,
+    cpu_start: Option<Duration>,
+    span: tracing::Span,
+    finished: bool,
+}
+
+/// Begin one model invocation: inflight gauge up + an OTel `model_call`
+/// span that lives until the guard finishes. In blocking closures, pair
+/// it with [`ModelCallGuard::enter`] so nested events/logs attach; in
+/// async code the bare guard already measures the right duration.
+///
+/// No-op-safe: when metrics were never registered (tests, early startup)
+/// the guard still measures and exports the span, but touches no metrics.
+pub fn model_call(model: &str, variant: &str) -> ModelCallGuard {
+    let span = tracing::info_span!(
+        "model_call",
+        model,
+        variant,
+        otel.name = format!("model_call/{model}"),
+    );
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.model_inflight.with_label_values(&[model]).inc();
+    }
+    ModelCallGuard {
+        model: model.to_string(),
+        variant: variant.to_string(),
+        started: Instant::now(),
+        cpu_start: read_process_cpu_time(),
+        span,
+        finished: false,
+    }
+}
+
+impl ModelCallGuard {
+    /// Make this call the ambient span on the current thread (use inside
+    /// the blocking closure that runs the inference, right after
+    /// [`model_call`]). The returned guard must be dropped before
+    /// `finish_*` on the same thread.
+    pub fn enter(&self) -> tracing::span::Entered<'_> {
+        self.span.enter()
+    }
+
+    /// Record a successful invocation (token counts where the model bills
+    /// by token; `None` for non-LLM models).
+    pub fn finish_ok(mut self, tokens_prompt: Option<u64>, tokens_completion: Option<u64>) {
+        self.record(false);
+        if let Some(m) = GLOBAL_METRICS.get() {
+            if let Some(p) = tokens_prompt {
+                m.model_tokens_total
+                    .with_label_values(&[&self.model, &self.variant, "prompt"])
+                    .inc_by(p);
+            }
+            if let Some(c) = tokens_completion {
+                m.model_tokens_total
+                    .with_label_values(&[&self.model, &self.variant, "completion"])
+                    .inc_by(c);
+            }
+        }
+    }
+
+    /// Record a failed invocation (error counter instead of token counts).
+    pub fn finish_err(mut self) {
+        self.record(true);
+    }
+
+    /// Shared tail: duration, CPU delta, outcome counters, inflight down.
+    /// Idempotent via `finished` (Drop after an explicit finish is a no-op).
+    fn record(&mut self, errored: bool) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let duration = self.started.elapsed();
+        let cpu = read_process_cpu_time()
+            .zip(self.cpu_start)
+            .map(|(now, start)| now.saturating_sub(start));
+        if let Some(m) = GLOBAL_METRICS.get() {
+            m.record_model_call(&self.model, &self.variant, duration, cpu, errored);
+        }
+        if errored {
+            tracing::warn!(
+                model = %self.model,
+                variant = %self.variant,
+                duration_ms = duration.as_millis() as u64,
+                "model_call failed"
+            );
+        }
+    }
+}
+
+impl Drop for ModelCallGuard {
+    fn drop(&mut self) {
+        // Implicit finish: a dropped guard still counts the inference
+        // (duration/CPU/outcome unknown → not an error).
+        self.record(false);
+    }
+}
+
+/// Process CPU time (user+system) from `/proc/self/stat`, or `None` off
+/// Linux / on parse failure. Field 14+15, in clock ticks — `USER_HZ` is
+/// 100 on every mainstream Linux (glibc `sysconf(_SC_CLK_TCK)`).
+fn read_process_cpu_time() -> Option<Duration> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // The comm field (2nd) may contain spaces/parens — parse after the
+    // final ')'.
+    let after = stat.rsplit_once(')')?.1;
+    let mut fields = after.split_whitespace();
+    // state(3) ppid(4) pgrp(5) session(6) tty(7) tpgid(8) flags(9)
+    // minflt(10) cminflt(11) majflt(12) cmajflt(13) utime(14) stime(15)
+    let utime: u64 = fields.nth(11)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some(Duration::from_millis((utime + stime) * 10))
+}
+
 /// Render all registered metrics in Prometheus text-0.0.4 exposition format.
 pub fn render_metrics() -> String {
     let metric_families = global_metrics().registry.gather();
@@ -326,6 +514,103 @@ impl Metrics {
         )?;
         registry.register(Box::new(ai_inferences_total.clone()))?;
 
+        // ─── Per-model resource metrics (SPEC §3.3 + appendix A #39) ──
+        let model_inferences_total = IntCounterVec::new(
+            Opts::new(
+                "mibee_model_inferences_total",
+                "Total model invocations by model capability and variant",
+            ),
+            &["model", "variant"],
+        )?;
+        registry.register(Box::new(model_inferences_total.clone()))?;
+
+        let model_errors_total = IntCounterVec::new(
+            Opts::new(
+                "mibee_model_errors_total",
+                "Total failed model invocations by model and variant",
+            ),
+            &["model", "variant"],
+        )?;
+        registry.register(Box::new(model_errors_total.clone()))?;
+
+        let model_inference_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "mibee_model_inference_seconds",
+                "Wall-clock duration of one model invocation (seconds)",
+            )
+            .buckets(MODEL_SECONDS_BUCKETS.to_vec()),
+            &["model", "variant"],
+        )?;
+        registry.register(Box::new(model_inference_seconds.clone()))?;
+
+        let model_cpu_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "mibee_model_cpu_seconds",
+                "Process-wide CPU time consumed during one model invocation (seconds)",
+            )
+            .buckets(MODEL_SECONDS_BUCKETS.to_vec()),
+            &["model", "variant"],
+        )?;
+        registry.register(Box::new(model_cpu_seconds.clone()))?;
+
+        let model_inflight = IntGaugeVec::new(
+            Opts::new(
+                "mibee_model_inflight",
+                "Model invocations currently executing",
+            ),
+            &["model"],
+        )?;
+        registry.register(Box::new(model_inflight.clone()))?;
+
+        let model_tokens_total = IntCounterVec::new(
+            Opts::new(
+                "mibee_model_tokens_total",
+                "Tokens processed by token-billed models (prompt/completion)",
+            ),
+            &["model", "variant", "kind"],
+        )?;
+        registry.register(Box::new(model_tokens_total.clone()))?;
+
+        // ─── Resource gauges (SPEC appendix A #38) ─────────────────────
+        let system_cpu_percent =
+            Gauge::new("mibee_eye_system_cpu_percent", "System CPU busy percent")?;
+        registry.register(Box::new(system_cpu_percent.clone()))?;
+        let system_memory_total_bytes = IntGauge::new(
+            "mibee_eye_system_memory_total_bytes",
+            "System memory total (bytes)",
+        )?;
+        registry.register(Box::new(system_memory_total_bytes.clone()))?;
+        let system_memory_available_bytes = IntGauge::new(
+            "mibee_eye_system_memory_available_bytes",
+            "System memory available (bytes)",
+        )?;
+        registry.register(Box::new(system_memory_available_bytes.clone()))?;
+        let process_cpu_percent = Gauge::new(
+            "mibee_eye_process_cpu_percent",
+            "Service process CPU percent",
+        )?;
+        registry.register(Box::new(process_cpu_percent.clone()))?;
+        let process_resident_memory_bytes = IntGauge::new(
+            "mibee_eye_process_resident_memory_bytes",
+            "Service process resident memory (bytes)",
+        )?;
+        registry.register(Box::new(process_resident_memory_bytes.clone()))?;
+        let process_open_fds = IntGauge::new(
+            "mibee_eye_process_open_fds",
+            "Service process open file descriptors",
+        )?;
+        registry.register(Box::new(process_open_fds.clone()))?;
+        let system_net_rx_bytes = IntGauge::new(
+            "mibee_eye_system_net_rx_bytes",
+            "Aggregate NIC receive bytes (absolute counter)",
+        )?;
+        registry.register(Box::new(system_net_rx_bytes.clone()))?;
+        let system_net_tx_bytes = IntGauge::new(
+            "mibee_eye_system_net_tx_bytes",
+            "Aggregate NIC transmit bytes (absolute counter)",
+        )?;
+        registry.register(Box::new(system_net_tx_bytes.clone()))?;
+
         Ok(Metrics {
             registry,
             active_streams,
@@ -343,7 +628,50 @@ impl Metrics {
             recording_active,
             frame_drops_total,
             ai_inferences_total,
+            model_inferences_total,
+            model_errors_total,
+            model_inference_seconds,
+            model_cpu_seconds,
+            model_inflight,
+            model_tokens_total,
+            system_cpu_percent,
+            system_memory_total_bytes,
+            system_memory_available_bytes,
+            process_cpu_percent,
+            process_resident_memory_bytes,
+            process_open_fds,
+            system_net_rx_bytes,
+            system_net_tx_bytes,
         })
+    }
+
+    /// Record one finished model invocation into the per-model families
+    /// (inflight is decremented here — [`model_call`] incremented it).
+    fn record_model_call(
+        &self,
+        model: &str,
+        variant: &str,
+        duration: Duration,
+        cpu: Option<Duration>,
+        errored: bool,
+    ) {
+        self.model_inflight.with_label_values(&[model]).dec();
+        self.model_inferences_total
+            .with_label_values(&[model, variant])
+            .inc();
+        if errored {
+            self.model_errors_total
+                .with_label_values(&[model, variant])
+                .inc();
+        }
+        self.model_inference_seconds
+            .with_label_values(&[model, variant])
+            .observe(duration.as_secs_f64());
+        if let Some(cpu) = cpu {
+            self.model_cpu_seconds
+                .with_label_values(&[model, variant])
+                .observe(cpu.as_secs_f64());
+        }
     }
 
     #[cfg(test)]
@@ -730,5 +1058,132 @@ mod tests {
             "frame_drops should be 3\n=== output ===\n{}",
             output
         );
+    }
+
+    #[test]
+    fn test_model_families_render_with_labels() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+
+        m.model_inflight.with_label_values(&["llm"]).inc();
+        m.model_inflight.with_label_values(&["llm"]).inc();
+        m.record_model_call(
+            "llm",
+            "qwen3-4b",
+            Duration::from_millis(1200),
+            Some(Duration::from_millis(900)),
+            false,
+        );
+        m.record_model_call("llm", "qwen3-4b", Duration::from_millis(300), None, true);
+        m.record_model_call(
+            "vlm",
+            "qwen3-vl-2b",
+            Duration::from_secs(4),
+            Some(Duration::from_secs(3)),
+            false,
+        );
+        m.model_tokens_total
+            .with_label_values(&["llm", "qwen3-4b", "prompt"])
+            .inc_by(512);
+        m.model_tokens_total
+            .with_label_values(&["llm", "qwen3-4b", "completion"])
+            .inc_by(64);
+
+        let output = m.render();
+        assert!(
+            output.contains(r#"mibee_model_inferences_total{model="llm",variant="qwen3-4b"} 2"#),
+            "llm inferences should be 2\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(r#"mibee_model_errors_total{model="llm",variant="qwen3-4b"} 1"#),
+            "one llm error\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("mibee_model_inference_seconds_bucket"),
+            "duration histogram present\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains("mibee_model_cpu_seconds_bucket"),
+            "cpu histogram present\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(r#"mibee_model_inflight{model="llm"} 0"#),
+            "inflight net 0 after inc/inc + two recorded calls\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(
+                r#"mibee_model_tokens_total{kind="prompt",model="llm",variant="qwen3-4b"} 512"#
+            ),
+            "prompt tokens\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(
+                r#"mibee_model_tokens_total{kind="completion",model="llm",variant="qwen3-4b"} 64"#
+            ),
+            "completion tokens\n=== output ===\n{}",
+            output
+        );
+        assert!(
+            output.contains(
+                r#"mibee_model_inference_seconds_sum{model="vlm",variant="qwen3-vl-2b"} 4"#
+            ),
+            "vlm duration sum\n=== output ===\n{}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_model_call_guard_is_noop_safe_without_registration() {
+        // Unit tests never call register_metrics() — the global is absent,
+        // so the guard must measure-and-export only, never panic.
+        let guard = model_call("ocr", "pp-ocrv5");
+        guard.finish_ok(Some(1), Some(2));
+        let guard = model_call("ocr", "pp-ocrv5");
+        guard.finish_err();
+        let _implicit = model_call("decision", "laya"); // dropped un-finished
+    }
+
+    #[test]
+    fn test_resource_gauges_render() {
+        let m = Metrics::new().expect("metrics creation should succeed");
+        m.system_cpu_percent.set(23.5);
+        m.system_memory_total_bytes.set(8);
+        m.system_memory_available_bytes.set(3);
+        m.process_cpu_percent.set(12.0);
+        m.process_resident_memory_bytes.set(999);
+        m.process_open_fds.set(42);
+        m.system_net_rx_bytes.set(1_000);
+        m.system_net_tx_bytes.set(2_000);
+        let output = m.render();
+        assert!(
+            output.contains("mibee_eye_system_cpu_percent 23.5"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mibee_eye_system_memory_total_bytes 8"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mibee_eye_process_resident_memory_bytes 999"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mibee_eye_system_net_rx_bytes 1000"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn test_read_process_cpu_time_parses_proc_self_stat() {
+        let a = read_process_cpu_time();
+        // Linux workstation/Pi: /proc/self/stat always present and the
+        // parse must succeed; the value is small but non-negative.
+        assert!(a.is_some(), "/proc/self/stat should parse on Linux");
+        let _b = read_process_cpu_time();
     }
 }

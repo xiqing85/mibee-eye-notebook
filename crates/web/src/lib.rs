@@ -4,6 +4,8 @@ pub mod alarm;
 pub mod assets;
 pub mod cloud;
 pub mod config;
+/// Conversation model-call chain tracing (SPEC v1 §3.3).
+pub mod convtrace;
 pub mod db;
 /// Axum REST API + static SPA
 pub mod envelope;

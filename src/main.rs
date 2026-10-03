@@ -985,9 +985,18 @@ async fn main() -> anyhow::Result<()> {
         let wake_word_for_voice = config.voice.wake_word.clone();
         let voice_engine_for_arming = Arc::clone(&voice_engine);
         // Conversation session (#30-B): the last 120 s of turns give
-        // follow-ups ("再说详细点") their context.
-        type ConversationSlot =
-            Arc<std::sync::Mutex<Option<(std::time::Instant, Vec<streaming::llm::ChatTurn>)>>>;
+        // follow-ups ("再说详细点") their context. The slot also owns the
+        // conversation trace (SPEC §3.3): all turns inside the window land
+        // on one `origin:"voice"` trace; expiry closes it.
+        type ConversationSlot = Arc<
+            std::sync::Mutex<
+                Option<(
+                    std::time::Instant,
+                    Vec<streaming::llm::ChatTurn>,
+                    web::convtrace::ConvHandle,
+                )>,
+            >,
+        >;
         let conversation: ConversationSlot = Arc::new(std::sync::Mutex::new(None));
         let records_pool = pool.clone();
         let grounding_voice = Arc::clone(&grounding_state);
@@ -1038,6 +1047,34 @@ async fn main() -> anyhow::Result<()> {
                             follow_up: ev.follow_up,
                             timestamp_ms: ev.timestamp_ms,
                         });
+                        // Conversation trace (SPEC §3.3): join the 120 s
+                        // slot's trace or start a fresh one; a stale slot
+                        // closes its trace first.
+                        let conv = {
+                            let mut slot = conversation.lock().expect("conversation slot lock");
+                            let fresh = slot
+                                .as_ref()
+                                .is_some_and(|(at, _, _)| at.elapsed().as_secs() < 120);
+                            if !fresh && let Some((_, _, old)) = slot.take() {
+                                old.close();
+                            }
+                            match slot.as_ref() {
+                                Some((_, _, handle)) => {
+                                    handle.add_turn();
+                                    handle.clone()
+                                }
+                                None => {
+                                    let handle = web::convtrace::convtrace().start("voice");
+                                    handle.add_turn();
+                                    *slot = Some((
+                                        std::time::Instant::now(),
+                                        Vec::new(),
+                                        handle.clone(),
+                                    ));
+                                    handle
+                                }
+                            }
+                        };
                         // Decision triage (SPEC appendix A #26): one Laya
                         // typed decision classifies the transcript before
                         // any local-LLM tokens are spent. `ignore` skips
@@ -1050,29 +1087,40 @@ async fn main() -> anyhow::Result<()> {
                             let transcript_for_decision = ev.transcript.clone();
                             let tx_for_decision = bridge_tx.clone();
                             let ts = ev.timestamp_ms;
-                            let decision = tokio::task::spawn_blocking(move || {
-                                engine
-                                    .decide_choice(
-                                        &state_text,
-                                        "这句话属于哪一类意图？",
-                                        &[
-                                            (
-                                                "answer".into(),
-                                                "用户在提问或聊天（普通话、粤语、英语都算），需要回答"
-                                                    .into(),
-                                            ),
-                                            ("device".into(), "用户想控制设备或查询状态".into()),
-                                            (
-                                                "ignore".into(),
-                                                "环境噪声、误唤醒或无意义内容".into(),
-                                            ),
-                                        ],
-                                    )
-                                    .map(|d| (d, transcript_for_decision, ts))
-                            })
-                            .await
-                            .ok()
-                            .flatten();
+                            let mut decision_span =
+                                conv.span("decision", "laya", "意图决策", vec![]);
+                            let decision = match decision_span
+                                .run(tokio::task::spawn_blocking(move || {
+                                    engine
+                                        .decide_choice(
+                                            &state_text,
+                                            "这句话属于哪一类意图？",
+                                            &[
+                                                (
+                                                    "answer".into(),
+                                                    "用户在提问或聊天（普通话、粤语、英语都算），需要回答"
+                                                        .into(),
+                                                ),
+                                                ("device".into(), "用户想控制设备或查询状态".into()),
+                                                (
+                                                    "ignore".into(),
+                                                    "环境噪声、误唤醒或无意义内容".into(),
+                                                ),
+                                            ],
+                                        )
+                                        .map(|d| (d, transcript_for_decision, ts))
+                                }))
+                                .await
+                            {
+                                Ok(v) => {
+                                    decision_span.finish_ok();
+                                    v
+                                }
+                                Err(_) => {
+                                    decision_span.finish_err();
+                                    None
+                                }
+                            };
                             if let Some((d, transcript, ts)) = decision {
                                 tracing::info!(
                                     choice = %d.label,
@@ -1129,15 +1177,9 @@ async fn main() -> anyhow::Result<()> {
                             // Session history: keep the last 8 turns if the
                             // conversation is younger than 120 s.
                             let history_turns = {
-                                let mut slot = conversation.lock().expect("conversation slot lock");
-                                let fresh = slot
-                                    .as_ref()
-                                    .is_some_and(|(at, _)| at.elapsed().as_secs() < 120);
-                                if !fresh {
-                                    *slot = None;
-                                }
+                                let slot = conversation.lock().expect("conversation slot lock");
                                 slot.as_ref()
-                                    .map_or_else(Vec::new, |(_, turns)| turns.clone())
+                                    .map_or_else(Vec::new, |(_, turns, _)| turns.clone())
                             };
                             let mut turns =
                                 vec![web::routes::chat::build_system_turn(&ctx, &ev.transcript)];
@@ -1154,15 +1196,35 @@ async fn main() -> anyhow::Result<()> {
                             let conversation_for_reply = Arc::clone(&conversation);
                             let voice_engine_for_reply = Arc::clone(&voice_engine_for_arming);
                             let user_turn = ev.transcript.clone();
+                            let conv_for_answer = conv.clone();
+                            let conv_for_reply = conv.clone();
                             // Answer path (SPEC §4.10): the cloud answers
                             // first when configured — same persona/grounding
                             // system turn — and the local model is the
                             // fallback (or the only path when cloud is off).
+                            // Each model call opens a conversation span
+                            // (SPEC §3.3) — the fallback keeps the failed
+                            // cloud span visible in the chain.
                             let answer = async move {
                                 if cloud.enabled() {
-                                    match cloud.complete(&turns, None, None, None).await {
-                                        Ok(reply) => return Ok(reply),
+                                    let model_id = cloud.config().chat_model.clone();
+                                    let mut span = conv_for_answer.span(
+                                        "cloud.chat",
+                                        &model_id,
+                                        "云端应答",
+                                        vec![],
+                                    );
+                                    match span
+                                        .run(cloud.complete_with_usage(&turns, None, None, None))
+                                        .await
+                                    {
+                                        Ok((reply, usage)) => {
+                                            span.tokens(usage.map(|u| u.0), usage.map(|u| u.1))
+                                                .finish_ok();
+                                            return Ok(reply);
+                                        }
                                         Err(e) => {
+                                            span.finish_err();
                                             tracing::warn!(error = %e, "cloud: voice reply failed — falling back to local llm");
                                             if !cloud.config().fallback_local {
                                                 return Err(format!("cloud: {e}"));
@@ -1170,12 +1232,30 @@ async fn main() -> anyhow::Result<()> {
                                         }
                                     }
                                 }
+                                let variant = engine.model_variant();
+                                let mut span =
+                                    conv_for_answer.span("llm", &variant, "本地应答", vec![]);
                                 let engine = engine.clone();
                                 let turns = turns.clone();
-                                tokio::task::spawn_blocking(move || engine.complete(&turns))
+                                match span
+                                    .run(tokio::task::spawn_blocking(move || {
+                                        engine.complete(&turns)
+                                    }))
                                     .await
-                                    .map_err(|e| format!("llm task: {e}"))?
-                                    .map_err(|e| format!("llm: {e}"))
+                                {
+                                    Ok(Ok(reply)) => {
+                                        span.finish_ok();
+                                        Ok(reply)
+                                    }
+                                    Ok(Err(e)) => {
+                                        span.finish_err();
+                                        Err(format!("llm: {e}"))
+                                    }
+                                    Err(e) => {
+                                        span.finish_err();
+                                        Err(format!("llm task: {e}"))
+                                    }
+                                }
                             };
                             tokio::spawn(async move {
                                 match answer.await {
@@ -1188,7 +1268,11 @@ async fn main() -> anyhow::Result<()> {
                                                 .lock()
                                                 .expect("conversation slot lock");
                                             let entry = slot.get_or_insert_with(|| {
-                                                (std::time::Instant::now(), Vec::new())
+                                                (
+                                                    std::time::Instant::now(),
+                                                    Vec::new(),
+                                                    conv_for_reply.clone(),
+                                                )
                                             });
                                             entry.0 = std::time::Instant::now();
                                             entry.1.push(streaming::llm::ChatTurn {
@@ -1215,9 +1299,27 @@ async fn main() -> anyhow::Result<()> {
                                         // in the reply would re-wake the
                                         // device into a self-talk loop.
                                         if tts_for_reply.is_active() {
+                                            let tts_model = match streaming::lang::detect(&reply) {
+                                                streaming::lang::SpokenLang::Cantonese => "tts.yue",
+                                                streaming::lang::SpokenLang::English => "tts.en",
+                                                streaming::lang::SpokenLang::Mandarin => "tts.zh",
+                                            };
+                                            let mut span = conv_for_reply.span(
+                                                tts_model,
+                                                "vits",
+                                                "语音播报",
+                                                vec![],
+                                            );
                                             voice_engine_for_reply.begin_playback_mute();
-                                            if let Err(e) = tts_for_reply.speak(&reply) {
-                                                tracing::warn!(error = %e, "tts: speak failed");
+                                            match span
+                                                .run(async { tts_for_reply.speak(&reply) })
+                                                .await
+                                            {
+                                                Ok(_) => span.finish_ok(),
+                                                Err(e) => {
+                                                    span.finish_err();
+                                                    tracing::warn!(error = %e, "tts: speak failed");
+                                                }
                                             }
                                             voice_engine_for_reply.end_playback_mute();
                                         }
@@ -1229,9 +1331,15 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                     Err(e) => {
                                         tracing::warn!(error = %e, "voice auto-reply failed");
+                                        conv_for_reply.close();
                                     }
                                 }
                             });
+                        } else {
+                            // No reply path ran (decision said ignore, or
+                            // the chat engine is inactive): the trace — at
+                            // most a decision span — ends here.
+                            conv.close();
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

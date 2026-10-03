@@ -2,7 +2,37 @@
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Full observability: per-model resource metrics + conversation model-call
+  chains (SPEC v1 §3.3 + appendix A #37-39).**
+  - `/metrics` now exposes per-model families for every invocable model
+    (vision/audio/OCR/LLM/VLM/cloud/decision/face/meeting/ASR/speaker/TTS):
+    `mibee_model_inferences_total{model,variant}`,
+    `mibee_model_inference_seconds` + `mibee_model_cpu_seconds` histograms
+    (wall time and process-CPU delta per call), `mibee_model_inflight`,
+    `mibee_model_errors_total`, `mibee_model_tokens_total` (prompt/completion
+    for token-billed models — local llama.cpp counts real tokens, cloud usage
+    comes from the provider response).
+  - System/process resource gauges (`mibee_eye_system_*`,
+    `mibee_eye_process_*`) mirror the `/api/metrics/summary` sampler onto the
+    Prometheus surface.
+  - `GET /api/traces/conversations[?limit=]` and
+    `GET /api/traces/conversations/{id}`: per-conversation model call-chain
+    records (call order, nesting, duration, CPU delta, tokens) — HTTP chat
+    turns and voice wake-sessions (120 s slot, follow-ups included) each form
+    one trace; bounded ring 200×64.
+  - Every model invocation exports an OTel `model_call/<id>` span with
+    `model`/`variant` attributes; conversations export a
+    `conversation/<origin>` root span — external collectors (Jaeger/Tempo)
+    get the full chain when `otel_endpoint` is set.
+  - `capabilities.observability` gains additive keys `traces:true`,
+    `model_metrics:true`.
+
+### Fixed
+
+- SPEC appendix A #11 stale note corrected upstream: this device has
+  implemented §3.2 since the 2026-10-04 audit (notebook side of webui #47).
 
 All notable changes to MiBee-Rec are documented here.
 

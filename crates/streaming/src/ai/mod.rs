@@ -451,9 +451,23 @@ impl AiEngine {
                         // Keep a handle for the event (the closure below
                         // moves the Arc into the blocking task).
                         let frame = std::sync::Arc::clone(&jpeg);
-                        let result = tokio::task::spawn_blocking(move || detect.detect(&jpeg))
-                            .await
-                            .unwrap_or_else(|e| Err(anyhow::anyhow!("inference task failed: {e}")));
+                        let result = tokio::task::spawn_blocking(move || {
+                            // Per-model resource accounting (SPEC §3.3):
+                            // the guard lives exactly as long as the
+                            // inference on this blocking thread.
+                            let call = observability::model_call("ai", detect.model_name());
+                            let r = {
+                                let _span = call.enter();
+                                detect.detect(&jpeg)
+                            };
+                            match &r {
+                                Ok(_) => call.finish_ok(None, None),
+                                Err(_) => call.finish_err(),
+                            }
+                            r
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(anyhow::anyhow!("inference task failed: {e}")));
 
                         match result {
                             Ok(mut detections) => {

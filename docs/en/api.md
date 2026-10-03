@@ -129,6 +129,22 @@ instead of pretending.
 | POST | `/api/ai/models` | Upload a model archive |
 | DELETE | `/api/ai/models/{id}` | Delete an uploaded model |
 
+### Conversation traces (SPEC §3.3)
+
+Per-conversation model call-chain records: every model invoked on a
+dialogue's answer path (decision triage, VLM, cloud LLM, local LLM, TTS)
+produces a span with call order, duration, process-CPU delta and token
+counts. The chain is also exported over OTLP when `otel_endpoint` is
+configured.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/traces/conversations?limit=` | Recent conversation summaries (default 50, cap 200), newest first |
+| GET | `/api/traces/conversations/{id}` | Full span list for one conversation; unknown id → 404 |
+
+List item: `{"id","origin":"chat"|"voice","started_at_ms","duration_ms","turns","models":[...],"status":"ok"|"partial"|"error","open"}`.
+Span object: `{"span_id","parent_id","model","variant","label","start_ms","duration_ms","cpu_ms","status","tokens_prompt","tokens_completion","attributes"}`.
+
 ### Devices (SPEC §4.8)
 
 | Method | Path | Description |

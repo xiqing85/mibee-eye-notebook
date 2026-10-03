@@ -449,6 +449,22 @@ impl MeetingEngine {
         }
         #[cfg(feature = "voice")]
         {
+            // One span for the whole batch pipeline (diarize → ASR →
+            // punctuate → name-vote; SPEC appendix A #39: model id
+            // `meeting` — a long-running composite job, not per-frame).
+            let call = observability::model_call("meeting", "pyannote+paraformer");
+            let r = self.process_meeting_inner(rec);
+            match &r {
+                Ok(_) => call.finish_ok(None, None),
+                Err(_) => call.finish_err(),
+            }
+            r
+        }
+    }
+
+    #[cfg(feature = "voice")]
+    fn process_meeting_inner(&self, rec: &RecordedMeeting) -> anyhow::Result<MeetingTranscript> {
+        {
             let bytes = std::fs::read(&rec.path)
                 .map_err(|e| anyhow::anyhow!("read {}: {e}", rec.path.display()))?;
             let wav = super::audio_ai::wav::parse_wav(&bytes)?;

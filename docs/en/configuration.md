@@ -184,9 +184,11 @@ service = "mibee-eye"
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `otel_endpoint` | String | `"http://localhost:4317"` | OpenTelemetry collector endpoint (OTLP gRPC) |
+| `otel_endpoint` | String | `"http://localhost:4317"` | OpenTelemetry collector endpoint (OTLP gRPC). When set, spans flow out for every request, protocol session and **model invocation** (`model_call/<id>` spans carrying `model`/`variant`, plus one `conversation/<origin>` root span per dialogue with its model chain) |
 | `log_level` | String | `"info"` | Log level filter |
 | `logs` | Option<RemoteLogConfig> | `None` | Optional remote log shipping configuration |
+
+**Observability surface** (2026-10-04): besides the OTLP trace export, `/metrics` (public, Prometheus text) carries per-model resource families — `mibee_model_inferences_total{model,variant}`, `mibee_model_inference_seconds` / `mibee_model_cpu_seconds` histograms, `mibee_model_inflight{model}`, `mibee_model_errors_total`, `mibee_model_tokens_total{...,kind=prompt|completion}` — plus the system/process resource gauges (`mibee_eye_system_*` / `mibee_eye_process_*`). Conversation model-call chains are queryable via `GET /api/traces/conversations` (SPEC v1 §3.3; bounded in-memory ring of 200 conversations × 64 spans each).
 
 **[observability.logs] RemoteLogConfig Fields:**
 
