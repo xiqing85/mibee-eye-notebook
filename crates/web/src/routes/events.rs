@@ -102,6 +102,13 @@ pub enum CameraEvent {
         label: String,
         timestamp_ms: u64,
     },
+    /// A model download task changed state (SPEC §4.9 `model_task`):
+    /// progress ticks (throttled ≥0.5s) and terminal statuses, forwarded
+    /// from the download manager by main.rs.
+    ModelTask {
+        #[serde(flatten)]
+        task: streaming::models::TaskSnapshot,
+    },
     /// A new camera was discovered (plugged in or detected on startup).
     CameraAdded {
         camera_id: String,
@@ -282,6 +289,9 @@ fn event_to_sse(event: CameraEvent) -> Event {
             })
             .to_string(),
         ),
+        CameraEvent::ModelTask { task } => Event::default()
+            .event("model_task")
+            .data(serde_json::to_value(task).unwrap_or_default().to_string()),
         CameraEvent::CameraAdded {
             camera_id,
             device_index,

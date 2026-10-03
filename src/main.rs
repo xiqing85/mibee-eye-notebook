@@ -177,6 +177,14 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         mibee_eye::config::overlay_scene_from_rows(&mut config, &rows);
+        let n_models = rows.iter().filter(|(k, _)| k.starts_with("model.")).count();
+        if n_models > 0 {
+            tracing::info!(
+                rows = n_models,
+                "applying model selection overlay from settings store"
+            );
+        }
+        mibee_eye::config::overlay_models_from_rows(&mut config, &rows);
     }
     // Custom wake word (#32): regenerate the keywords override next to
     // the DB and point the KWS at it. Default word keeps the shipped
@@ -561,6 +569,39 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Model manager (SPEC §4.9): the download engine + the boot-time
+    // default selection per capability (engine paths matched against the
+    // catalog; the detection capability defaults to the engine's active
+    // registry model). Progress rides the SSE bus as `model_task` events.
+    let mut model_defaults = mibee_eye::config::default_model_selection(&config);
+    if ai_engine.is_active() {
+        model_defaults.insert("ai".to_string(), ai_engine.active_model().to_string());
+    }
+    let model_manager = Arc::new(web::routes::models_api::ModelManager::new(
+        std::path::PathBuf::from(&config.models.dir),
+        model_defaults.clone(),
+    ));
+    {
+        let mut task_rx = model_manager.downloads.subscribe();
+        let event_tx_for_models = event_tx.clone();
+        tokio::spawn(async move {
+            while let Ok(snapshot) = task_rx.recv().await {
+                let _ = event_tx_for_models
+                    .send(web::routes::events::CameraEvent::ModelTask { task: snapshot });
+            }
+        });
+    }
+    // Online AI (SPEC §4.10): config lives in its own table; the live
+    // handle hot-swaps on PUT /api/cloud and routes voice + HTTP chat.
+    let cloud_ai = Arc::new(web::cloud::CloudAi::new(
+        web::db::get_cloud_config(&pool).await.unwrap_or_default(),
+    ));
+    if cloud_ai.enabled() {
+        tracing::info!(
+            provider = %cloud_ai.config().provider,
+            "cloud: online AI routing active"
+        );
+    }
     // Audio AI engine (sound events + voice presence). Fail-open: no
     // microphone, missing models, or a missing ONNX Runtime library leave
     // it inactive.
@@ -908,6 +949,7 @@ async fn main() -> anyhow::Result<()> {
         let mut voice_events = voice_engine.subscribe_events();
         let bridge_tx = event_tx.clone();
         let chat_for_voice = chat_engine.clone();
+        let cloud_for_voice = cloud_ai.clone();
         let decision_for_voice = decision_engine.clone();
         let grounding_for_voice = Arc::clone(&grounding_state);
         let streams_for_voice = Arc::clone(&segment_registry);
@@ -1077,62 +1119,89 @@ async fn main() -> anyhow::Result<()> {
                                 content: ev.transcript.clone(),
                             });
                             let engine = chat_for_voice.clone();
+                            let cloud = cloud_for_voice.clone();
                             let tx = bridge_tx.clone();
                             let tts_for_reply = tts_engine.clone();
                             let grounded = grounded.clone();
                             let conversation_for_reply = Arc::clone(&conversation);
                             let voice_engine_for_reply = Arc::clone(&voice_engine_for_arming);
                             let user_turn = ev.transcript.clone();
-                            tokio::task::spawn_blocking(move || match engine.complete(&turns) {
-                                Ok(reply) => {
-                                    // Extend the conversation session with
-                                    // this Q/A pair (trimmed to the last 4
-                                    // pairs = 8 turns).
-                                    {
-                                        let mut slot = conversation_for_reply
-                                            .lock()
-                                            .expect("conversation slot lock");
-                                        let entry = slot.get_or_insert_with(|| {
-                                            (std::time::Instant::now(), Vec::new())
-                                        });
-                                        entry.0 = std::time::Instant::now();
-                                        entry.1.push(streaming::llm::ChatTurn {
-                                            role: "user".into(),
-                                            content: user_turn,
-                                        });
-                                        entry.1.push(streaming::llm::ChatTurn {
-                                            role: "assistant".into(),
-                                            content: reply.clone(),
-                                        });
-                                        let keep = entry.1.len().saturating_sub(8);
-                                        entry.1.drain(..keep);
-                                    }
-                                    let _ = tx.send(web::routes::events::CameraEvent::ChatReply {
-                                        source: "voice".into(),
-                                        reply: reply.clone(),
-                                        grounded,
-                                        timestamp_ms: unix_now_ms(),
-                                    });
-                                    // Playback self-mute: while this reply
-                                    // is on the speaker the wake-word
-                                    // worker stays deaf — a spoken 小蜜蜂
-                                    // in the reply would re-wake the
-                                    // device into a self-talk loop.
-                                    if tts_for_reply.is_active() {
-                                        voice_engine_for_reply.begin_playback_mute();
-                                        if let Err(e) = tts_for_reply.speak(&reply) {
-                                            tracing::warn!(error = %e, "tts: speak failed");
+                            // Answer path (SPEC §4.10): the cloud answers
+                            // first when configured — same persona/grounding
+                            // system turn — and the local model is the
+                            // fallback (or the only path when cloud is off).
+                            let answer = async move {
+                                if cloud.enabled() {
+                                    match cloud.complete(&turns, None, None, None).await {
+                                        Ok(reply) => return Ok(reply),
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "cloud: voice reply failed — falling back to local llm");
+                                            if !cloud.config().fallback_local {
+                                                return Err(format!("cloud: {e}"));
+                                            }
                                         }
-                                        voice_engine_for_reply.end_playback_mute();
                                     }
-                                    // Continuous dialogue (#30-B): arm the
-                                    // VAD follow-up window only after the
-                                    // reply finished playing — earlier would
-                                    // let the mic capture our own TTS.
-                                    voice_engine_for_reply.arm_follow_up();
                                 }
-                                Err(e) => {
-                                    tracing::warn!(error = %e, "llm: voice auto-reply failed");
+                                let engine = engine.clone();
+                                let turns = turns.clone();
+                                tokio::task::spawn_blocking(move || engine.complete(&turns))
+                                    .await
+                                    .map_err(|e| format!("llm task: {e}"))?
+                                    .map_err(|e| format!("llm: {e}"))
+                            };
+                            tokio::spawn(async move {
+                                match answer.await {
+                                    Ok(reply) => {
+                                        // Extend the conversation session with
+                                        // this Q/A pair (trimmed to the last 4
+                                        // pairs = 8 turns).
+                                        {
+                                            let mut slot = conversation_for_reply
+                                                .lock()
+                                                .expect("conversation slot lock");
+                                            let entry = slot.get_or_insert_with(|| {
+                                                (std::time::Instant::now(), Vec::new())
+                                            });
+                                            entry.0 = std::time::Instant::now();
+                                            entry.1.push(streaming::llm::ChatTurn {
+                                                role: "user".into(),
+                                                content: user_turn,
+                                            });
+                                            entry.1.push(streaming::llm::ChatTurn {
+                                                role: "assistant".into(),
+                                                content: reply.clone(),
+                                            });
+                                            let keep = entry.1.len().saturating_sub(8);
+                                            entry.1.drain(..keep);
+                                        }
+                                        let _ =
+                                            tx.send(web::routes::events::CameraEvent::ChatReply {
+                                                source: "voice".into(),
+                                                reply: reply.clone(),
+                                                grounded,
+                                                timestamp_ms: unix_now_ms(),
+                                            });
+                                        // Playback self-mute: while this reply
+                                        // is on the speaker the wake-word
+                                        // worker stays deaf — a spoken 小蜜蜂
+                                        // in the reply would re-wake the
+                                        // device into a self-talk loop.
+                                        if tts_for_reply.is_active() {
+                                            voice_engine_for_reply.begin_playback_mute();
+                                            if let Err(e) = tts_for_reply.speak(&reply) {
+                                                tracing::warn!(error = %e, "tts: speak failed");
+                                            }
+                                            voice_engine_for_reply.end_playback_mute();
+                                        }
+                                        // Continuous dialogue (#30-B): arm the
+                                        // VAD follow-up window only after the
+                                        // reply finished playing — earlier would
+                                        // let the mic capture our own TTS.
+                                        voice_engine_for_reply.arm_follow_up();
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "voice auto-reply failed");
+                                    }
                                 }
                             });
                         }
@@ -1495,6 +1564,8 @@ async fn main() -> anyhow::Result<()> {
             config.voice.wake_word.clone(),
         )),
         restart_tx,
+        model_manager,
+        cloud_ai.clone(),
     )
     .await?;
 

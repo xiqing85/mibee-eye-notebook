@@ -149,6 +149,8 @@ mod tests {
                 streaming::voice::DEFAULT_WAKE_WORD.into(),
             )),
             restart_tx: tokio::sync::watch::channel(false).0,
+            models: crate::server::AppRouterState::models_cloud_for_tests().0,
+            cloud: crate::server::AppRouterState::models_cloud_for_tests().1,
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),

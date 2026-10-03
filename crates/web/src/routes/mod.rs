@@ -25,6 +25,7 @@ pub mod devices;
 pub mod events;
 pub mod faces;
 pub mod meetings;
+pub mod models_api;
 pub mod mse;
 pub mod ocr;
 pub mod protocols;

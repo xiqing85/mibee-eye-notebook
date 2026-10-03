@@ -226,6 +226,7 @@ pub async fn chat(
     Extension(grounding): Extension<Arc<GroundingState>>,
     Extension(tools): Extension<crate::server::SharedTools>,
     Extension(wake_word): Extension<Arc<crate::routes::capabilities::WakeWord>>,
+    Extension(cloud): Extension<Arc<crate::cloud::CloudAi>>,
     Extension(pool): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     body: axum::extract::Json<ChatRequest>,
@@ -233,7 +234,10 @@ pub async fn chat(
     if body.text.trim().is_empty() {
         return Err(ApiError::bad_request("text must not be empty"));
     }
-    if !engine.is_active() {
+    // A configured cloud (SPEC §4.10) answers even when the local model
+    // is inactive; the 501 only fires when local is the actual path.
+    let cloud_on = cloud.enabled();
+    if !cloud_on && !engine.is_active() {
         return Err(ApiError::not_implemented(format!(
             "llm inactive: {}",
             engine.inactive_reason()

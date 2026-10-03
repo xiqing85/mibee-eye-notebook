@@ -1923,3 +1923,40 @@ input[type="range"]::-moz-range-thumb {
   background: var(--input-bg, transparent);
   color: inherit;
 }
+
+/* ===== AI models page (model_manager + cloud_ai, SPEC §4.9/§4.10) ===== */
+.model-list { display: flex; flex-direction: column; gap: 4px; }
+.model-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-sm);
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+}
+.model-row-active { border-color: var(--accent-border); background: var(--accent-bg); }
+.model-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.model-name { font-size: .9rem; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.model-meta { font-size: .76rem; color: var(--text-secondary); }
+.model-notes { color: var(--text-faint); }
+.model-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.model-badge {
+  font-size: .7rem; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--border); color: var(--text-secondary);
+}
+.model-badge.badge-active { color: var(--accent-text); background: var(--accent-bg); border-color: var(--accent-border); }
+.model-badge.badge-installed { color: var(--text-primary); }
+.model-badge.badge-nodl { opacity: .7; }
+.model-apply-badge {
+  font-size: .7rem; padding: 1px 8px; border-radius: 10px; margin-right: 6px;
+  border: 1px solid var(--border); color: var(--text-secondary);
+}
+.model-apply-badge.badge-restart { color: var(--warn, #b8860b); }
+.model-apply-badge.badge-immediate { color: var(--accent-text); border-color: var(--accent-border); }
+.model-progress { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.model-progress-bar {
+  height: 6px; width: 40%; min-width: 90px; border-radius: 4px;
+  background: var(--bg-hover, #333); overflow: hidden; position: relative;
+}
+.model-progress-bar::after { content: ''; position: absolute; inset: 0; width: 0; background: transparent; }
+.model-progress-text { font-size: .72rem; color: var(--text-secondary); }
+.model-key-state { font-size: .78rem; color: var(--text-secondary); margin: -6px 0 var(--space-md); }
+.model-key-clear { margin-bottom: var(--space-md); }
+.model-privacy { font-size: .76rem; color: var(--warn, #b8860b); margin: var(--space-sm) 0; }
+.models-cloud-form { max-width: 480px; }

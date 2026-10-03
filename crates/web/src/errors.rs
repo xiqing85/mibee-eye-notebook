@@ -32,6 +32,8 @@ pub enum ApiErrorKind {
     GatewayTimeout,
     /// 500 Internal Server Error — unexpected error.
     InternalServerError,
+    /// 507 Insufficient Storage — a download exceeds free disk (SPEC §4.9).
+    InsufficientStorage,
 }
 
 impl ApiErrorKind {
@@ -46,6 +48,7 @@ impl ApiErrorKind {
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             Self::GatewayTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InsufficientStorage => StatusCode::INSUFFICIENT_STORAGE,
         }
     }
 
@@ -60,6 +63,7 @@ impl ApiErrorKind {
             Self::NotImplemented => "not_implemented",
             Self::GatewayTimeout => "gateway_timeout",
             Self::InternalServerError => "internal_error",
+            Self::InsufficientStorage => "insufficient_storage",
         }
     }
 }
