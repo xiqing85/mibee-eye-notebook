@@ -20,8 +20,9 @@ import { loadConfig, initSettings } from './settings.js';
 import { checkApi, refreshStatus, initStatus, startStatusPolling } from './status.js';
 import { renderDevices, initDevices } from './devices.js';
 import { renderRecords, renderSpeakers, renderMeetings, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
+import { renderModels, initModels, updateModelsVisibility, handleModelTask } from './models.js';
 
-const VIEWS = ['preview', 'cameras', 'settings', 'status', 'records', 'devices'];
+const VIEWS = ['preview', 'cameras', 'settings', 'models', 'status', 'records', 'devices'];
 
 function currentView() {
   const name = (location.hash || '').replace(/^#\/?/, '');
@@ -45,6 +46,7 @@ export function showView(name) {
   if (name === 'cameras') { refreshCameras().then(renderCameras); }
   else stopCameras();
   if (name === 'settings') loadConfig();
+  if (name === 'models') renderModels();
   if (name === 'status') { checkApi(); refreshStatus(); }
   if (name === 'devices') renderDevices();
   if (name === 'records') { renderRecords(); renderSpeakers(); renderMeetings(); }
@@ -75,6 +77,8 @@ async function enterApp() {
   initDevices();
   initRecords();
   updateRecordsVisibility();
+  initModels();
+  updateModelsVisibility();
   initAi();
   initZones();
   initChat();
@@ -85,6 +89,7 @@ async function enterApp() {
   connectEvents({
     ai_detection: (p) => { renderDetections(p.detections || []); renderZonesOverlay(); },
     ai_model_changed: handleModelChanged,
+    model_task: handleModelTask,
     alarm_description: handleAlarmDescription,
     // Hearing records view refreshes itself when a record lands while open.
     alarm: (p) => { handleAlarmEvent(p); recordsSseHook('alarm', p); },

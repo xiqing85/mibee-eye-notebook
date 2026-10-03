@@ -1186,13 +1186,62 @@ pub async fn finalize_stream_session(
     Ok(result.rows_affected() as usize)
 }
 
-/// Test helper: creates in-memory SqlitePool and auth_db for testing
-/// Returns (pool, auth_db) where pool is for web CRUD and auth_db is for security operations
+// ---------------------------------------------------------------------------
+// Cloud AI config (SPEC §4.10) — dedicated table, never the settings bag
+// ---------------------------------------------------------------------------
+
+/// The stored cloud config; defaults when the row is somehow missing.
+pub async fn get_cloud_config(pool: &SqlitePool) -> Result<crate::cloud::CloudConfig> {
+    let row = sqlx::query_as::<_, (String, String, String, String, i64, i64)>(
+        "SELECT provider, api_key, chat_model, vision_model, fallback_local, timeout_secs
+         FROM cloud_config WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("Failed to read cloud config")?;
+    Ok(match row {
+        Some((provider, api_key, chat_model, vision_model, fallback, timeout)) => {
+            crate::cloud::CloudConfig {
+                provider,
+                api_key,
+                chat_model,
+                vision_model,
+                fallback_local: fallback != 0,
+                timeout_secs: timeout.max(5) as u64,
+            }
+        }
+        None => crate::cloud::CloudConfig::default(),
+    })
+}
+
+/// Full-row upsert (the PUT handler merged + validated beforehand).
+pub async fn save_cloud_config(pool: &SqlitePool, cfg: &crate::cloud::CloudConfig) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO cloud_config (id, provider, api_key, chat_model, vision_model, fallback_local, timeout_secs)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET provider=?1, api_key=?2, chat_model=?3,
+             vision_model=?4, fallback_local=?5, timeout_secs=?6",
+    )
+    .bind(&cfg.provider)
+    .bind(&cfg.api_key)
+    .bind(&cfg.chat_model)
+    .bind(&cfg.vision_model)
+    .bind(i64::from(cfg.fallback_local))
+    .bind(cfg.timeout_secs as i64)
+    .execute(pool)
+    .await
+    .context("Failed to save cloud config")?;
+    Ok(())
+}
+
 #[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
 use tokio::sync::Mutex;
 
+/// Test helper: creates in-memory SqlitePool and auth_db for testing.
+/// Returns (pool, auth_db) where pool is for web CRUD and auth_db is for
+/// security operations.
 #[cfg(test)]
 pub async fn create_test_dbs() -> (SqlitePool, Arc<Mutex<rusqlite::Connection>>) {
     let pool = SqlitePoolOptions::new()
@@ -1741,6 +1790,31 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_config_roundtrips_through_the_dedicated_table() {
+        let (pool, _auth) = create_test_dbs().await;
+        run_migrations(&pool).await.expect("migrations");
+        let base = get_cloud_config(&pool).await.unwrap();
+        assert_eq!(base.provider, "off");
+        assert!(base.api_key.is_empty());
+        let mut cfg = base.clone();
+        cfg.provider = "openrouter".into();
+        cfg.api_key = "sk-or-test".into();
+        cfg.chat_model = "openai/gpt-4o-mini".into();
+        cfg.vision_model = "qwen/qwen3-vl-8b".into();
+        cfg.fallback_local = false;
+        cfg.timeout_secs = 90;
+        save_cloud_config(&pool, &cfg).await.unwrap();
+        let back = get_cloud_config(&pool).await.unwrap();
+        assert_eq!(back, cfg);
+        // The key never lands in the settings bag.
+        let rows = list_settings(&pool).await.unwrap();
+        assert!(
+            rows.iter()
+                .all(|(k, v)| !k.starts_with("cloud") && !v.contains("sk-or-test"))
         );
     }
 }

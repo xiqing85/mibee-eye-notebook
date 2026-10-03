@@ -341,6 +341,25 @@ pub struct AppConfig {
     /// Resource-adaptive capability tiering (#30-E).
     #[serde(default)]
     pub resources: streaming::tools::ResourcesConfig,
+    /// Model manager (SPEC §4.9): where the model catalog installs files.
+    #[serde(default)]
+    pub models: ModelsConfig,
+}
+
+/// `[models]` — the download root for the model manager (SPEC §4.9).
+/// Engine paths are cwd-relative strings, so the default matches the
+/// deployment's `models/` directory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelsConfig {
+    pub dir: String,
+}
+
+impl Default for ModelsConfig {
+    fn default() -> Self {
+        Self {
+            dir: "models".into(),
+        }
+    }
 }
 impl AppConfig {
     /// Load configuration from a TOML file.
@@ -495,9 +514,280 @@ pub fn overlay_scene_from_rows(config: &mut AppConfig, rows: &[(String, String)]
     }
 }
 
+/// Apply persisted `model.<capability>` selections (written by
+/// `POST /api/models/{cap}/{id}/activate`, SPEC §4.9) over the TOML
+/// config at boot. Unknown ids or malformed rows are skipped with a
+/// warning — a hand-edited DB row must not brick startup.
+pub fn overlay_models_from_rows(config: &mut AppConfig, rows: &[(String, String)]) {
+    for (key, value) in rows {
+        let Some(cap) = key.strip_prefix("model.") else {
+            continue;
+        };
+        let Some(model) = streaming::models::find(cap, value) else {
+            tracing::warn!(key = %key, value = %value, "ignoring unknown model selection row");
+            continue;
+        };
+        apply_model_selection(config, cap, model);
+    }
+}
+
+fn file_path(
+    models_dir: &str,
+    model: &streaming::models::CatalogModel,
+    role: &str,
+) -> Option<String> {
+    let fl = model.files.iter().find(|f| f.role == role)?;
+    let joined = format!("{}/{}/{}", models_dir, model.dir, fl.path);
+    Some(joined.replace("/./", "/"))
+}
+
+fn dict_dir(models_dir: &str, model: &streaming::models::CatalogModel) -> String {
+    // The dict role ships many files under one directory (jieba); the
+    // engine wants that directory itself.
+    model
+        .files
+        .iter()
+        .find(|f| f.role == "dict")
+        .and_then(|f| f.path.rsplit_once('/'))
+        .map(|(dir, _)| format!("{}/{}/{}", models_dir, model.dir, dir))
+        .unwrap_or_default()
+}
+
+fn rule_fsts(models_dir: &str, model: &streaming::models::CatalogModel) -> String {
+    let fsts: Vec<String> = model
+        .files
+        .iter()
+        .filter(|f| f.role == "fst")
+        .map(|f| format!("{}/{}/{}", models_dir, model.dir, f.path))
+        .collect();
+    fsts.join(",")
+}
+
+fn apply_model_selection(
+    config: &mut AppConfig,
+    cap: &str,
+    model: &streaming::models::CatalogModel,
+) {
+    let dir = config.models.dir.clone();
+    match cap {
+        "llm" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.llm.model_path = p;
+            }
+        }
+        "vlm" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.vlm.model_path = p;
+            }
+            if let Some(p) = file_path(&dir, model, "mmproj") {
+                config.vlm.mmproj_path = p;
+            }
+        }
+        "voice.asr" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.voice.paraformer_model = p;
+            }
+            if let Some(p) = file_path(&dir, model, "tokens") {
+                config.voice.paraformer_tokens = p;
+            }
+        }
+        "tts.zh" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.tts.model = p;
+            }
+            if let Some(p) = file_path(&dir, model, "lexicon") {
+                config.tts.lexicon = p;
+            }
+            if let Some(p) = file_path(&dir, model, "tokens") {
+                config.tts.tokens = p;
+            }
+            let d = dict_dir(&dir, model);
+            if !d.is_empty() {
+                config.tts.dict_dir = d;
+            }
+            let fsts = rule_fsts(&dir, model);
+            if !fsts.is_empty() {
+                config.tts.rule_fsts = fsts;
+            }
+        }
+        "tts.yue" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.tts.yue_model = p;
+            }
+            if let Some(p) = file_path(&dir, model, "lexicon") {
+                config.tts.yue_lexicon = p;
+            }
+            config.tts.yue_dict_dir = dict_dir(&dir, model);
+        }
+        "tts.en" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.tts.en_model = p;
+            }
+            config.tts.en_lexicon = file_path(&dir, model, "lexicon").unwrap_or_default();
+        }
+        "face.detect" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.face.detect_model = p;
+            }
+        }
+        "face.recog" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.face.recog_model = p;
+            }
+        }
+        "ocr" => {
+            if let Some(p) = file_path(&dir, model, "det") {
+                config.ocr.det_path = p;
+            }
+            if let Some(p) = file_path(&dir, model, "rec") {
+                config.ocr.rec_path = p;
+            }
+            if let Some(p) = file_path(&dir, model, "dict") {
+                config.ocr.dict_path = p;
+            }
+        }
+        "decision" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.decision.model_path = p;
+            }
+            if let Some(p) = file_path(&dir, model, "tokenizer") {
+                config.decision.tokenizer_path = p;
+            }
+            if let Some(p) = file_path(&dir, model, "config") {
+                config.decision.config_path = p;
+            }
+        }
+        "speaker" => {
+            if let Some(p) = file_path(&dir, model, "model") {
+                config.voice.speaker_embedding_model = p;
+            }
+        }
+        // The detection capability is immediate-class: the §4.6 registry
+        // setting (ai.model) governs; no boot overlay needed.
+        _ => {}
+    }
+}
+
+/// The boot-time default selection per capability: which catalog model
+/// the TOML engine paths currently point at (before any web selection).
+/// Serves `GET /api/models` until a web activation persists a row.
+pub fn default_model_selection(config: &AppConfig) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let dir = &config.models.dir;
+    let configured: Vec<(&str, String)> = vec![
+        ("llm", config.llm.model_path.clone()),
+        ("vlm", config.vlm.model_path.clone()),
+        ("voice.asr", config.voice.paraformer_model.clone()),
+        ("tts.zh", config.tts.model.clone()),
+        ("tts.yue", config.tts.yue_model.clone()),
+        ("tts.en", config.tts.en_model.clone()),
+        ("face.detect", config.face.detect_model.clone()),
+        ("face.recog", config.face.recog_model.clone()),
+        ("ocr", config.ocr.det_path.clone()),
+        ("decision", config.decision.model_path.clone()),
+        ("speaker", config.voice.speaker_embedding_model.clone()),
+    ];
+    // The engine field each capability's default selection is read from.
+    let primary_role = |cap: &str| match cap {
+        "ocr" => "det",
+        _ => "model",
+    };
+    for cap in streaming::models::catalog() {
+        // Detection rides the registry; nothing to path-match here.
+        if cap.apply == "immediate" {
+            continue;
+        }
+        let Some((_, primary)) = configured.iter().find(|(c, _)| *c == cap.id) else {
+            continue;
+        };
+        let role = primary_role(cap.id);
+        for m in cap.models {
+            if let Some(p) = file_path(dir, m, role)
+                && p == *primary
+            {
+                out.insert(cap.id.to_string(), m.id.to_string());
+                break;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_overlay_maps_every_capability_to_engine_paths() {
+        let mut cfg: AppConfig = toml::from_str("").expect("empty config");
+        overlay_models_from_rows(
+            &mut cfg,
+            &[
+                ("model.llm".into(), "qwen3-1.7b-q4_k_m".into()),
+                ("model.vlm".into(), "qwen3-vl-4b-instruct".into()),
+                ("model.voice.asr".into(), "paraformer-zh-small".into()),
+                ("model.tts.en".into(), "melo-en".into()),
+                ("model.face.detect".into(), "yunet-2023mar".into()),
+                ("model.decision".into(), "laya-multilingual-int8".into()),
+                ("model.llm".into(), "garbage-id".into()), // unknown → skipped
+                ("scene.voice.wake_word".into(), "小蜜蜂".into()), // not a model row
+            ],
+        );
+        assert_eq!(cfg.llm.model_path, "models/llm/Qwen3-1.7B-Q4_K_M.gguf");
+        assert_eq!(
+            cfg.vlm.model_path,
+            "models/vlm/Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+        );
+        assert_eq!(
+            cfg.vlm.mmproj_path,
+            "models/vlm/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"
+        );
+        assert_eq!(
+            cfg.voice.paraformer_model,
+            "models/voice/paraformer-zh-small/model.int8.onnx"
+        );
+        assert_eq!(
+            cfg.voice.paraformer_tokens,
+            "models/voice/paraformer-zh-small/tokens.txt"
+        );
+        // melo-en reuses the zh melo dir: dict + fsts included.
+        assert_eq!(cfg.tts.en_model, "models/voice/melo/model.onnx");
+        assert_eq!(cfg.tts.en_lexicon, "models/voice/melo/lexicon.txt");
+        assert_eq!(
+            cfg.face.detect_model,
+            "models/face/face_detection_yunet_2023mar.onnx"
+        );
+        assert_eq!(
+            cfg.decision.tokenizer_path,
+            "models/decision/tokenizer.json"
+        );
+        assert_eq!(cfg.decision.config_path, "models/decision/laya_config.json");
+    }
+
+    #[test]
+    fn default_selection_matches_toml_paths() {
+        let cfg: AppConfig = toml::from_str(
+            "[llm]\nmodel_path = \"models/llm/Qwen3-4B-Instruct-2507-Q4_K_M.gguf\"\n[face]\ndetect_model = \"models/face/face_detection_yunet_2023mar.onnx\"\n",
+        )
+        .expect("parse");
+        let sel = default_model_selection(&cfg);
+        assert_eq!(sel.get("llt").map(String::as_str), None);
+        assert_eq!(
+            sel.get("llm").map(String::as_str),
+            Some("qwen3-4b-instruct-2507-q4_k_m")
+        );
+        assert_eq!(
+            sel.get("face.detect").map(String::as_str),
+            Some("yunet-2023mar")
+        );
+        // Built-in defaults resolve too (VlmConfig's stock 2B paths).
+        assert_eq!(
+            sel.get("vlm").map(String::as_str),
+            Some("qwen3-vl-2b-instruct")
+        );
+        // Nothing configured for Cantonese TTS (empty path) → no default.
+        assert!(!sel.contains_key("tts.yue"));
+    }
 
     #[test]
     fn scene_overlay_applies_rows_and_skips_garbage() {

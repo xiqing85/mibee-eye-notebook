@@ -87,6 +87,31 @@ pub struct AppRouterState {
     /// Fires the graceful shutdown path (SIGTERM-equivalent) for
     /// POST /api/system/restart (SPEC §5.1).
     pub restart_tx: watch::Sender<bool>,
+    /// Model manager state (SPEC §4.9): downloads + models root + the
+    /// boot-time default selection per capability.
+    pub models: Arc<routes::models_api::ModelManager>,
+    /// Online AI via OpenRouter (SPEC §4.10) — live config, hot-swapped
+    /// by PUT /api/cloud.
+    pub cloud: Arc<crate::cloud::CloudAi>,
+}
+
+impl AppRouterState {
+    /// Default model-manager + cloud state — the value every fixture
+    /// (and `build_app`) starts from; new fields land here once.
+    pub fn models_cloud_for_tests() -> (
+        Arc<routes::models_api::ModelManager>,
+        Arc<crate::cloud::CloudAi>,
+    ) {
+        (
+            Arc::new(routes::models_api::ModelManager::new(
+                std::path::PathBuf::from("models"),
+                std::collections::HashMap::new(),
+            )),
+            Arc::new(crate::cloud::CloudAi::new(
+                crate::cloud::CloudConfig::default(),
+            )),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +331,31 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             "/api/faces/{name}",
             axum::routing::delete(routes::faces::delete_face),
         )
+        // AI model manager (SPEC §4.9, capability model_manager)
+        .route("/api/models", get(routes::models_api::get_models))
+        .route("/api/models/tasks", get(routes::models_api::list_tasks))
+        .route(
+            "/api/models/tasks/{task_id}",
+            post(routes::models_api::cancel_task),
+        )
+        .route(
+            "/api/models/{capability}/{model_id}/download",
+            post(routes::models_api::download_model),
+        )
+        .route(
+            "/api/models/{capability}/{model_id}",
+            axum::routing::delete(routes::models_api::delete_model),
+        )
+        .route(
+            "/api/models/{capability}/{model_id}/activate",
+            post(routes::models_api::activate_model),
+        )
+        // Online AI (SPEC §4.10, capability cloud_ai)
+        .route(
+            "/api/cloud",
+            get(crate::cloud::get_cloud).put(crate::cloud::put_cloud),
+        )
+        .route("/api/cloud/test", post(crate::cloud::test_cloud))
         .route("/api/status", get(routes::config_api::status_handler))
         // Observability (SPEC v1 §3.2)
         .route("/api/metrics/summary", get(crate::observe::metrics_summary))
@@ -382,6 +432,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(llm_tier))
         .layer(Extension(state.wake_word.clone()))
         .layer(Extension(state.restart_tx.clone()))
+        .layer(Extension(state.models.clone()))
+        .layer(Extension(state.cloud.clone()))
         .layer(Extension(meeting))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
@@ -455,6 +507,8 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
         )),
+        models: AppRouterState::models_cloud_for_tests().0,
+        cloud: AppRouterState::models_cloud_for_tests().1,
     })
 }
 
@@ -526,6 +580,8 @@ pub async fn test_app_with_user() -> Router {
             &streaming::meeting::MeetingConfig::default(),
             &streaming::voice::VoiceConfig::default(),
         )),
+        models: AppRouterState::models_cloud_for_tests().0,
+        cloud: AppRouterState::models_cloud_for_tests().1,
     })
 }
 
@@ -722,6 +778,8 @@ pub async fn run(
     grounding: Arc<crate::grounding::GroundingState>,
     tools: SharedTools,
     llm_tier: Arc<crate::routes::capabilities::LlmTier>,
+    models: Arc<routes::models_api::ModelManager>,
+    cloud: Arc<crate::cloud::CloudAi>,
 ) -> anyhow::Result<()> {
     observability::register_metrics()?;
 
@@ -755,6 +813,8 @@ pub async fn run(
         llm_tier,
         wake_word,
         restart_tx,
+        models,
+        cloud,
     };
     let app = build_app_with_state(state);
 
@@ -826,6 +886,8 @@ pub async fn run_with_shutdown(
     llm_tier: Arc<crate::routes::capabilities::LlmTier>,
     wake_word: Arc<crate::routes::capabilities::WakeWord>,
     restart_tx: watch::Sender<bool>,
+    models: Arc<routes::models_api::ModelManager>,
+    cloud: Arc<crate::cloud::CloudAi>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -857,6 +919,8 @@ pub async fn run_with_shutdown(
         llm_tier,
         wake_word,
         restart_tx,
+        models,
+        cloud,
     };
     let app = build_app_with_state(state);
 
@@ -895,7 +959,11 @@ pub async fn run_with_shutdown(
     let shutdown_handle = tokio::spawn(async move {
         let _ = shutdown_rx.changed().await;
         tracing::info!("Shutdown signal received, stopping server");
-        shutdown_handle_clone.graceful_shutdown(None);
+        // Bounded grace: SSE clients hold connections open forever, so an
+        // unbounded graceful wait would hang a web-triggered restart
+        // whenever any browser has the UI open. 5s drains in-flight
+        // requests, then drops the persistent streams.
+        shutdown_handle_clone.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
     });
 
     // Listener scheme tagging (SPEC appendix A): session cookies issued

@@ -105,6 +105,8 @@ pub async fn get_capabilities(
     if vlm.is_active() {
         events.push("alarm_description");
     }
+    // Model download progress (SPEC §4.9 model_task) rides the bus.
+    events.push("model_task");
     let superset = serde_json::json!({
         "spec_version": "1",
         "device": {
@@ -149,6 +151,11 @@ pub async fn get_capabilities(
         "vlm": vlm.is_active(),
         "ai_models": ai_hot_swap,
         "ai_upload": ai_hot_swap && ai.config().allow_upload,
+        // Model manager (SPEC §4.9): full-catalog download/switch surface.
+        "model_manager": true,
+        // Online AI via OpenRouter (SPEC §4.10) — the surface exists; the
+        // routing-on state is GET /api/cloud's `provider != off`.
+        "cloud_ai": true,
         "ptz": false,
         "hls": false,
         // Recording is config-only on this device (protocols.recording);

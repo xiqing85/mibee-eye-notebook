@@ -28,6 +28,7 @@ pub mod llm;
 /// `voice` feature.
 pub mod meeting;
 pub mod mibee;
+pub mod models;
 #[cfg(feature = "ai")]
 pub mod ocr;
 pub mod output;

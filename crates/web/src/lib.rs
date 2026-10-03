@@ -2,6 +2,7 @@
 
 pub mod alarm;
 pub mod assets;
+pub mod cloud;
 pub mod config;
 pub mod db;
 /// Axum REST API + static SPA
