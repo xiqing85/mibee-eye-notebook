@@ -1574,9 +1574,9 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* -------------------------------------------------------------------
-   Views hidden by capability
+   Views & sections hidden by capability
    ------------------------------------------------------------------- */
-.view.hidden-cap { display: none !important; }
+.hidden-cap { display: none !important; }
 
 /* -------------------------------------------------------------------
    Responsive
