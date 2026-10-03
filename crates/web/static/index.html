@@ -510,6 +510,10 @@
       <button type="button" id="chat-close" class="tool-btn" aria-label="Close">✕</button>
     </div>
     <div id="chat-log" class="chat-log"></div>
+    <div id="chat-waveform-wrap" class="chat-waveform hidden">
+      <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5v3M12 17.5v3M8.5 8v8M15.5 8v8M5 10.5v3M19 10.5v3"/></svg>
+      <canvas id="chat-waveform" width="308" height="34" data-i18n-title="waveformTitle" aria-label="waveform"></canvas>
+    </div>
     <div class="chat-input-row">
       <input id="chat-input" type="text" maxlength="500" autocomplete="off" data-i18n-placeholder="chatPlaceholder">
       <button type="button" id="chat-vision" class="tool-btn chat-vision hidden" data-i18n-title="chatVisionTitle" aria-label="vision">👁</button>

@@ -13,6 +13,7 @@ import { initAi, handleModelChanged } from './ai.js';
 import { handleAlarmEvent, handleAlarmDescription, handleVoiceTranscript } from './alarm.js';
 import { initZones, updateZonesVisibility, refreshZones, renderZonesOverlay } from './zones.js';
 import { initChat, updateChatVisibility, handleChatReplyEvent } from './chat.js';
+import { initWaveform, updateWaveformVisibility, handleAudioLevel } from './waveform.js';
 import { initPtz, fetchPtz, updatePtzVisibility, handlePtzEvent } from './ptz.js';
 import { initImaging, handleParamChanged } from './imaging.js';
 import { refreshCameras, renderCameras, initCameras, stopCameras, announceRecording } from './cameras.js';
@@ -67,6 +68,7 @@ async function enterApp() {
   applyLang();
   updateZonesVisibility();
   updateChatVisibility();
+  updateWaveformVisibility();
   initNav();
   initLive();
   initPtz();
@@ -82,6 +84,7 @@ async function enterApp() {
   initAi();
   initZones();
   initChat();
+  initWaveform();
   refreshCameraSelect();
   if (store.ptzEnabled) fetchPtz();
   if (hasCap('zones')) refreshZones();
@@ -90,6 +93,7 @@ async function enterApp() {
     ai_detection: (p) => { renderDetections(p.detections || []); renderZonesOverlay(); },
     ai_model_changed: handleModelChanged,
     model_task: handleModelTask,
+    audio_level: handleAudioLevel,
     alarm_description: handleAlarmDescription,
     // Hearing records view refreshes itself when a record lands while open.
     alarm: (p) => { handleAlarmEvent(p); recordsSseHook('alarm', p); },

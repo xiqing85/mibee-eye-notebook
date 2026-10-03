@@ -9,6 +9,7 @@ pub mod ai;
 /// On-device audio intelligence (YAMNet sound events + Silero voice
 /// presence) fed by the always-on 16 kHz monitor.
 pub mod audio_ai;
+pub mod audio_level;
 pub mod buffer;
 pub mod capability;
 pub mod capture_source;

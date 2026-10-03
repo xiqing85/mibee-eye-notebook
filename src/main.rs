@@ -701,6 +701,34 @@ async fn main() -> anyhow::Result<()> {
         }
         match opened {
             Some((monitor, rx)) => {
+                // Real-time voice waveform (SPEC §6 audio_level): a level
+                // tap next to the engine workers — smoothed RMS at ≤10 Hz.
+                {
+                    let mut level_rx = rx.resubscribe();
+                    let events = event_tx.clone();
+                    tokio::spawn(async move {
+                        let mut meter = streaming::audio_level::LevelMeter::new();
+                        loop {
+                            let chunk = match level_rx.recv().await {
+                                Ok(c) => c,
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                    continue;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            };
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            if let Some(level) = meter.update(&chunk.samples, now) {
+                                let _ = events.send(web::routes::events::CameraEvent::AudioLevel {
+                                    level,
+                                    timestamp_ms: now,
+                                });
+                            }
+                        }
+                    });
+                }
                 if audio_ai_engine.is_active() {
                     audio_ai_engine.spawn_worker(rx.resubscribe());
                 }

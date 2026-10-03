@@ -107,6 +107,11 @@ pub async fn get_capabilities(
     }
     // Model download progress (SPEC §4.9 model_task) rides the bus.
     events.push("model_task");
+    // Real-time mic level for the voice waveform (SPEC §6 audio_level):
+    // fires while any audio consumer keeps the monitor running.
+    if voice.is_active() || audio_ai.is_active() || meeting.is_active() {
+        events.push("audio_level");
+    }
     let superset = serde_json::json!({
         "spec_version": "1",
         "device": {
