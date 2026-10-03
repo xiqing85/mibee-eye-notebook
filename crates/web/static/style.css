@@ -1960,3 +1960,11 @@ input[type="range"]::-moz-range-thumb {
 .model-key-clear { margin-bottom: var(--space-md); }
 .model-privacy { font-size: .76rem; color: var(--warn, #b8860b); margin: var(--space-sm) 0; }
 .models-cloud-form { max-width: 480px; }
+
+/* ===== Voice waveform strip (SPEC §6 audio_level) ===== */
+.chat-waveform {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 12px 2px; border-top: 1px solid var(--border);
+}
+.chat-waveform .icon { color: var(--text-faint); flex-shrink: 0; }
+.chat-waveform canvas { width: 100%; height: 34px; display: block; }

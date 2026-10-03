@@ -102,6 +102,10 @@ pub enum CameraEvent {
         label: String,
         timestamp_ms: u64,
     },
+    /// Microphone level for the real-time voice waveform (SPEC §6
+    /// `audio_level`, notebook dialect #36): smoothed RMS 0..1 at ≤10 Hz
+    /// while the audio monitor runs. Zero = idle floor.
+    AudioLevel { level: f32, timestamp_ms: u64 },
     /// A model download task changed state (SPEC §4.9 `model_task`):
     /// progress ticks (throttled ≥0.5s) and terminal statuses, forwarded
     /// from the download manager by main.rs.
@@ -285,6 +289,16 @@ fn event_to_sse(event: CameraEvent) -> Event {
                 "event": event,
                 "track_id": track_id,
                 "label": label,
+                "timestamp": timestamp_ms,
+            })
+            .to_string(),
+        ),
+        CameraEvent::AudioLevel {
+            level,
+            timestamp_ms,
+        } => Event::default().event("audio_level").data(
+            serde_json::json!({
+                "level": level,
                 "timestamp": timestamp_ms,
             })
             .to_string(),
