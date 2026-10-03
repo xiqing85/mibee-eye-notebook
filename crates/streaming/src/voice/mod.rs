@@ -984,10 +984,19 @@ impl VoiceEngine {
 /// Offline-transcribe a 16 kHz mono waveform (empty string on failure).
 #[cfg(feature = "voice")]
 fn transcribe(recognizer: &sherpa_onnx::OfflineRecognizer, waveform: &[f32]) -> String {
-    let stream = recognizer.create_stream();
-    stream.accept_waveform(16_000, waveform);
-    recognizer.decode(&stream);
-    stream.get_result().map(|r| r.text).unwrap_or_default()
+    let call = observability::model_call("voice.asr", "paraformer-zh");
+    let r = {
+        let _span = call.enter();
+        let stream = recognizer.create_stream();
+        stream.accept_waveform(16_000, waveform);
+        recognizer.decode(&stream);
+        stream.get_result().map(|r| r.text)
+    };
+    match &r {
+        Some(_) => call.finish_ok(None, None),
+        None => call.finish_err(),
+    }
+    r.unwrap_or_default()
 }
 
 /// Load the optional follow-up VAD (silero). Missing model is an error
@@ -1045,12 +1054,22 @@ fn compute_embedding(
     extractor: &sherpa_onnx::SpeakerEmbeddingExtractor,
     samples: &[f32],
 ) -> Option<Vec<f32>> {
-    let stream = extractor.create_stream()?;
-    stream.accept_waveform(16_000, samples);
-    if !extractor.is_ready(&stream) {
-        return None;
+    let call = observability::model_call("speaker", "campplus");
+    let r = {
+        let _span = call.enter();
+        extractor.create_stream().and_then(|mut stream| {
+            stream.accept_waveform(16_000, samples);
+            if !extractor.is_ready(&stream) {
+                return None;
+            }
+            extractor.compute(&stream)
+        })
+    };
+    match &r {
+        Some(_) => call.finish_ok(None, None),
+        None => call.finish_err(),
     }
-    extractor.compute(&stream)
+    r
 }
 
 /// Gate semantics: with verification armed, a wake word only opens the

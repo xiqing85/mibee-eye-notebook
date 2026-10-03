@@ -163,6 +163,26 @@ impl OcrEngine {
     ///
     /// JPEG decode failure or the same conditions as `recognize`.
     pub fn recognize_jpeg(&self, jpeg: &[u8]) -> Result<Vec<TextItem>> {
+        let call = observability::model_call("ocr", &self.metric_variant());
+        let r = self.recognize_jpeg_inner(jpeg);
+        match &r {
+            Ok(_) => call.finish_ok(None, None),
+            Err(_) => call.finish_err(),
+        }
+        r
+    }
+
+    /// Per-model metric variant label: the recognition model file stem
+    /// (SPEC appendix A #39).
+    fn metric_variant(&self) -> String {
+        std::path::Path::new(&self.config.rec_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
+    fn recognize_jpeg_inner(&self, jpeg: &[u8]) -> Result<Vec<TextItem>> {
         let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(jpeg));
         let pixels = decoder
             .decode()

@@ -297,13 +297,33 @@ impl FaceEngine {
             let Some(inner) = &self.inner else {
                 return Vec::new();
             };
-            self.run_match(inner, jpeg).unwrap_or_default()
+            // One metric span per frame match; the YuNet detect + SFace
+            // embed inside run_match are the dominant cost (SPEC appendix
+            // A #39: model id `face.recog`).
+            let call = observability::model_call("face.recog", &self.metric_variant());
+            let r = self.run_match(inner, jpeg);
+            match &r {
+                Ok(_) => call.finish_ok(None, None),
+                Err(_) => call.finish_err(),
+            }
+            r.unwrap_or_default()
         }
         #[cfg(not(feature = "ai"))]
         {
             let _ = jpeg;
             Vec::new()
         }
+    }
+
+    /// Per-model metric variant label: the SFace recognition model stem
+    /// (SPEC appendix A #39).
+    #[cfg_attr(not(feature = "ai"), allow(dead_code))]
+    fn metric_variant(&self) -> String {
+        std::path::Path::new(&self.config.recog_model)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
     }
 
     /// Embedding for enrollment — one JPEG frame at a time.
@@ -313,7 +333,17 @@ impl FaceEngine {
             let Some(inner) = &self.inner else {
                 anyhow::bail!("face inactive: {}", self.inactive_reason);
             };
-            self.embed_with(inner, jpeg)
+            let call = observability::model_call("face.recog", &self.metric_variant());
+            match self.embed_with(inner, jpeg) {
+                Ok(e) => {
+                    call.finish_ok(None, None);
+                    Ok(e)
+                }
+                Err(e) => {
+                    call.finish_err();
+                    Err(e)
+                }
+            }
         }
         #[cfg(not(feature = "ai"))]
         {

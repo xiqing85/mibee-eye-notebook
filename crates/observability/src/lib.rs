@@ -12,6 +12,8 @@ pub mod metrics;
 
 // Re-export the most commonly used functions for ergonomic access.
 pub use metrics::{
+    ModelCallGuard,
+    ResourceSample,
     dec_recording_active,
     inc_recording_active,
     increment_ai_inferences,
@@ -27,6 +29,8 @@ pub use metrics::{
     increment_rtmp_push_errors,
     increment_rtsp_bytes_sent,
     increment_rtsp_sessions,
+    model_call,
+    publish_resource_gauges,
     register_metrics,
     render_metrics,
     set_active_streams,

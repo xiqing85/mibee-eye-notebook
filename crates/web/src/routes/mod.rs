@@ -31,6 +31,7 @@ pub mod ocr;
 pub mod protocols;
 pub mod settings;
 pub mod streams;
+pub mod traces;
 pub mod voice_speakers;
 pub mod webrtc;
 

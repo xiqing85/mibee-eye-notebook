@@ -99,6 +99,16 @@ pub fn parse_self_stat(content: &str) -> Option<(u64, u64)> {
     Some((utime, stime))
 }
 
+/// Process CPU time (user+system) right now, for per-span CPU-delta
+/// attribution in conversation traces (SPEC §3.3). `USER_HZ` is 100 on
+/// every mainstream Linux (same assumption as the observability crate).
+#[must_use]
+pub fn process_cpu_time() -> Option<std::time::Duration> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let (utime, stime) = parse_self_stat(&stat)?;
+    Some(std::time::Duration::from_millis((utime + stime) * 10))
+}
+
 /// (rchar, wchar) from `/proc/<pid>/io`.
 #[must_use]
 pub fn parse_self_io(content: &str) -> Option<(u64, u64)> {
@@ -324,6 +334,19 @@ impl Observe {
             snap.io_read_bytes = r;
             snap.io_write_bytes = w;
         }
+        // Mirror the same numbers onto the Prometheus surface (SPEC
+        // appendix A #38) — the scrape path and the /api/metrics/summary
+        // path serve one sampler.
+        observability::publish_resource_gauges(&observability::ResourceSample {
+            system_cpu_percent: snap.system_cpu_percent,
+            system_memory_total_bytes: snap.mem_total,
+            system_memory_available_bytes: snap.mem_available,
+            process_cpu_percent: snap.proc_cpu_percent,
+            process_resident_memory_bytes: snap.rss_bytes,
+            process_open_fds: snap.open_fds,
+            system_net_rx_bytes: snap.net_rx,
+            system_net_tx_bytes: snap.net_tx,
+        });
     }
 
     /// Latest rendered snapshot.

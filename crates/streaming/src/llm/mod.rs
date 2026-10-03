@@ -156,7 +156,17 @@ impl ChatEngine {
             let Some(model) = &self.model else {
                 anyhow::bail!("llm inactive: {}", self.inactive_reason);
             };
-            self.run_completion(model, turns)
+            let call = observability::model_call("llm", &self.model_variant());
+            match self.run_completion(model, turns) {
+                Ok((reply, prompt_tokens, completion_tokens)) => {
+                    call.finish_ok(Some(prompt_tokens), Some(completion_tokens));
+                    Ok(reply)
+                }
+                Err(e) => {
+                    call.finish_err();
+                    Err(e)
+                }
+            }
         }
         #[cfg(not(feature = "llm"))]
         {
@@ -165,12 +175,24 @@ impl ChatEngine {
         }
     }
 
+    /// Per-model metric variant label: the loaded GGUF file stem (SPEC
+    /// appendix A #39 — variant = concrete model). Public so product
+    /// layers can label conversation-trace spans identically.
+    #[must_use]
+    pub fn model_variant(&self) -> String {
+        std::path::Path::new(&self.config.model_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
     #[cfg(feature = "llm")]
     fn run_completion(
         &self,
         model: &llama_cpp_2::model::LlamaModel,
         turns: &[ChatTurn],
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, u64, u64)> {
         use llama_cpp_2::context::params::LlamaContextParams;
         use llama_cpp_2::llama_batch::LlamaBatch;
         use llama_cpp_2::model::{AddBos, LlamaChatMessage};
@@ -210,8 +232,10 @@ impl ChatEngine {
         // decoded batch: n_prompt-1 after the prompt, 0 after each
         // single-token generation step.
         let mut reply = String::new();
+        let mut generated_tokens: u64 = 0;
         let mut logits_at = n_prompt as i32 - 1;
         for pos in (n_prompt as i32..).take(self.config.max_tokens as usize) {
+            generated_tokens += 1;
             let logits = ctx.get_logits_ith(logits_at);
             logits_at = 0;
             let best = logits
@@ -237,7 +261,11 @@ impl ChatEngine {
         }
         // Qwen3 chatml: /no_think still emits an empty <think> block —
         // strip think sections, keep the visible answer.
-        Ok(strip_think_blocks(&reply))
+        Ok((
+            strip_think_blocks(&reply),
+            n_prompt as u64,
+            generated_tokens,
+        ))
     }
 }
 

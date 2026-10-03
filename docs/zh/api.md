@@ -123,6 +123,19 @@ Cookie 会话 + CSRF 双提交：
 | POST | `/api/ai/models` | 上传模型包 |
 | DELETE | `/api/ai/models/{id}` | 删除已上传模型 |
 
+### 对话调用链（规范 §3.3）
+
+对话级模型调用链记录：一次对话应答路径上调用的每个模型（决策分流、VLM、云端 LLM、本地 LLM、TTS）各产生一个 span，含调用顺序、时长、进程 CPU 增量与 token 数。配置了 `otel_endpoint` 时同一棵链路经 OTLP 导出。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/traces/conversations?limit=` | 最近对话摘要列表（缺省 50 上限 200，倒序） |
+| GET | `/api/traces/conversations/{id}` | 单条对话全量 span；未知 id → 404 |
+
+列表项：`{"id","origin":"chat"|"voice","started_at_ms","duration_ms","turns","models":[...],"status":"ok"|"partial"|"error","open"}`；span：`{"span_id","parent_id","model","variant","label","start_ms","duration_ms","cpu_ms","status","tokens_prompt","tokens_completion","attributes"}`。
+
+配套 `/metrics`（公开，Prometheus 文本）暴露每模型资源族：`mibee_model_inferences_total{model,variant}`、`mibee_model_inference_seconds`/`mibee_model_cpu_seconds` 直方图、`mibee_model_inflight{model}`、`mibee_model_errors_total`、`mibee_model_tokens_total{...,kind=prompt|completion}`，及系统/进程资源 gauge（`mibee_eye_system_*`/`mibee_eye_process_*`）。对话环容量 200 对话 × 每对话 64 span。
+
 ### 主机设备（规范 §4.8）
 
 | 方法 | 路径 | 说明 |

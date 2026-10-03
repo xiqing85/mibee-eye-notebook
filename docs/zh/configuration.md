@@ -184,7 +184,7 @@ service = "mibee-eye"
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|---------|------|
-| `otel_endpoint` | String | `"http://localhost:4317"` | OpenTelemetry 收集器端点（OTLP gRPC） |
+| `otel_endpoint` | String | `"http://localhost:4317"` | OpenTelemetry 收集器端点（OTLP gRPC）。设置后导出请求、协议会话与**每次模型调用**的 span（`model_call/<id>`，携带 `model`/`variant`；每次对话另有 `conversation/<origin>` 根 span 及其模型链） |
 | `log_level` | String | `"info"` | 日志级别过滤器 |
 | `logs` | Option<RemoteLogConfig> | `None` | 可选的远程日志推送配置 |
 

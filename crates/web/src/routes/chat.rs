@@ -243,6 +243,10 @@ pub async fn chat(
             engine.inactive_reason()
         )));
     }
+    // Conversation trace (SPEC §3.3): one trace per HTTP dialogue turn;
+    // the model chain inside is recorded by convtrace spans below.
+    let conv = crate::convtrace::convtrace().start("chat");
+    conv.add_turn();
     let camera_id = primary_camera_id(&pool).await;
     let tools_now = tools.read().expect("tools config lock poisoned").clone();
     let ctx = TurnContext {
@@ -263,13 +267,31 @@ pub async fn chat(
         && let Some(id) = camera_id.as_deref()
         && let Some(jpeg) = streams.latest_jpeg(id).await
     {
+        let vlm_variant = vlm.model_variant();
         let vlm = Arc::clone(&vlm);
         let question = body.text.clone();
-        let answered = tokio::task::spawn_blocking(move || vlm.answer_jpeg(&jpeg, &question))
+        let mut span = conv.span(
+            "vlm",
+            &vlm_variant,
+            "看图直答",
+            vec![("grounded".to_string(), "vlm".to_string())],
+        );
+        let answered = match span
+            .run(tokio::task::spawn_blocking(move || {
+                vlm.answer_jpeg(&jpeg, &question)
+            }))
             .await
-            .map_err(|e| ApiError::internal(format!("vlm task: {e}")))?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                conv.close();
+                return Err(ApiError::internal(format!("vlm task: {e}")));
+            }
+        };
         match answered {
             Ok(reply) => {
+                span.finish_ok();
+                conv.close();
                 return Ok((
                     StatusCode::OK,
                     axum::Json(json!({
@@ -280,6 +302,7 @@ pub async fn chat(
                 ));
             }
             Err(e) => {
+                span.finish_err();
                 tracing::warn!(error = %e, "chat: vlm Q&A failed — falling back to llm");
             }
         }
@@ -291,11 +314,34 @@ pub async fn chat(
         role: "user".into(),
         content: body.text.clone(),
     });
+    let engine_variant = engine.model_variant();
     let engine = Arc::clone(&engine);
-    let reply = tokio::task::spawn_blocking(move || engine.complete(&turns))
+    let mut span = conv.span(
+        "llm",
+        &engine_variant,
+        "本地应答",
+        vec![(
+            "grounded".to_string(),
+            if scene.is_some() { "scene" } else { "none" }.to_string(),
+        )],
+    );
+    let reply = match span
+        .run(tokio::task::spawn_blocking(move || engine.complete(&turns)))
         .await
-        .map_err(|e| ApiError::internal(format!("llm task: {e}")))?
-        .map_err(|e| ApiError::internal(format!("llm: {e}")))?;
+    {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(e)) => {
+            span.finish_err();
+            conv.close();
+            return Err(ApiError::internal(format!("llm: {e}")));
+        }
+        Err(e) => {
+            conv.close();
+            return Err(ApiError::internal(format!("llm task: {e}")));
+        }
+    };
+    span.finish_ok();
+    conv.close();
     Ok((
         StatusCode::OK,
         axum::Json(json!({

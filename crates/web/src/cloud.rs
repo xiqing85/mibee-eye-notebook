@@ -135,6 +135,20 @@ impl CloudAi {
         model_override: Option<&str>,
         timeout: Option<Duration>,
     ) -> Result<String, CloudError> {
+        self.complete_with_usage(turns, image_jpeg, model_override, timeout)
+            .await
+            .map(|(reply, _)| reply)
+    }
+
+    /// [`CloudAi::complete`] plus the usage tokens reported by the
+    /// provider (fed into per-model metrics and conversation traces).
+    pub async fn complete_with_usage(
+        &self,
+        turns: &[ChatTurn],
+        image_jpeg: Option<&[u8]>,
+        model_override: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> Result<(String, Option<(u64, u64)>), CloudError> {
         let cfg = self.config();
         if cfg.provider == "off" || cfg.api_key.is_empty() {
             return Err(CloudError::NotEnabled);
@@ -152,6 +166,38 @@ impl CloudAi {
         if model.is_empty() {
             return Err(CloudError::NoModel);
         }
+        // Per-model metrics + OTel span (SPEC appendix A #39): the model
+        // id splits text/vision routing so the two route families are
+        // independently monitorable; variant = the concrete provider id.
+        let model_id = if image_jpeg.is_some() {
+            "cloud.vision"
+        } else {
+            "cloud.chat"
+        };
+        let call = observability::model_call(model_id, &model);
+        let result = self
+            .complete_request(&cfg, model, turns, image_jpeg, timeout)
+            .await;
+        match &result {
+            Ok((_, usage)) => {
+                call.finish_ok(usage.map(|u| u.0), usage.map(|u| u.1));
+            }
+            Err(_) => {
+                call.finish_err();
+            }
+        }
+        result
+    }
+
+    /// The raw OpenAI-compatible HTTP round trip (no metrics wrapper).
+    async fn complete_request(
+        &self,
+        cfg: &CloudConfig,
+        model: String,
+        turns: &[ChatTurn],
+        image_jpeg: Option<&[u8]>,
+        timeout: Option<Duration>,
+    ) -> Result<(String, Option<(u64, u64)>), CloudError> {
         let messages: Vec<serde_json::Value> = turns
             .iter()
             .enumerate()
@@ -211,7 +257,15 @@ impl CloudAi {
             .pointer("/choices/0/message/content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| CloudError::Http("no choices/0/message/content".into()))?;
-        Ok(reply.to_string())
+        let usage = payload
+            .pointer("/usage/prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .zip(
+                payload
+                    .pointer("/usage/completion_tokens")
+                    .and_then(|v| v.as_u64()),
+            );
+        Ok((reply.to_string(), usage))
     }
 
     /// Minimal connectivity probe (`POST /api/cloud/test`): one tiny

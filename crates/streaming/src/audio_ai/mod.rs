@@ -293,7 +293,21 @@ impl AudioAiEngine {
                                     let waveform: Vec<f32> = window[..WINDOW_SAMPLES].to_vec();
                                     let result = tokio::task::spawn_blocking({
                                         let classifier = Arc::clone(&classifier);
-                                        move || classifier.classify(&waveform)
+                                        move || {
+                                            let call = observability::model_call(
+                                                "audio_ai",
+                                                classifier.model_path(),
+                                            );
+                                            let r = {
+                                                let _span = call.enter();
+                                                classifier.classify(&waveform)
+                                            };
+                                            match &r {
+                                                Ok(_) => call.finish_ok(None, None),
+                                                Err(_) => call.finish_err(),
+                                            }
+                                            r
+                                        }
                                     })
                                     .await
                                     .unwrap_or_else(|e| {

@@ -361,6 +361,15 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .route("/api/metrics/summary", get(crate::observe::metrics_summary))
         .route("/api/logs", get(crate::observe::logs_handler))
         .route("/api/requests", get(crate::observe::requests_handler))
+        // Conversation model-call traces (SPEC v1 §3.3)
+        .route(
+            "/api/traces/conversations",
+            get(routes::traces::list_conversations),
+        )
+        .route(
+            "/api/traces/conversations/{id}",
+            get(routes::traces::get_conversation),
+        )
         // Protocol runtime status stays as a device extension (dialect A7).
         .route(
             "/api/protocols/runtime-status",
