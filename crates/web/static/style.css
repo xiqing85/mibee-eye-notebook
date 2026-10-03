@@ -2035,3 +2035,39 @@ input[type="range"]::-moz-range-thumb {
    conversation happening" is answerable at a glance. */
 .chat-waveform.speaking { border-top-color: var(--accent-border); }
 .chat-waveform.speaking .icon { color: var(--accent-text); filter: drop-shadow(0 0 4px rgba(0, 200, 160, .6)); }
+
+/* ─── Per-model resource cards (SPEC §3.3 model_metrics) ───────────── */
+.mm-list { display: flex; flex-direction: column; gap: 10px; }
+.mm-row { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+.mm-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mm-model { font-weight: 700; }
+.mm-variant { color: var(--text-faint); font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-stats { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.mm-stat { display: flex; flex-direction: column; gap: 1px; }
+.mm-stat-label { font-size: 11px; color: var(--text-faint); }
+.mm-stat-val { font-size: 13px; font-weight: 600; }
+.mm-err { color: #e0564f; }
+
+/* ─── Conversation call chains (SPEC §3.3 traces) ──────────────────── */
+.traces-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.trace-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+  cursor: pointer; color: inherit; font: inherit; }
+.trace-item:hover { border-color: var(--accent); }
+.trace-item.selected { border-color: var(--accent); background: var(--accent-soft, rgba(59,130,246,.08)); }
+.trace-origin { flex: none; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px; }
+.trace-origin.chat { background: rgba(59,130,246,.15); color: var(--accent-text, #3b82f6); }
+.trace-origin.voice { background: rgba(16,185,129,.15); color: #059669; }
+.trace-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.trace-models { font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace-side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
+.trace-detail-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 4px; font-size: 12px; }
+.trace-waterfall { width: 100%; height: auto; margin-top: 4px; }
+.trace-bar { opacity: .85; }
+.trace-bar-err { fill: #e0564f !important; opacity: .55; }
+.trace-axis { stroke: var(--border); stroke-width: 1; }
+.trace-seq { font-size: 12px; fill: var(--text-faint); }
+.trace-label { font-size: 11.5px; fill: var(--text); font-family: var(--mono, ui-monospace, monospace); }
+.trace-note { font-size: 10.5px; fill: var(--text-faint); }
+.state-pill.warn { background: rgba(217,165,32,.18); color: #b8860b; }
+#obs-models-card { grid-column: 1 / -1; }

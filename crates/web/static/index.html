@@ -281,6 +281,15 @@
             <div id="face-progress" class="record-empty hidden"></div>
             <div id="faces-list"></div>
           </div>
+          <div id="traces-card" class="card hidden">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17h4m4 0h4m4 0h4"/><circle cx="6" cy="17" r="1.6" fill="currentColor" stroke="none"/><circle cx="14" cy="17" r="1.6" fill="currentColor" stroke="none"/><path d="M6 15.4V7a1 1 0 0 1 1-1h4m3.6 9.4V9.6a1 1 0 0 1 1-1H20"/></svg><span data-i18n="tracesTitle">Call Chains</span></h3>
+            <p class="card-desc" data-i18n="tracesDesc"></p>
+            <div class="live-toolbar records-toolbar">
+              <button type="button" id="traces-refresh" class="btn-small" data-i18n="tracesRefresh">Refresh</button>
+            </div>
+            <div id="traces-list" class="traces-list"></div>
+            <div id="trace-detail"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -384,6 +393,11 @@
               <thead><tr><th data-i18n="obsReqId">ID</th><th data-i18n="obsReqMethod">Method</th><th data-i18n="obsReqPath">Path</th><th data-i18n="obsReqStatus">Status</th><th data-i18n="obsReqDuration">Duration</th></tr></thead>
               <tbody id="obs-requests"></tbody>
             </table>
+          </div>
+          <div class="card hidden" id="obs-models-card">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 12.5h8M8 16h5"/></svg><span data-i18n="modelsMetricsTitle">Model Resources</span></h3>
+            <p class="card-desc" data-i18n="modelsMetricsDesc"></p>
+            <div id="obs-models" class="mm-list"></div>
           </div>
         </div>
       </div>

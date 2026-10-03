@@ -19,6 +19,8 @@ import { initImaging, handleParamChanged } from './imaging.js';
 import { refreshCameras, renderCameras, initCameras, stopCameras, announceRecording } from './cameras.js';
 import { loadConfig, initSettings } from './settings.js';
 import { checkApi, refreshStatus, initStatus, startStatusPolling } from './status.js';
+import { initModelMetrics, startModelMetricsPolling } from './modelmetrics.js';
+import { initTraces, startTracesPolling, refreshTraces, tracesCap } from './traces.js';
 import { renderDevices, initDevices } from './devices.js';
 import { renderRecords, renderSpeakers, renderMeetings, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
 import { renderModels, initModels, updateModelsVisibility, handleModelTask } from './models.js';
@@ -117,6 +119,8 @@ async function enterApp() {
   initZones();
   initChat();
   initWaveform();
+  initModelMetrics();
+  initTraces();
   refreshCameraSelect();
   if (store.ptzEnabled) fetchPtz();
   if (hasCap('zones')) refreshZones();
@@ -143,6 +147,9 @@ async function enterApp() {
   });
 
   startStatusPolling();
+  startModelMetricsPolling();
+  startTracesPolling();
+  if (tracesCap()) refreshTraces();
   // Restore the last view after a reload; default to live view.
   showView(currentView());
 }
