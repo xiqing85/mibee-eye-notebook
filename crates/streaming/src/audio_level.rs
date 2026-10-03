@@ -2,10 +2,15 @@
 //! `audio_level` event, notebook dialect #36).
 //!
 //! A lightweight tap on the 16 kHz mono monitor broadcast: RMS per window,
-//! attack/release smoothing, and a minimum emit interval so the SSE bus
-//! carries at most ~10 updates/second regardless of the chunk cadence.
-//! Pure state machine — the main.rs wiring just feeds chunks in and sends
-//! whatever comes out.
+//! perceptual (dB) scaling, attack/release smoothing, and a minimum emit
+//! interval so the SSE bus carries at most ~10 updates/second regardless
+//! of the chunk cadence. Pure state machine — the main.rs wiring just
+//! feeds chunks in and sends whatever comes out.
+//!
+//! The published `level` is NOT linear RMS: real speech through a laptop
+//! mic sits around RMS 0.03–0.1, which is invisible on a linear bar. The
+//! raw RMS is mapped from dBFS (−45…−5 dB → 0…1) so ordinary conversation
+//! reads mid-scale and only a closed noise gate publishes exact zero.
 
 /// Smoothed mic level 0..=1 plus the emit policy.
 pub struct LevelMeter {
@@ -24,7 +29,22 @@ const WINDOW_SAMPLES: usize = 1600; // 100 ms @ 16 kHz
 const MIN_EMIT_INTERVAL_MS: u64 = 100;
 const ATTACK: f32 = 0.6;
 const RELEASE: f32 = 0.3;
-const FLOOR: f32 = 0.0015; // ≈ −56 dBFS: room noise does not flicker the bar
+/// Release-tail cutoff on the scaled axis: below this the bar snaps to 0
+/// instead of crawling down asymptotically.
+const FLOOR: f32 = 0.01;
+/// Noise gate: room noise sits under −45 dBFS and must not flicker the bar.
+const MIN_DB: f32 = -45.0;
+/// Full scale for the mapping — close, loud speech saturates here.
+const MAX_DB: f32 = -5.0;
+
+/// Perceptual mapping dBFS → 0..=1 (−45…−5 dB, clamped).
+fn scale_level(rms: f32) -> f32 {
+    if rms <= f32::EPSILON {
+        return 0.0;
+    }
+    let db = 20.0 * rms.log10();
+    ((db - MIN_DB) / (MAX_DB - MIN_DB)).clamp(0.0, 1.0)
+}
 
 impl Default for LevelMeter {
     fn default() -> Self {
@@ -65,7 +85,7 @@ impl LevelMeter {
         self.pending = 0;
         self.pending_sq = 0.0;
         self.last_emit_ms = Some(now_ms);
-        let target = rms.clamp(0.0, 1.0);
+        let target = scale_level(rms);
         // Speech bursts must light up instantly; decay can lag — a
         // symmetric filter makes the wave look sluggish on stop.
         let alpha = if target > self.level { ATTACK } else { RELEASE };
@@ -90,6 +110,30 @@ mod tests {
         (0..n)
             .map(|i| ((i % 7) as f32 / 7.0 * 60000.0 - 30000.0) as i16)
             .collect()
+    }
+
+    /// Sine at the given peak amplitude — RMS = peak/√2.
+    fn sine(n: usize, peak: f32) -> Vec<i16> {
+        (0..n)
+            .map(|i| (peak * (i as f32 * 0.25).sin()) as i16)
+            .collect()
+    }
+
+    #[test]
+    fn typical_speech_rms_reads_mid_scale() {
+        // The whole point of the dB mapping: linear RMS at real speech
+        // levels (a few hundredths of full scale) is invisible on a bar.
+        // A sine with peak 2400 → RMS ≈ 0.052 (−25.7 dBFS) must land
+        // visibly above a quarter of the scale after one window.
+        assert!((scale_level(0.052) - 0.48).abs() < 0.02);
+        let mut m = LevelMeter::new();
+        let l = m.update(&sine(1600, 2400.0), 0).unwrap();
+        assert!(l > 0.25, "typical speech lights the bar: {l}");
+        // Close/loud speech saturates near the top of the scale.
+        assert!(scale_level(0.3) > 0.85);
+        // Room noise (−54 dBFS) is under the gate → exact zero.
+        assert_eq!(scale_level(0.002), 0.0);
+        assert_eq!(scale_level(0.0), 0.0);
     }
 
     #[test]

@@ -23,34 +23,65 @@ import { renderDevices, initDevices } from './devices.js';
 import { renderRecords, renderSpeakers, renderMeetings, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
 import { renderModels, initModels, updateModelsVisibility, handleModelTask } from './models.js';
 
-const VIEWS = ['preview', 'cameras', 'settings', 'models', 'status', 'records', 'devices'];
+// Routable views. settings/status/devices are sub-views of the System
+// destination; #/cameras from the pre-redesign layout lands on Live.
+const VIEWS = ['preview', 'assistant', 'records', 'models', 'settings', 'status', 'devices'];
+const SYS_VIEWS = ['settings', 'status', 'devices'];
+const SYSTEM_TAB = 'system';
 
 function currentView() {
   const name = (location.hash || '').replace(/^#\/?/, '');
-  return VIEWS.includes(name) && $('view-' + name) ? name : 'preview';
+  if (name === 'cameras') return 'preview'; // pre-redesign hash
+  return VIEWS.includes(name) && viewExists(name) ? name : 'preview';
+}
+
+function viewExists(name) {
+  return name === SYSTEM_TAB || !!$('view-' + name) || SYS_VIEWS.includes(name);
+}
+
+/// The nav tab that highlights for a routable view.
+function primaryTab(name) {
+  return SYS_VIEWS.includes(name) ? SYSTEM_TAB : name;
 }
 
 export function showView(name) {
   if (name === 'login') { teardownApp(); return; }
+  if (!viewExists(name)) name = 'preview';
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-  const view = $('view-' + name);
-  if (view) view.classList.add('active');
+  const container = SYS_VIEWS.includes(name) ? $('view-' + SYSTEM_TAB) : $('view-' + name);
+  if (container) container.classList.add('active');
+  if (SYS_VIEWS.includes(name)) {
+    document.querySelectorAll('#system-subnav .subnav-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.subview === name);
+    });
+    document.querySelectorAll('.sys-pane').forEach((pane) => {
+      pane.classList.toggle('active', pane.id === 'sys-' + name);
+    });
+  }
+  const primary = primaryTab(name);
   document.querySelectorAll('.nav-tab').forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.view === name);
+    tab.classList.toggle('active', tab.dataset.view === primary);
   });
   $('app').classList.remove('hidden');
+  store.view = name;
   // Keep the view across reloads (F5 lands back on the same view, not live).
   history.replaceState(null, '', '#' + name);
 
-  if (name === 'preview') startLive();
-  else stopLive();
-  if (name === 'cameras') { refreshCameras().then(renderCameras); }
-  else stopCameras();
+  if (name === 'preview') {
+    startLive();
+    // The camera tiles stream MJPEG while the Live destination is open —
+    // stop them on the way out to free the browser's per-origin sockets.
+    if (hasCap('multi_camera')) refreshCameras().then(renderCameras);
+  } else {
+    stopLive();
+    stopCameras();
+  }
   if (name === 'settings') loadConfig();
   if (name === 'models') renderModels();
   if (name === 'status') { checkApi(); refreshStatus(); }
   if (name === 'devices') renderDevices();
-  if (name === 'records') { renderRecords(); renderSpeakers(); renderMeetings(); }
+  if (name === 'records') { renderRecords(); renderMeetings(); }
+  if (name === 'assistant') { renderSpeakers(); }
 }
 
 function teardownApp() {
@@ -67,6 +98,7 @@ async function enterApp() {
   await refreshCameras();
   applyLang();
   updateZonesVisibility();
+  updateAssistantVisibility();
   updateChatVisibility();
   updateWaveformVisibility();
   initNav();
@@ -118,21 +150,40 @@ async function enterApp() {
 function initNav() {
   if (initNav._done) return;
   initNav._done = true;
+  const guard = async (target) => {
+    if (!target || target === 'login') return false;
+    if (store.configDirty && target !== 'settings') {
+      const ok = await confirmDlg({
+        message: t('unsavedConfirm'),
+        okText: t('confirm'),
+        cancelText: t('cancel'),
+      });
+      if (!ok) return false;
+      store.configDirty = false;
+    }
+    return true;
+  };
   document.querySelectorAll('.nav-tab').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const target = btn.dataset.view;
-      if (!target || target === 'login') return;
-      if (store.configDirty && target !== 'settings') {
-        const ok = await confirmDlg({
-          message: t('unsavedConfirm'),
-          okText: t('confirm'),
-          cancelText: t('cancel'),
-        });
-        if (!ok) return;
-        store.configDirty = false;
-      }
-      showView(target);
+      const target = btn.dataset.view === SYSTEM_TAB
+        ? (SYS_VIEWS.includes(store.view) ? store.view : 'settings')
+        : btn.dataset.view;
+      if (await guard(target)) showView(target);
     });
+  });
+  document.querySelectorAll('#system-subnav .subnav-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (await guard(btn.dataset.subview)) showView(btn.dataset.subview);
+    });
+  });
+}
+
+/// The Assistant destination exists when any of its features does:
+/// chat, face enrollment, or speaker voiceprints.
+function updateAssistantVisibility() {
+  const show = hasCap('chat') || hasCap('face') || hasCap('voice_speakers');
+  document.querySelectorAll('.nav-tab[data-view="assistant"]').forEach((tab) => {
+    tab.classList.toggle('hidden', !show);
   });
 }
 

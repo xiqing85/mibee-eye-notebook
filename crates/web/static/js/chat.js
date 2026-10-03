@@ -1,6 +1,7 @@
-// Local LLM chat (SPEC appendix A #22, extension: chat): a floating
-// panel that POSTs to /api/chat with the running history. The device
-// answers from the local Qwen3 GGUF — no cloud.
+// Local LLM chat (SPEC appendix A #22, extension: chat). Since the 2026-10
+// redesign the chat lives inline in the Assistant view (it used to be a
+// floating FAB + panel). POSTs to /api/chat with the running history; the
+// device answers from the local Qwen3 GGUF unless a cloud provider is on.
 //
 // Grounded chat (SPEC appendix A #29): every reply carries a `grounded`
 // mode — "scene" (the device injected live camera context into the
@@ -15,15 +16,9 @@ import { t } from './i18n.js';
 
 const MAX_HISTORY = 20;   // turns kept for context (device truncates anyway)
 let history = [];         // [{role, content}]
-let open = false;
 let vision = localStorage.getItem('mibee_chat_vision') === '1'; // explicit VLM Q&A
 
 export function initChat() {
-  const fab = $('chat-fab');
-  if (!fab) return;
-  fab.addEventListener('click', toggleChat);
-  const close = $('chat-close');
-  if (close) close.addEventListener('click', toggleChat);
   const send = $('chat-send');
   if (send) send.addEventListener('click', sendChat);
   const eye = $('chat-vision');
@@ -52,25 +47,11 @@ function updateVisionButton() {
 }
 
 export function updateChatVisibility() {
-  const fab = $('chat-fab');
-  if (fab) fab.classList.toggle('hidden', !hasCap('chat'));
   if (!hasCap('chat')) {
-    const panel = $('chat-panel');
-    if (panel) panel.classList.add('hidden');
-    open = false;
+    const card = $('chat-log');
+    if (card) card.closest('.chat-card')?.classList.add('hidden');
   }
   updateVisionButton();
-}
-
-function toggleChat() {
-  const panel = $('chat-panel');
-  if (!panel) return;
-  open = !open;
-  panel.classList.toggle('hidden', !open);
-  if (open) {
-    const input = $('chat-input');
-    if (input) input.focus();
-  }
 }
 
 async function sendChat() {
@@ -131,11 +112,11 @@ function appendBubble(role, text, grounded) {
 }
 
 /// SSE `chat_reply` (voice-driven replies, SPEC appendix A #22/#29) —
-/// mirror into the panel when it is open, toast otherwise.
+/// mirror into the Assistant chat when that view is open, toast otherwise.
 export function handleChatReplyEvent(p) {
   if (!p || !p.reply) return;
   if (p.source !== 'voice') return;
-  if (open) {
+  if (store.view === 'assistant') {
     history.push({ role: 'assistant', content: p.reply });
     appendBubble('assistant', p.reply, p.grounded);
   } else {

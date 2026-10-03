@@ -9,7 +9,7 @@ import { icon } from './icons.js';
 import { refreshCameras, renderCameras } from './cameras.js';
 
 export async function renderDevices() {
-  const view = $('view-devices');
+  const view = $('sys-devices');
   if (!view) return;
   const videoBox = $('video-devices');
   const audioBox = $('audio-devices');
@@ -96,10 +96,8 @@ async function addCamera(dev) {
 }
 
 export function initDevices() {
-  const view = $('view-devices');
-  if (view) view.classList.toggle('hidden-cap', !hasCap('devices'));
-  // Both the top bar and the mobile tab bar carry this tab.
-  document.querySelectorAll('.nav-tab[data-view="devices"]').forEach((tab) => {
-    tab.classList.toggle('hidden', !hasCap('devices'));
-  });
+  // Devices is a sub-view of System since the 2026-10 redesign; its
+  // subnav tab only appears when the device exposes the capability.
+  const tab = document.querySelector('#system-subnav .subnav-btn[data-subview="devices"]');
+  if (tab) tab.classList.toggle('hidden', !hasCap('devices'));
 }
