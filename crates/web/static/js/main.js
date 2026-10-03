@@ -212,7 +212,10 @@ function initShell() {
   });
 
   onSessionExpired(() => {
-    toast(t('error'), 'error');
+    // A 401 while signed in means the session died — say so. The probe
+    // 401 before the app is ever entered is just the login flow; toasting
+    // "错误" there is noise on every fresh visit.
+    if (!$('app').classList.contains('hidden')) toast(t('error'), 'error');
     showView('login');
     setAuthMode(AuthState.LOGIN);
   });

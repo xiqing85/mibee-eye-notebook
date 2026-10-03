@@ -11,7 +11,7 @@
 // events surface the voice loop.
 
 import { toast } from './ui.js';
-import { t } from './i18n.js';
+import { t, soundText } from './i18n.js';
 
 // The edge already applies a cooldown (default 30s); this only collapses
 // duplicate toasts if a device ever bursts two identical edges quickly.
@@ -22,7 +22,7 @@ export function handleAlarmEvent(p) {
   if (!p || p.active === false) return; // rising-edge events only
   let msg;
   if (p.source === 'audio' && p.class) {
-    msg = t('alarmSound', { c: p.class });
+    msg = t('alarmSound', { c: soundText(p.class) });
   } else {
     msg = t('alarmTriggered', { n: Math.max(0, Number(p.targets) || 0) });
   }

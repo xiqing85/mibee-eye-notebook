@@ -19,6 +19,7 @@ let history = [];         // [{role, content}]
 let vision = localStorage.getItem('mibee_chat_vision') === '1'; // explicit VLM Q&A
 
 export function initChat() {
+  renderChatHints();
   const send = $('chat-send');
   if (send) send.addEventListener('click', sendChat);
   const eye = $('chat-vision');
@@ -35,6 +36,30 @@ export function initChat() {
   }
   updateVisionButton();
   updateChatVisibility();
+}
+
+/// Empty-state hint chips: teach what the assistant can actually answer
+/// (local clock, live view, weather) — a blank input teaches nothing.
+function renderChatHints() {
+  const log = $('chat-log');
+  if (!log || log.children.length) return;
+  const row = document.createElement('div');
+  row.className = 'chat-hints';
+  for (const key of ['chatHint1', 'chatHint2', 'chatHint3']) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chat-hint';
+    chip.setAttribute('data-i18n', key);
+    chip.textContent = t(key);
+    chip.addEventListener('click', () => {
+      const input = $('chat-input');
+      if (!input) return;
+      input.value = chip.textContent;
+      sendChat();
+    });
+    row.appendChild(chip);
+  }
+  log.appendChild(row);
 }
 
 function updateVisionButton() {
@@ -91,6 +116,7 @@ async function sendChat() {
 function appendBubble(role, text, grounded) {
   const log = $('chat-log');
   if (!log) return;
+  log.querySelectorAll('.chat-hints').forEach((n) => n.remove());
   const div = document.createElement('div');
   div.className = 'chat-bubble ' + (role === 'user' ? 'mine' : 'theirs');
   div.textContent = text;

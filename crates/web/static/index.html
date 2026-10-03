@@ -119,13 +119,13 @@
         </div>
         <!-- Model upload (extension: ai_upload, SPEC §4.6) -->
         <div class="field hidden" id="ai-upload-field">
-          <label for="ai-upload-family" data-i18n="aiUploadFamily">Type</label>
-          <select id="ai-upload-family" class="camera-select">
+          <label for="ai-upload-family" data-i18n="aiUpload">Upload model</label>
+          <select id="ai-upload-family" class="camera-select" data-i18n-title="aiUploadFamily">
             <option value="nanodet">nanodet</option>
             <option value="yolox">yolox</option>
           </select>
           <input type="file" id="ai-upload-file" accept=".onnx" class="hidden">
-          <button type="button" id="ai-upload-btn" class="tool-btn" data-i18n-title="aiUpload">↑ .onnx</button>
+          <button type="button" id="ai-upload-btn" class="tool-btn" data-i18n="uploadBtn" data-i18n-title="aiUpload">上传</button>
         </div>
       </div>
       <div class="stream-wrapper">
@@ -407,9 +407,12 @@
 
     <!-- ===== View: AI (model_manager + cloud_ai, SPEC §4.9/§4.10) ===== -->
     <div id="view-models" class="view">
-      <div class="view-head">
-        <h2 data-i18n="modelsTitle">AI Models</h2>
-        <p class="view-desc" data-i18n="modelsDesc"></p>
+      <div class="view-head view-head-row">
+        <div>
+          <h2 data-i18n="modelsTitle">AI Models</h2>
+          <p class="view-desc" data-i18n="modelsDesc"></p>
+        </div>
+        <button type="button" id="models-refresh" class="btn-small" data-i18n="modelRefresh">Refresh</button>
       </div>
       <div id="cloud-card" class="card hidden">
         <div class="view-head">
@@ -452,9 +455,6 @@
         </div>
       </div>
       <div id="models-caps" class="models-grid"></div>
-      <div class="live-toolbar records-toolbar">
-        <button type="button" id="models-refresh" class="btn-small" data-i18n="modelRefresh">Refresh</button>
-      </div>
     </div>
 
     <!-- ===== View: Records (meetings + hearing records) ===== -->
@@ -518,7 +518,7 @@
         <div class="zones-btn-row">
           <button type="button" id="zones-undo" class="tool-btn" data-i18n="zoneUndo">Undo point</button>
           <button type="button" id="zones-clear" class="tool-btn" data-i18n="zoneClear">Clear</button>
-          <button type="button" id="zones-add" class="btn-primary" data-i18n="zoneAdd">Add zone</button>
+          <button type="button" id="zones-add" class="btn-small" data-i18n="zoneAdd">Add zone</button>
           <button type="button" id="zones-save" class="btn-primary" data-i18n="save">Save</button>
         </div>
         <ul id="zones-list" class="zones-list"></ul>
