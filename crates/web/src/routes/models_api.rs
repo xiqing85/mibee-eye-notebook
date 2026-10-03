@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(m0["downloadable"], serde_json::json!(true));
         assert_eq!(m0["active"], serde_json::json!(false));
         let face = caps.iter().find(|c| c["id"] == "face.detect").unwrap();
-        assert_eq!(face["models"][0]["downloadable"], serde_json::json!(false));
+        assert_eq!(face["models"][0]["downloadable"], serde_json::json!(true));
         assert_eq!(face["models"][0]["installed"], serde_json::json!(true));
         assert_eq!(face["apply"], "restart");
         assert!(body["tasks"].as_array().unwrap().is_empty());
@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         let res = app
             .oneshot(
-                Request::post("/api/models/face.recog/sface-2021dec/download")
+                Request::post("/api/models/ocr/ppocr-ch-v4det-v5rec/download")
                     .body(Body::empty())
                     .unwrap(),
             )
