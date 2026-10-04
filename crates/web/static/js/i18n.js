@@ -258,7 +258,6 @@ const DICT = {
     'gb28181.gb35114.device_key_file': '设备 SM2 私钥路径',
     'gb28181.gb35114.platform_cert_file': '平台 SM2 证书路径',
     'gb28181.gb35114.server_id': '平台 SIP 服务器 ID',
-  },
     // Observability: per-model metrics + conversation traces (SPEC §3.3)
     modelsMetricsTitle: '模型资源', modelsMetricsDesc: '各 AI 模型的调用量、耗时与 CPU 消耗（每 5 秒刷新）',
     modelsMetricsEmpty: '暂无模型调用', modelCalls: '调用', modelAvgLatency: '平均耗时',
@@ -266,6 +265,15 @@ const DICT = {
     tracesTitle: '对话调用链', tracesDesc: '每次对话经过的模型、调用顺序与资源消耗转移',
     tracesEmpty: '暂无对话记录', tracesRefresh: '刷新',
     traceOriginChat: '对话', traceOriginVoice: '语音', traceTurns: '轮',
+    // Resource profile (SPEC appendix A #40)
+    resTitle: '资源档位', resDesc: '启动时按可用内存做预算制功能准入——小内存主机会自动裁剪重模型，重启后按届时水位重算',
+    resModeAuto: '自动适配', resModeAll: '全量启动',
+    resBudget: '预算', resAvailable: '可用', resTotal: '总内存', resReserve: '保留',
+    resOffConfig: '配置未启用', resOffBudget: '内存预算不足', resDep: '依赖未启动',
+    resF_ai: '目标检测', resF_audio_ai: '声音事件', resF_voice: '语音交互',
+    resF_llm: '本地对话模型', resF_tts: '语音合成', resF_decision: '意图决策', resF_face: '人脸识别',
+    resF_ocr: '文字识别', resF_meeting: '会议模式', resF_vlm: '画面描述模型',
+  },
   en: {
     appTitle: 'MiBee Cam',
     loginSubtitle: 'Live view, AI chat, recordings & alerts',
@@ -523,6 +531,14 @@ const DICT = {
     tracesTitle: 'Call Chains', tracesDesc: 'Models, call order and resource consumption per conversation',
     tracesEmpty: 'No conversations yet', tracesRefresh: 'Refresh',
     traceOriginChat: 'Chat', traceOriginVoice: 'Voice', traceTurns: 'turns',
+    // Resource profile (SPEC appendix A #40)
+    resTitle: 'Resource Profile', resDesc: 'AI features are admitted against the boot-time memory budget — small hosts shed heavy models automatically; re-evaluated on restart',
+    resModeAuto: 'Auto', resModeAll: 'All on',
+    resBudget: 'budget', resAvailable: 'available', resTotal: 'total', resReserve: 'reserve',
+    resOffConfig: 'off in config', resOffBudget: 'out of memory budget', resDep: 'dependency off',
+    resF_ai: 'Object detection', resF_audio_ai: 'Sound events', resF_voice: 'Voice interaction',
+    resF_llm: 'Local chat model', resF_tts: 'Speech synthesis', resF_decision: 'Intent decision', resF_face: 'Face recognition',
+    resF_ocr: 'Text recognition (OCR)', resF_meeting: 'Meeting mode', resF_vlm: 'Scene description model',
   },
 };
 

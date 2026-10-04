@@ -395,6 +395,7 @@ mod tests {
                 streaming::tools::ToolsConfig::default(),
             )),
             llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+            resource: Arc::new(streaming::feature_gate::ResourceProfile::unrestricted()),
             wake_word: Arc::new(crate::routes::capabilities::WakeWord(
                 streaming::voice::DEFAULT_WAKE_WORD.into(),
             )),

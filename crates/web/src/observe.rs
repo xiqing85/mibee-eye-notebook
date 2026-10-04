@@ -378,6 +378,45 @@ impl Observe {
     }
 }
 
+/// Low-memory watermark (MiB) for the runtime watchdog — see
+/// [`mem_latch_step`].
+const LOW_MEM_MIB: u64 = 192;
+
+/// One step of the low-memory three-state latch. The boot feature gate
+/// (SPEC appendix A #40) is startup-only — it cannot evict at runtime —
+/// so a shrinking watermark must at least be loud. `Warn` fires on entry
+/// and again for every ≥64 MiB deeper slide; `Recover` fires once when
+/// the watermark is cleared (stable pressure stays silent, mirroring the
+/// SIP-Date drift latch).
+fn mem_latch_step(latched: Option<u64>, avail_mib: u64) -> (Option<u64>, MemLatchAction) {
+    match latched {
+        None => {
+            if avail_mib < LOW_MEM_MIB {
+                (Some(avail_mib), MemLatchAction::Warn)
+            } else {
+                (None, MemLatchAction::None)
+            }
+        }
+        Some(prev) => {
+            if avail_mib >= LOW_MEM_MIB {
+                (None, MemLatchAction::Recover)
+            } else if prev.saturating_sub(avail_mib) >= 64 {
+                (Some(avail_mib), MemLatchAction::Warn)
+            } else {
+                (Some(prev), MemLatchAction::None)
+            }
+        }
+    }
+}
+
+/// What the sampler should log for this tick.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum MemLatchAction {
+    None,
+    Warn,
+    Recover,
+}
+
 /// Background sampler: refresh the shared snapshot every 2s (SPEC §3.2).
 pub fn spawn_sampler() {
     let observe = observe().clone();
@@ -387,9 +426,34 @@ pub fn spawn_sampler() {
             .unwrap_or(1.0);
         let mut ticker = tokio::time::interval(SAMPLER_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut latched: Option<u64> = None;
+        let mem_avail_mib = || {
+            std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .as_deref()
+                .and_then(parse_meminfo)
+                .map(|(_, bytes)| bytes / (1024 * 1024))
+                // Unreadable meminfo must never trip the watchdog.
+                .unwrap_or(u64::MAX)
+        };
         loop {
             ticker.tick().await;
-            observe.record_sample(read_sample(), cpus);
+            let sample = read_sample();
+            let avail = mem_avail_mib();
+            let (next, action) = mem_latch_step(latched, avail);
+            latched = next;
+            match action {
+                MemLatchAction::Warn => tracing::warn!(
+                    available_mib = avail,
+                    "memory: below low-water mark (boot gate is startup-only; raise [resources] reserve_mib or shed features)"
+                ),
+                MemLatchAction::Recover => tracing::info!(
+                    available_mib = avail,
+                    "memory: recovered above low-water mark"
+                ),
+                MemLatchAction::None => {}
+            }
+            observe.record_sample(sample, cpus);
         }
     });
 }
@@ -524,6 +588,45 @@ pub async fn requests_handler(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mem_latch_enters_once_and_stays_quiet_under_stable_pressure() {
+        let (l1, a1) = mem_latch_step(None, 150);
+        assert_eq!((a1), MemLatchAction::Warn);
+        // Stable pressure (150 -> 148) stays silent.
+        let (l2, a2) = mem_latch_step(l1, 148);
+        assert_eq!(a2, MemLatchAction::None);
+        assert_eq!(l2, l1, "latch keeps the entry watermark");
+    }
+
+    #[test]
+    fn mem_latch_rewarns_only_after_a_deeper_slide() {
+        let (l1, _) = mem_latch_step(None, 150);
+        // 40 MiB deeper: still silent.
+        let (_, a2) = mem_latch_step(l1, 110);
+        assert_eq!(a2, MemLatchAction::None);
+        // 64+ MiB deeper than the latched watermark: warn again.
+        let (l3, a3) = mem_latch_step(l1, 80);
+        assert_eq!(a3, MemLatchAction::Warn);
+        assert_eq!(l3, Some(80));
+    }
+
+    #[test]
+    fn mem_latch_recovers_once_then_resets() {
+        let (l1, _) = mem_latch_step(None, 100);
+        let (l2, a2) = mem_latch_step(l1, 400);
+        assert_eq!(a2, MemLatchAction::Recover);
+        assert!(l2.is_none());
+        let (_, a3) = mem_latch_step(l2, 500);
+        assert_eq!(a3, MemLatchAction::None);
+    }
+
+    #[test]
+    fn mem_latch_healthy_never_fires() {
+        let (l, a) = mem_latch_step(None, 1024);
+        assert_eq!(a, MemLatchAction::None);
+        assert!(l.is_none());
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

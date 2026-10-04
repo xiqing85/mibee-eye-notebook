@@ -18,6 +18,9 @@ pub mod decision;
 /// conversion (MJPEG/YUYV → YUV420p), and audio encode (G.711 / AAC).
 pub mod encoder;
 pub mod face;
+/// Boot-time feature-level resource gating (`[resources] feature_gate`,
+/// SPEC appendix A #40).
+pub mod feature_gate;
 /// Fragmented-MP4 remuxer for MSE / `MediaSource` playback.
 pub mod fmp4;
 pub mod hub;

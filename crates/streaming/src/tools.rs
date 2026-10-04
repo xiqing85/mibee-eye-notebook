@@ -30,12 +30,31 @@ impl Default for ToolsConfig {
     }
 }
 
-/// `[resources]` configuration section (#30-E).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+/// `[resources]` configuration section (#30-E + appendix A #40).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ResourcesConfig {
     /// Auto-pick the LLM tier from available memory at startup.
     pub auto_tier: bool,
+    /// Feature-level gate mode (SPEC appendix A #40): `"auto"` (default)
+    /// admits AI features greedily against the boot memory budget;
+    /// `"all"` boots every enabled feature (legacy behaviour).
+    pub feature_gate: String,
+    /// Headroom kept out of the budget in auto mode (MiB). 512:
+    /// MemAvailable already excludes reclaimable page cache, and the
+    /// file-size ×1.15 factor plus per-engine overheads carry the rest
+    /// of the conservatism.
+    pub reserve_mib: u64,
+}
+
+impl Default for ResourcesConfig {
+    fn default() -> Self {
+        Self {
+            auto_tier: false,
+            feature_gate: "auto".into(),
+            reserve_mib: 512,
+        }
+    }
 }
 
 /// Resolve the LLM model path for the current tier (#30-E).
@@ -69,14 +88,33 @@ pub fn resolve_llm_tier(
 
 /// Read MemAvailable from /proc/meminfo (MiB). Linux-only product.
 pub fn available_mem_mib() -> Option<u64> {
+    memory_mib().map(|(_, avail)| avail)
+}
+
+/// Read MemTotal + MemAvailable from /proc/meminfo (MiB). Linux-only
+/// product; the feature gate (#40) samples both at boot.
+pub fn memory_mib() -> Option<(u64, u64)> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut total = None;
+    let mut avail = None;
     for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("MemAvailable:") {
-            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
-            return Some(kb / 1024);
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            total = rest
+                .trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<u64>()
+                .ok();
+        } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            avail = rest
+                .trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<u64>()
+                .ok();
         }
     }
-    None
+    Some((total? / 1024, avail? / 1024))
 }
 
 /// Does this user utterance ask about weather? (intent gate)

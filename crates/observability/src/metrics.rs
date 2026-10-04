@@ -46,6 +46,9 @@ pub struct Metrics {
     process_open_fds: IntGauge,
     system_net_rx_bytes: IntGauge,
     system_net_tx_bytes: IntGauge,
+    // ─── Boot-time feature admission (SPEC appendix A #40) ──
+    resource_budget_mib: IntGauge,
+    feature_admitted: IntGaugeVec,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +233,20 @@ pub fn publish_resource_gauges(sample: &ResourceSample) {
         m.process_open_fds.set(sample.process_open_fds as i64);
         m.system_net_rx_bytes.set(sample.system_net_rx_bytes as i64);
         m.system_net_tx_bytes.set(sample.system_net_tx_bytes as i64);
+    }
+}
+
+/// Publish the boot-time feature-admission plan (SPEC appendix A #40):
+/// the memory budget as a gauge and one 1/0 gauge per feature. Called
+/// once after `register_metrics`; no-op when metrics are not registered.
+pub fn publish_resource_profile(budget_mib: u64, features: &[(&str, bool)]) {
+    if let Some(m) = GLOBAL_METRICS.get() {
+        m.resource_budget_mib.set(budget_mib as i64);
+        for (name, admitted) in features {
+            m.feature_admitted
+                .with_label_values(&[name])
+                .set(i64::from(*admitted));
+        }
     }
 }
 
@@ -614,6 +631,20 @@ impl Metrics {
         )?;
         registry.register(Box::new(system_net_tx_bytes.clone()))?;
 
+        let resource_budget_mib = IntGauge::new(
+            "mibee_eye_resource_budget_mib",
+            "Boot-time feature-admission memory budget (SPEC A #40)",
+        )?;
+        registry.register(Box::new(resource_budget_mib.clone()))?;
+        let feature_admitted = IntGaugeVec::new(
+            Opts::new(
+                "mibee_eye_feature_admitted",
+                "Whether a feature was admitted by the boot resource gate (1/0)",
+            ),
+            &["name"],
+        )?;
+        registry.register(Box::new(feature_admitted.clone()))?;
+
         Ok(Metrics {
             registry,
             active_streams,
@@ -645,6 +676,8 @@ impl Metrics {
             process_open_fds,
             system_net_rx_bytes,
             system_net_tx_bytes,
+            resource_budget_mib,
+            feature_admitted,
         })
     }
 

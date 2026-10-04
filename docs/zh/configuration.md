@@ -161,6 +161,25 @@ rate_limit_window_secs = 60
 - 5 次失败后登录失败锁定，具有指数退避
 - Mutex 不可中毒（对请求处理程序安全）
 
+### [resources] - 启动期功能资源门控
+
+按主机资源自适应启动哪些 AI 功能（SPEC 附录 A #40）。`auto`（缺省）以启动时的
+内存预算（MemAvailable − reserve_mib）贪心准入已启用的功能——每项成本按其模型
+文件的实际大小估算——小内存机器自动裁掉重模型尾部（VLM/LLM），避免抖动换页。
+`all` 无视内存全量启动。`auto_tier` 另按可用内存切换 LLM 模型文件
+（full/mid/lite）。
+
+```toml
+[resources]
+feature_gate = "auto"   # auto | all
+reserve_mib = 512       # 预算外保留的余量
+auto_tier = false       # 按可用内存选 LLM 档位模型
+```
+
+准入表经 `capabilities.resource` 暴露（状态页"资源档位"卡），并以
+`mibee_eye_feature_admitted` / `mibee_eye_resource_budget_mib` Prometheus
+gauge 输出。重启时按届时水位重算。
+
 ### [observability] - 监控和日志记录
 
 配置 OpenTelemetry 跟踪、应用程序日志记录和可选的远程日志推送。
