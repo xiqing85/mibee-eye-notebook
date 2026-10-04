@@ -149,6 +149,57 @@ async function pollRequests() {
   ).join('');
 }
 
+// ─── Resource profile (SPEC appendix A #40) ─────────────────────────
+// Boot-time feature admission snapshot from capabilities.resource —
+// static for the process lifetime, rendered once at init.
+
+const RES_REASONS = {
+  off_config: 'resOffConfig',
+  off_budget: 'resOffBudget',
+  dependency: 'resDep',
+};
+
+function fmtMiB(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return '-';
+  return Math.round(n).toLocaleString() + ' MiB';
+}
+
+function renderResourceProfile() {
+  const card = $('resource-card');
+  const res = store.caps && store.caps.resource;
+  if (card) card.classList.toggle('hidden', !res);
+  if (!res) return;
+  const sum = $('res-summary');
+  if (sum) {
+    const mode = document.createElement('span');
+    mode.className = 'res-mode';
+    mode.textContent = (res.mode || 'auto') === 'all' ? t('resModeAll') : t('resModeAuto');
+    const stats = document.createElement('span');
+    stats.className = 'res-stats mono';
+    stats.textContent =
+      t('resBudget') + ' ' + fmtMiB(res.budget_mib) +
+      ' · ' + t('resAvailable') + ' ' + fmtMiB(res.available_mib) +
+      ' / ' + fmtMiB(res.total_mib) +
+      ' · ' + t('resReserve') + ' ' + fmtMiB(res.reserve_mib);
+    sum.replaceChildren(mode, stats);
+  }
+  const list = $('res-features');
+  if (list) {
+    list.innerHTML = (res.features || []).map((f) => {
+      const reasonKey = RES_REASONS[f.reason];
+      const reason = f.admitted ? '' : (reasonKey ? t(reasonKey) : (f.reason || ''));
+      return '<li class="res-row' + (f.admitted ? '' : ' res-row-off') + '" title="' + esc(reason) + '">' +
+        '<span class="res-name">' + esc(t('resF_' + f.name)) + '</span>' +
+        '<span class="res-cost mono">' + fmtMiB(f.cost_mib) + '</span>' +
+        '<span class="state-pill ' + (f.admitted ? 'on' : 'off') + '">' +
+        (f.admitted ? t('stateOn') : t('stateOff')) + '</span>' +
+        (reason ? '<span class="res-reason">' + esc(reason) + '</span>' : '') +
+        '</li>';
+    }).join('');
+  }
+}
+
 function fmtClock(ts) {
   const d = new Date((Number(ts) || 0) * 1000);
   if (isNaN(d.getTime())) return '-';
@@ -182,6 +233,8 @@ export function initStatus() {
   const reqCard = $('obs-requests-card');
   if (reqCard) reqCard.classList.toggle('hidden', !caps.requests);
   if (caps.metrics) initObsCharts();
+  // Boot-time resource feature admission (SPEC appendix A #40).
+  renderResourceProfile();
 }
 
 export function startStatusPolling() {

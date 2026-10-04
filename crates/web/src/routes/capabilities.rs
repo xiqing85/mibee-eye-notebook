@@ -58,6 +58,7 @@ pub async fn get_capabilities(
     Extension(voice): Extension<Arc<streaming::voice::VoiceEngine>>,
     Extension(chat): Extension<Arc<streaming::llm::ChatEngine>>,
     Extension(llm_tier): Extension<Arc<LlmTier>>,
+    Extension(resource): Extension<Arc<streaming::feature_gate::ResourceProfile>>,
     Extension(decision): Extension<Arc<streaming::decision::DecisionEngine>>,
     Extension(meeting): Extension<Arc<streaming::meeting::MeetingEngine>>,
     Extension(vlm): Extension<Arc<streaming::vlm::VlmEngine>>,
@@ -146,6 +147,10 @@ pub async fn get_capabilities(
         "chat": chat.is_active(),
         // Resource tier the LLM booted into (#30-E).
         "llm_tier": llm_tier.0.as_str(),
+        // Boot-time feature admission snapshot (appendix A #40):
+        // mode/budget plus per-feature cost & decision. Serialised from
+        // the planner's own struct — the wire shape is its contract.
+        "resource": serde_json::to_value(resource.as_ref()).unwrap_or_default(),
         // Laya typed-decision triage over voice transcripts (SSE
         // `voice_decision`, SPEC appendix A #26).
         "decision": decision.is_active(),
@@ -255,6 +260,9 @@ mod tests {
             Extension(Arc::new(crate::routes::capabilities::LlmTier(
                 "manual".into(),
             ))),
+            Extension(Arc::new(
+                streaming::feature_gate::ResourceProfile::unrestricted(),
+            )),
             Extension(Arc::new(streaming::decision::DecisionEngine::from_config(
                 &streaming::decision::DecisionConfig::default(),
             ))),
@@ -284,6 +292,12 @@ mod tests {
         // Neither audio engine active (default engines: no models in
         // tests, fail-open) → no hearing-records capability.
         assert_eq!(json["audio_records"], serde_json::json!(false));
+        // Boot-time admission snapshot rides along (#40) — even the
+        // unrestricted fixture carries the object with its mode.
+        assert_eq!(json["resource"]["mode"], serde_json::json!("all"));
+        assert!(
+            json["resource"]["features"].is_array() || json["resource"]["decisions"].is_array()
+        );
     }
 }
 

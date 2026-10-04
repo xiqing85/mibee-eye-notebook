@@ -81,6 +81,9 @@ pub struct AppRouterState {
     /// Newtype — a bare `Arc<String>` Extension would collide with the
     /// advertised-host extension of the same type.
     pub llm_tier: Arc<crate::routes::capabilities::LlmTier>,
+    /// Boot-time feature admission snapshot (SPEC appendix A #40) served
+    /// verbatim as the `capabilities.resource` object.
+    pub resource: Arc<streaming::feature_gate::ResourceProfile>,
     /// Configured wake word (persona + display). Newtype to avoid an
     /// Extension type collision with `Arc<String>` advertised-host.
     pub wake_word: Arc<crate::routes::capabilities::WakeWord>,
@@ -218,6 +221,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         tools: tools.clone(),
     };
     let llm_tier = state.llm_tier.clone();
+    let resource = state.resource.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -439,6 +443,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(tools))
         .layer(Extension(scene))
         .layer(Extension(llm_tier))
+        .layer(Extension(resource))
         .layer(Extension(state.wake_word.clone()))
         .layer(Extension(state.restart_tx.clone()))
         .layer(Extension(state.models.clone()))
@@ -508,6 +513,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
             streaming::tools::ToolsConfig::default(),
         )),
         llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+        resource: Arc::new(streaming::feature_gate::ResourceProfile::unrestricted()),
         wake_word: Arc::new(crate::routes::capabilities::WakeWord(
             streaming::voice::DEFAULT_WAKE_WORD.into(),
         )),
@@ -581,6 +587,7 @@ pub async fn test_app_with_user() -> Router {
             streaming::tools::ToolsConfig::default(),
         )),
         llm_tier: Arc::new(crate::routes::capabilities::LlmTier("manual".into())),
+        resource: Arc::new(streaming::feature_gate::ResourceProfile::unrestricted()),
         wake_word: Arc::new(crate::routes::capabilities::WakeWord(
             streaming::voice::DEFAULT_WAKE_WORD.into(),
         )),
@@ -820,6 +827,7 @@ pub async fn run(
         grounding,
         tools,
         llm_tier,
+        resource: Arc::new(streaming::feature_gate::ResourceProfile::unrestricted()),
         wake_word,
         restart_tx,
         models,
@@ -893,6 +901,7 @@ pub async fn run_with_shutdown(
     grounding: Arc<crate::grounding::GroundingState>,
     tools: SharedTools,
     llm_tier: Arc<crate::routes::capabilities::LlmTier>,
+    resource: Arc<streaming::feature_gate::ResourceProfile>,
     wake_word: Arc<crate::routes::capabilities::WakeWord>,
     restart_tx: watch::Sender<bool>,
     models: Arc<routes::models_api::ModelManager>,
@@ -900,6 +909,15 @@ pub async fn run_with_shutdown(
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
+    // Boot-time feature admission onto the scrape surface (#40).
+    observability::publish_resource_profile(
+        resource.budget_mib,
+        &resource
+            .features
+            .iter()
+            .map(|d| (d.name, d.admitted))
+            .collect::<Vec<_>>(),
+    );
     // Real-time resource sampler for /api/metrics/summary (SPEC v1 §3.2).
     crate::observe::spawn_sampler();
 
@@ -926,6 +944,7 @@ pub async fn run_with_shutdown(
         grounding,
         tools,
         llm_tier,
+        resource,
         wake_word,
         restart_tx,
         models,

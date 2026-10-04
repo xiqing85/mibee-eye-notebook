@@ -31,6 +31,7 @@ pub use metrics::{
     increment_rtsp_sessions,
     model_call,
     publish_resource_gauges,
+    publish_resource_profile,
     register_metrics,
     render_metrics,
     set_active_streams,

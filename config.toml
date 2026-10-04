@@ -230,3 +230,19 @@ enabled = false
 # n_threads = 2
 # max_tokens = 100
 # prompt = "这是安防摄像头的告警画面。请用一句中文描述画面里发生了什么。"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Boot-time resource adaptation (`[resources]`, SPEC appendix A #40).
+# `feature_gate = "auto"` (default) admits enabled AI features greedily
+# against the boot memory budget (MemAvailable − reserve_mib) in priority
+# order (ai → audio_ai → voice → llm → tts → decision → face → ocr →
+# meeting → vlm), shedding the heaviest tail on small-memory hosts;
+# `"all"` boots every enabled feature regardless (legacy behaviour).
+# Each feature's cost is estimated from its model files on disk, so the
+# decision follows what is actually deployed. Re-evaluated on restart.
+# `auto_tier` (#30-E) additionally picks the LLM model file by available
+# memory (full ≥8 GiB / mid ≥4 GiB / lite below).
+[resources]
+# feature_gate = "auto"
+# reserve_mib = 768
+# auto_tier = false

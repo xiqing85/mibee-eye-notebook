@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Boot-time feature resource gating (SPEC appendix A #40).** Small-memory
+  hosts no longer launch every AI feature: `[resources] feature_gate = "auto"`
+  (the default) estimates each enabled feature's resident cost from its model
+  files and admits them greedily against the boot memory budget
+  (`MemAvailable − reserve_mib`, default reserve 768 MiB) in a fixed priority
+  order, shedding the heavy tail (VLM/LLM/…) when it does not fit.
+  `feature_gate = "all"` restores the boot-everything behaviour. The decision
+  table is exposed as `capabilities.resource` (status page "Resource Profile"
+  card) plus `mibee_eye_resource_budget_mib` / `mibee_eye_feature_admitted`
+  gauges; a runtime low-memory watchdog (three-state latch, 192 MiB) warns
+  when available memory stays below the watermark.
+
 - **Full observability: per-model resource metrics + conversation model-call
   chains (SPEC v1 §3.3 + appendix A #37-39).**
   - `/metrics` now exposes per-model families for every invocable model

@@ -161,6 +161,26 @@ rate_limit_window_secs = 60
 - Login failure lockout with exponential backoff after 5 failures
 - Mutex is non-poisoning (safe for request handlers)
 
+### [resources] - Boot-time feature gating
+
+Adapts which AI features boot on this host (SPEC appendix A #40). `auto`
+(default) admits enabled features greedily against the boot memory budget —
+each feature's cost is estimated from its model files on disk — so a
+small-memory machine sheds the heavy tail (VLM/LLM) instead of thrashing.
+`all` boots every enabled feature regardless of memory. `auto_tier`
+additionally swaps the LLM model file by available memory (full/mid/lite).
+
+```toml
+[resources]
+feature_gate = "auto"   # auto | all
+reserve_mib = 768       # headroom kept out of the budget
+auto_tier = false       # pick the LLM tier model by available memory
+```
+
+The admission table surfaces as `capabilities.resource` (status page
+"Resource Profile" card) and as `mibee_eye_feature_admitted` /
+`mibee_eye_resource_budget_mib` Prometheus gauges. Re-evaluated on restart.
+
 ### [observability] - Monitoring and Logging
 
 Configure OpenTelemetry tracing, application logging, and optional remote log shipping.

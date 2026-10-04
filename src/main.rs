@@ -124,6 +124,181 @@ async fn main() -> anyhow::Result<()> {
     let mut config = mibee_eye::config::AppConfig::load(&args.config)?;
     config.validate()?;
 
+    // Feature-level resource admission (SPEC appendix A #40), before any
+    // engine is built. The LLM tier model resolves first (#30-E) so the
+    // gate charges the file that will actually load.
+    let mem = streaming::tools::memory_mib().unwrap_or((0, 0));
+    let (llm_model, llm_tier) = streaming::tools::resolve_llm_tier(
+        &config.llm.model_path,
+        &config.llm.model_path_mid,
+        &config.llm.model_path_lite,
+        config.resources.auto_tier,
+        mem.1,
+    );
+    if llm_model != config.llm.model_path {
+        config.llm.model_path = llm_model;
+    }
+    let feature_inputs = {
+        use streaming::feature_gate::FeatureInput;
+        let tts_paths = [
+            &config.tts.model,
+            &config.tts.yue_model,
+            &config.tts.en_model,
+        ]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<String>>();
+        let mut voice_paths = vec![
+            config.voice.kws_encoder.clone(),
+            config.voice.kws_decoder.clone(),
+            config.voice.kws_joiner.clone(),
+            config.voice.paraformer_model.clone(),
+        ];
+        if config.voice.speaker_verify {
+            voice_paths.push(config.voice.speaker_embedding_model.clone());
+        }
+        vec![
+            FeatureInput {
+                name: "ai",
+                enabled: config.ai.enabled,
+                model_paths: vec![config.ai.model_path.clone()],
+                overhead_mib: 40,
+                depends_on: None,
+            },
+            FeatureInput {
+                name: "audio_ai",
+                enabled: config.audio_ai.enabled,
+                model_paths: vec![
+                    config.audio_ai.model_path.clone(),
+                    config.audio_ai.vad_model_path.clone(),
+                ],
+                overhead_mib: 40,
+                depends_on: None,
+            },
+            FeatureInput {
+                name: "voice",
+                enabled: config.voice.enabled,
+                model_paths: voice_paths,
+                overhead_mib: 60,
+                depends_on: None,
+            },
+            FeatureInput {
+                name: "llm",
+                enabled: config.llm.enabled,
+                model_paths: vec![config.llm.model_path.clone()],
+                overhead_mib: 80,
+                depends_on: None,
+            },
+            FeatureInput {
+                name: "tts",
+                enabled: config.tts.enabled,
+                model_paths: tts_paths,
+                overhead_mib: 40,
+                depends_on: None,
+            },
+            FeatureInput {
+                name: "decision",
+                enabled: config.decision.enabled,
+                model_paths: vec![
+                    config.decision.model_path.clone(),
+                    config.decision.tokenizer_path.clone(),
+                ],
+                overhead_mib: 40,
+                depends_on: Some("voice"),
+            },
+            FeatureInput {
+                name: "face",
+                enabled: config.face.enabled,
+                model_paths: vec![
+                    config.face.detect_model.clone(),
+                    config.face.recog_model.clone(),
+                ],
+                overhead_mib: 40,
+                depends_on: None,
+            },
+            FeatureInput {
+                name: "ocr",
+                enabled: config.ocr.enabled,
+                model_paths: vec![config.ocr.det_path.clone(), config.ocr.rec_path.clone()],
+                overhead_mib: 40,
+                depends_on: None,
+            },
+            FeatureInput {
+                name: "meeting",
+                enabled: config.meeting.enabled,
+                model_paths: vec![
+                    config.meeting.segmentation_model.clone(),
+                    config.meeting.punctuation_model.clone(),
+                ],
+                overhead_mib: 30,
+                depends_on: Some("voice"),
+            },
+            FeatureInput {
+                name: "vlm",
+                enabled: config.vlm.enabled,
+                model_paths: vec![
+                    config.vlm.model_path.clone(),
+                    config.vlm.mmproj_path.clone(),
+                ],
+                overhead_mib: 80,
+                depends_on: None,
+            },
+        ]
+    };
+    let resource_profile = Arc::new(streaming::feature_gate::plan(
+        &feature_inputs,
+        &config.resources.feature_gate,
+        mem.0,
+        mem.1,
+        config.resources.reserve_mib,
+    ));
+    // Apply the plan: a non-admitted enabled feature is turned off in the
+    // config copy every engine reads — the engines' own fail-open logs
+    // then explain it exactly like a config-disabled feature.
+    for d in &resource_profile.features {
+        if d.admitted || d.reason != streaming::feature_gate::REASON_OFF_BUDGET {
+            continue;
+        }
+        tracing::warn!(
+            feature = d.name,
+            cost_mib = d.cost_mib,
+            budget_mib = resource_profile.budget_mib,
+            "resource gate: feature shed by boot memory budget"
+        );
+        match d.name {
+            "ai" => config.ai.enabled = false,
+            "audio_ai" => config.audio_ai.enabled = false,
+            "voice" => config.voice.enabled = false,
+            "llm" => config.llm.enabled = false,
+            "tts" => config.tts.enabled = false,
+            "decision" => config.decision.enabled = false,
+            "face" => config.face.enabled = false,
+            "ocr" => config.ocr.enabled = false,
+            "meeting" => config.meeting.enabled = false,
+            "vlm" => config.vlm.enabled = false,
+            _ => {}
+        }
+    }
+    tracing::info!(
+        mode = %resource_profile.mode,
+        available_mib = resource_profile.available_mib,
+        total_mib = resource_profile.total_mib,
+        budget_mib = resource_profile.budget_mib,
+        llm_tier,
+        admitted = resource_profile
+            .features
+            .iter()
+            .filter(|d| d.admitted)
+            .count(),
+        shed = resource_profile
+            .features
+            .iter()
+            .filter(|d| !d.admitted && d.reason != streaming::feature_gate::REASON_OFF_CONFIG)
+            .count(),
+        "resource gate: boot feature admission resolved"
+    );
+
     // Resolve advertised host: use configured value or auto-detect LAN IP
     let advertised_host = match &config.web.advertised_host {
         Some(host) if !host.is_empty() => host.clone(),
@@ -615,21 +790,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let voice_engine = Arc::new(streaming::voice::VoiceEngine::from_config(&config.voice));
-    // Resource tier (#30-E): resolve the model by available memory when
-    // auto_tier is on; manual otherwise. Log + expose via capabilities.
-    let (llm_model, llm_tier) = streaming::tools::resolve_llm_tier(
-        &config.llm.model_path,
-        &config.llm.model_path_mid,
-        &config.llm.model_path_lite,
-        config.resources.auto_tier,
-        streaming::tools::available_mem_mib().unwrap_or(0),
-    );
-    let mut llm_config = config.llm.clone();
-    if llm_model != llm_config.model_path {
-        llm_config.model_path = llm_model;
-    }
-    tracing::info!(tier = llm_tier, model = %llm_config.model_path, "llm: resource tier resolved");
-    let chat_engine = Arc::new(streaming::llm::ChatEngine::from_config(&llm_config));
+    // The LLM resource tier (#30-E) was resolved before the feature gate
+    // (top of main) and written back into config.llm — ChatEngine reads
+    // the already-tiered path; llm_tier is threaded to capabilities.
+    let chat_engine = Arc::new(streaming::llm::ChatEngine::from_config(&config.llm));
     if !chat_engine.is_active() {
         tracing::info!(reason = %chat_engine.inactive_reason(), "llm: chat disabled");
     }
@@ -1697,6 +1861,7 @@ async fn main() -> anyhow::Result<()> {
         grounding_state,
         Arc::clone(&shared_tools),
         Arc::new(web::routes::capabilities::LlmTier(llm_tier.to_string())),
+        Arc::clone(&resource_profile),
         Arc::new(web::routes::capabilities::WakeWord(
             config.voice.wake_word.clone(),
         )),
