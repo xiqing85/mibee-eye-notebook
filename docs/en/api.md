@@ -68,7 +68,7 @@ lockout after repeated failures.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/status` | device_name / model / vendor / firmware / uptime / cameras |
-| GET | `/api/capabilities` | SPEC superset (`multi_camera`, `camera_management`, `camera_control`, `devices`, `mjpeg`, `mse`, `events`, `config_apply`, …) plus the device-intelligence booleans `ai` / `zones` / `audio_ai` / `voice` / `chat` / `vlm` / `ocr` / `substream`, the host hardware probe extension fields `system` and `recommended_profiles`, and `events` extended with the capability-gated names |
+| GET | `/api/capabilities` | SPEC superset (`multi_camera`, `camera_management`, `camera_control`, `devices`, `mjpeg`, `mse`, `events`, `config_apply`, …) plus the device-intelligence booleans `ai` / `zones` / `audio_ai` / `voice` / `chat` / `vlm` / `ocr` / `substream`, the host hardware probe extension fields `system` and `recommended_profiles`, `events` extended with the capability-gated names, and `resource` — the boot-time feature-admission snapshot (SPEC appendix A #40: `{mode, total_mib, available_mib, budget_mib, reserve_mib, features:[{name, cost_mib, admitted, reason}]}`, reason codes `off_config`/`off_budget`/`dependency`), plus `llm_tier` (full/mid/lite/manual) |
 
 ### Cameras (SPEC §4)
 

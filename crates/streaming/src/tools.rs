@@ -94,9 +94,15 @@ pub fn available_mem_mib() -> Option<u64> {
 /// Read MemTotal + MemAvailable from /proc/meminfo (MiB). Linux-only
 /// product; the feature gate (#40) samples both at boot.
 pub fn memory_mib() -> Option<(u64, u64)> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    parse_memory_mib(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+/// Pure meminfo parser behind [`memory_mib`] — MiB pair (total, avail).
+/// Returns None when MemTotal is missing.
+#[must_use]
+pub fn parse_memory_mib(text: &str) -> Option<(u64, u64)> {
     let mut total = None;
-    let mut avail = None;
+    let mut avail = 0_u64;
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
             total = rest
@@ -111,10 +117,10 @@ pub fn memory_mib() -> Option<(u64, u64)> {
                 .trim_end_matches("kB")
                 .trim()
                 .parse::<u64>()
-                .ok();
+                .unwrap_or(0);
         }
     }
-    Some((total? / 1024, avail? / 1024))
+    Some((total? / 1024, avail / 1024))
 }
 
 /// Does this user utterance ask about weather? (intent gate)
@@ -243,6 +249,51 @@ mod tests {
         let cur = &parsed.current_condition[0];
         assert_eq!(cur.temp_c, "26");
         assert_eq!(cur.desc[0].value, "Partly cloudy");
+    }
+}
+
+#[cfg(test)]
+mod resources_config_tests {
+    use super::*;
+
+    #[test]
+    fn absent_section_falls_back_to_gate_defaults() {
+        // A config without [resources] (every pre-#40 deployment) must
+        // parse into the gating defaults — auto mode, 512 MiB reserve.
+        let cfg: ResourcesConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.feature_gate, "auto");
+        assert_eq!(cfg.reserve_mib, 512);
+        assert!(!cfg.auto_tier);
+    }
+
+    #[test]
+    fn legacy_auto_tier_only_config_keeps_new_defaults() {
+        // The shape already deployed on .41: only auto_tier set.
+        let cfg: ResourcesConfig = toml::from_str("auto_tier = true").unwrap();
+        assert!(cfg.auto_tier);
+        assert_eq!(cfg.feature_gate, "auto");
+        assert_eq!(cfg.reserve_mib, 512);
+    }
+
+    #[test]
+    fn explicit_values_roundtrip() {
+        let cfg: ResourcesConfig =
+            toml::from_str("feature_gate = \"all\"\nreserve_mib = 1024\nauto_tier = true").unwrap();
+        assert_eq!(cfg.feature_gate, "all");
+        assert_eq!(cfg.reserve_mib, 1024);
+        assert!(cfg.auto_tier);
+    }
+
+    #[test]
+    fn memory_parser_takes_kb_to_mib() {
+        let text =
+            "MemTotal:       3916720 kB\nMemFree:         123456 kB\nMemAvailable:   2987000 kB\n";
+        assert_eq!(parse_memory_mib(text), Some((3824, 2916)));
+        assert_eq!(
+            parse_memory_mib("MemFree: 1 kB"),
+            None,
+            "no MemTotal -> None"
+        );
     }
 }
 

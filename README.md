@@ -27,6 +27,7 @@ Part of the **MiBee Eye** camera family: [mibee-eye-rs](https://github.com/xiqin
 - **Local recording** — MP4 segment archive with auto-prune, configurable per-camera
 - **Browser preview** — MJPEG multipart live stream, JPEG snapshot endpoint, fMP4/MSE H.264 delivery (`stream.mse`) with an optional low-resolution bandwidth-saving substream (`stream.sub.mse`, RTSP `/live/{id}/sub`, ONVIF `sub` profile — per-camera `config.substream`, SPEC appendix A #20)
 - **Resource-bounded** — semaphore-guarded concurrency (max 16 streams), per-stream memory budgets
+- **Resource-adaptive boot** — AI features are admitted against the boot memory budget (`[resources] feature_gate`, SPEC appendix A #40): small-memory hosts shed the heavy model tail automatically; the admission table is surfaced via the status-page Resource Profile card and `capabilities.resource`
 - **Observable** — structured logging, OpenTelemetry traces (132+ instrumented spans), Prometheus metrics (14+ counters/gauges), optional Loki remote log shipping
 - **Security** — rate limiting with exponential backoff, CSRF (double-submit cookie), CSP header, TLS-only
 - **Dynamic management** — protocol hot-toggle via Web UI (no restart needed), hot-plug camera detection (udev), SSE real-time events
