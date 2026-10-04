@@ -151,6 +151,13 @@ impl ChatEngine {
     ///
     /// Inactive engine, tokenization or inference failure.
     pub fn complete(&self, turns: &[ChatTurn]) -> anyhow::Result<String> {
+        self.complete_with_usage(turns).map(|(reply, _, _)| reply)
+    }
+
+    /// [`ChatEngine::complete`] plus the llama.cpp token accounting —
+    /// prompt and generated counts feed per-model metrics and the
+    /// conversation call-chain spans (SPEC §3.3).
+    pub fn complete_with_usage(&self, turns: &[ChatTurn]) -> anyhow::Result<(String, u64, u64)> {
         #[cfg(feature = "llm")]
         {
             let Some(model) = &self.model else {
@@ -160,7 +167,7 @@ impl ChatEngine {
             match self.run_completion(model, turns) {
                 Ok((reply, prompt_tokens, completion_tokens)) => {
                     call.finish_ok(Some(prompt_tokens), Some(completion_tokens));
-                    Ok(reply)
+                    Ok((reply, prompt_tokens, completion_tokens))
                 }
                 Err(e) => {
                     call.finish_err();

@@ -206,6 +206,16 @@ pub struct FaceEngine {
 struct Inner {
     detect: Mutex<Session>,
     recog: Mutex<Session>,
+    /// Detection input edge as ACTUALLY fed to the session — the model's
+    /// declared shape when the export is fixed-size, the configured value
+    /// when dynamic (see `resolve_detect_input`).
+    detect_input: u32,
+    /// Graph I/O names captured at load — exports drift between
+    /// "input"/"data"/"images"/"input.1" etc.; the detection heads
+    /// (cls_*/obj_*/bbox_*) are addressed by their stride-suffixed names.
+    detect_input_name: String,
+    recog_input_name: String,
+    recog_output_name: String,
 }
 
 impl FaceEngine {
@@ -256,9 +266,40 @@ impl FaceEngine {
         }
         let detect = load_session(&config.detect_model, "face detect")?;
         let recog = load_session(&config.recog_model, "face recog")?;
+        let (h, w) = detect_input_shape(&detect);
+        let detect_input = resolve_detect_input(h, w, config.detect_input);
+        if detect_input != config.detect_input {
+            tracing::warn!(
+                configured = config.detect_input,
+                model_declared = detect_input,
+                "face: YuNet export has a fixed input shape — conforming (config value ignored)"
+            );
+        }
+        let detect_input_name = detect
+            .inputs()
+            .first()
+            .map(|i| i.name().to_string())
+            .unwrap_or_else(|| "input".to_string());
+        // SFace's zoo export names the image input `data` and the
+        // embedding output `fc1` — earlier hard-codes ("input.1" /
+        // "embedding") never matched this file.
+        let recog_input_name = recog
+            .inputs()
+            .first()
+            .map(|i| i.name().to_string())
+            .unwrap_or_else(|| "data".to_string());
+        let recog_output_name = recog
+            .outputs()
+            .first()
+            .map(|o| o.name().to_string())
+            .unwrap_or_else(|| "fc1".to_string());
         Ok(Inner {
             detect: Mutex::new(detect),
             recog: Mutex::new(recog),
+            detect_input,
+            detect_input_name,
+            recog_input_name,
+            recog_output_name,
         })
     }
 
@@ -365,21 +406,45 @@ impl FaceEngine {
 
     #[cfg(feature = "ai")]
     fn run_match(&self, inner: &Inner, jpeg: &[u8]) -> anyhow::Result<Vec<FaceHit>> {
-        let (bgr, w, h) = decode_bgr(jpeg)?;
-        let (boxes_, scores) = detect_faces(inner, &bgr, w, h, self.config.detect_input)?;
         let reg = self.registry.lock().expect("face registry lock");
-        let mut hits = Vec::new();
-        for (i, bbox) in boxes_.iter().enumerate() {
-            let emb = embed_face(inner, &bgr, w, h, bbox)?;
-            let (name, score) = reg.best_match(&emb, self.config.match_threshold);
-            hits.push(FaceHit {
-                name: name.map(String::from),
-                score: if name.is_some() { score } else { scores[i] },
-                bbox: *bbox,
-            });
-        }
-        Ok(hits)
+        run_match_inner(inner, &reg, jpeg, self.config.match_threshold)
     }
+
+    /// Test/diagnostic access to the loaded models (None when inactive).
+    #[cfg(all(test, feature = "ai"))]
+    fn inner_for_diag(&self) -> Option<&Inner> {
+        self.inner.as_ref()
+    }
+
+    /// Test/diagnostic: why the engine is inactive.
+    #[cfg(all(test, feature = "ai"))]
+    fn inactive_reason_for_diag(&self) -> &str {
+        &self.inactive_reason
+    }
+}
+
+/// The match pipeline as a free function (testable without the engine
+/// shell): decode → YuNet detect → SFace embed → registry match.
+#[cfg(feature = "ai")]
+fn run_match_inner(
+    inner: &Inner,
+    reg: &FaceRegistry,
+    jpeg: &[u8],
+    match_threshold: f32,
+) -> anyhow::Result<Vec<FaceHit>> {
+    let (bgr, w, h) = decode_bgr(jpeg)?;
+    let (boxes_, scores) = detect_faces(inner, &bgr, w, h, inner.detect_input)?;
+    let mut hits = Vec::new();
+    for (i, bbox) in boxes_.iter().enumerate() {
+        let emb = embed_face(inner, &bgr, w, h, bbox)?;
+        let (name, score) = reg.best_match(&emb, match_threshold);
+        hits.push(FaceHit {
+            name: name.map(String::from),
+            score: if name.is_some() { score } else { scores[i] },
+            bbox: *bbox,
+        });
+    }
+    Ok(hits)
 }
 
 #[cfg(feature = "ai")]
@@ -431,26 +496,57 @@ fn decode_bgr(jpeg: &[u8]) -> anyhow::Result<(Vec<f32>, u32, u32)> {
     Ok((bgr, w, h))
 }
 
-/// Resize planar BGR by nearest neighbour into (dst_w, dst_h).
+/// Resize interleaved-HWC BGR by nearest neighbour into (dst_w, dst_h)
+/// **CHW planes** — the layout NCHW tensors need (the historical version
+/// emitted interleaved pixels under a [1,3,H,W] shape declaration, which
+/// scrambled every channel and made the heads output noise).
 fn resize_planar(src: &[f32], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<f32> {
-    let mut dst = vec![0f32; (dst_w as usize) * (dst_h as usize) * 3];
-    let n = dst.len() / 3;
-    for i in 0..n {
-        let dx = (i % dst_w as usize) as u32;
-        let dy = (i / dst_w as usize) as u32;
-        let sx = dx * src_w / dst_w.max(1);
+    let plane = (dst_w * dst_h) as usize;
+    let mut dst = vec![0f32; plane * 3];
+    for dy in 0..dst_h {
         let sy = dy * src_h / dst_h.max(1);
-        let s = (sy as usize * src_w as usize + sx as usize) * 3;
-        let d = i * 3;
-        dst[d] = src[s];
-        dst[d + 1] = src[s + 1];
-        dst[d + 2] = src[s + 2];
+        for dx in 0..dst_w {
+            let sx = dx * src_w / dst_w.max(1);
+            let s = (sy as usize * src_w as usize + sx as usize) * 3;
+            let d = dy as usize * dst_w as usize + dx as usize;
+            dst[d] = src[s];
+            dst[plane + d] = src[s + 1];
+            dst[plane * 2 + d] = src[s + 2];
+        }
     }
     dst
 }
 
 /// Source-scale bbox (x, y, w, h).
 type Bbox = (f32, f32, f32, f32);
+
+/// The detect session's declared NCHW H/W (−1 each when dynamic or
+/// unreadable).
+#[cfg(feature = "ai")]
+fn detect_input_shape(session: &Session) -> (i64, i64) {
+    let Some(input) = session.inputs().first() else {
+        return (-1, -1);
+    };
+    let Some(shape) = input.dtype().tensor_shape() else {
+        return (-1, -1);
+    };
+    (
+        shape.get(2).copied().unwrap_or(-1),
+        shape.get(3).copied().unwrap_or(-1),
+    )
+}
+
+/// Fixed-square YuNet exports (e.g. the zoo's 2023mar ONNX ships a
+/// hard-coded 640×640 input) reject any other feed shape — conform to
+/// the declaration; dynamic exports honor the configured size.
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
+fn resolve_detect_input(h: i64, w: i64, configured: u32) -> u32 {
+    if h > 0 && h == w {
+        h as u32
+    } else {
+        configured.max(32)
+    }
+}
 
 /// YuNet: returns source-scale bboxes with detection scores.
 #[cfg(feature = "ai")]
@@ -464,32 +560,116 @@ fn detect_faces(
     let planar = resize_planar(bgr, w, h, input, input);
     let tensor = Tensor::from_array((vec![1, 3, input as usize, input as usize], planar))?;
     let mut detect = inner.detect.lock().expect("face detect session lock");
-    let outputs = detect.run(ort::inputs!["input" => tensor])?;
-    let faces_out = outputs
-        .get("output")
-        .ok_or_else(|| anyhow::anyhow!("face: YuNet output missing"))?;
-    let (dims, data) = faces_out.try_extract_tensor::<f32>()?;
-    // OpenCV-zoo YuNet emits [1, 1, N, 15]: x y w h, 5 keypoints, score.
-    let rows = *dims.get(2).unwrap_or(&0) as usize;
-    let row_len = *dims.get(3).unwrap_or(&0) as usize;
-    anyhow::ensure!(
-        dims.len() == 4 && row_len == 15 && data.len() == rows * row_len,
-        "face: unexpected YuNet output {dims:?}"
-    );
+    let outputs = detect.run(ort::inputs![&inner.detect_input_name => tensor])?;
+    // OpenCV-zoo YuNet 2023mar emits anchor-free multi-scale heads: for
+    // each stride s ∈ {8,16,32} a cls_s [1,N,1] + obj_s [1,N,1] +
+    // bbox_s [1,N,4] (l,t,r,b distances from the cell centre) over the
+    // (input/s)² grid. (The historical [1,1,N,15] layout this decoder
+    // assumed belongs to older exports — against the shipped 2023mar
+    // file every detection failed.)
+    let extract = |stem: &str, stride: u32| -> anyhow::Result<Vec<f32>> {
+        let name = format!("{stem}_{stride}");
+        let out = outputs
+            .get(&name)
+            .ok_or_else(|| anyhow::anyhow!("face: YuNet output {name} missing"))?;
+        let (_dims, data) = out.try_extract_tensor::<f32>()?;
+        Ok(data.to_vec())
+    };
+    let mut cand: Vec<(f32, [f32; 4])> = Vec::new();
+    for stride in [8u32, 16, 32] {
+        let grid = input / stride;
+        let n = (grid * grid) as usize;
+        let cls = extract("cls", stride)?;
+        let obj = extract("obj", stride)?;
+        let bb = extract("bbox", stride)?;
+        anyhow::ensure!(
+            cls.len() == n && obj.len() == n && bb.len() == n * 4,
+            "face: YuNet head stride {stride} shape mismatch (cls {}, obj {}, bbox {} for {n} cells)",
+            cls.len(),
+            obj.len(),
+            bb.len()
+        );
+        // Decode per the model author's reference
+        // (libfacedetection.train compare_inference.py): scores are
+        // cls·obj products AS OUTPUT (no sigmoid — the graph already
+        // emits probabilities), and bbox rows are (cx_off, cy_off,
+        // log_w, log_h) scaled by the stride against the plain grid
+        // anchor (no half-cell offset).
+        for i in 0..n {
+            let score = cls[i] * obj[i];
+            if score < DET_SCORE_THRESHOLD && std::env::var_os("FACE_DIAG_DUMP").is_none() {
+                continue;
+            }
+            let ax = (i as u32 % grid) as f32 * stride as f32;
+            let ay = (i as u32 / grid) as f32 * stride as f32;
+            let cx = bb[i * 4] * stride as f32 + ax;
+            let cy = bb[i * 4 + 1] * stride as f32 + ay;
+            let bw = bb[i * 4 + 2].exp() * stride as f32;
+            let bh = bb[i * 4 + 3].exp() * stride as f32;
+            cand.push((score, [cx - bw / 2.0, cy - bh / 2.0, bw, bh]));
+        }
+    }
+    if std::env::var_os("FACE_DIAG_DUMP").is_some() && !cand.is_empty() {
+        let mut dump = cand.clone();
+        dump.sort_by(|a, b| b.0.total_cmp(&a.0));
+        eprintln!("DIAG top candidates (score, x,y,w,h):");
+        for (score, b) in dump.iter().take(8) {
+            eprintln!(
+                "  {score:.4}  {:.1},{:.1},{:.1},{:.1}",
+                b[0], b[1], b[2], b[3]
+            );
+        }
+    }
+    let kept = nms(cand, DET_NMS_IOU, 20);
+    let sx = w as f32 / input as f32;
+    let sy = h as f32 / input as f32;
     let mut boxes_ = Vec::new();
     let mut scores = Vec::new();
-    for r in 0..rows {
-        let row = &data[r * row_len..(r + 1) * row_len];
-        let score = row[14];
-        if score < 0.7 {
-            continue;
-        }
-        let sx = w as f32 / input as f32;
-        let sy = h as f32 / input as f32;
-        boxes_.push((row[0] * sx, row[1] * sy, row[2] * sx, row[3] * sy));
+    for (score, [x, y, bw, bh]) in kept {
+        boxes_.push((x * sx, y * sy, bw * sx, bh * sy));
         scores.push(score);
     }
     Ok((boxes_, scores))
+}
+
+/// Detection score threshold (cls·obj as output by the graph; OpenCV's
+/// FaceDetectionYN default).
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
+const DET_SCORE_THRESHOLD: f32 = 0.6;
+/// NMS IoU threshold (reference default).
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
+const DET_NMS_IOU: f32 = 0.45;
+
+/// Score-descending greedy NMS over (score, [x, y, w, h]) candidates.
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
+fn nms(cand: Vec<(f32, [f32; 4])>, iou_threshold: f32, top: usize) -> Vec<(f32, [f32; 4])> {
+    let mut cand = cand;
+    cand.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut kept: Vec<(f32, [f32; 4])> = Vec::new();
+    'outer: for c in cand {
+        for k in &kept {
+            if iou(c.1, k.1) > iou_threshold {
+                continue 'outer;
+            }
+        }
+        kept.push(c);
+        if kept.len() >= top {
+            break;
+        }
+    }
+    kept
+}
+
+fn iou(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let (ax1, ay1, ax2, ay2) = (a[0], a[1], a[0] + a[2], a[1] + a[3]);
+    let (bx1, by1, bx2, by2) = (b[0], b[1], b[0] + b[2], b[1] + b[3]);
+    let ix1 = ax1.max(bx1);
+    let iy1 = ay1.max(by1);
+    let ix2 = ax2.min(bx2);
+    let iy2 = ay2.min(by2);
+    let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
+    let union = a[2] * a[3] + b[2] * b[3] - inter;
+    if union <= 0.0 { 0.0 } else { inter / union }
 }
 
 /// SFace: crop (source-scale bbox), resize to 112×112 BGR, embed,
@@ -515,9 +695,9 @@ fn embed_face(inner: &Inner, bgr: &[f32], w: u32, h: u32, bbox: &Bbox) -> anyhow
     let planar = resize_planar(&crop, cw, ch, SIZE, SIZE);
     let tensor = Tensor::from_array((vec![1, 3, SIZE as usize, SIZE as usize], planar))?;
     let mut recog = inner.recog.lock().expect("face recog session lock");
-    let outputs = recog.run(ort::inputs!["input.1" => tensor])?;
+    let outputs = recog.run(ort::inputs![&inner.recog_input_name => tensor])?;
     let emb_out = outputs
-        .get("embedding")
+        .get(&inner.recog_output_name)
         .ok_or_else(|| anyhow::anyhow!("face: SFace output missing"))?;
     let (_, emb_data) = emb_out.try_extract_tensor::<f32>()?;
     let mut embedding: Vec<f32> = emb_data.to_vec();
@@ -604,15 +784,72 @@ mod tests {
         e.with_registry(|r| r.begin_enroll("张三"));
     }
 
+    /// Diagnostic against the real model files (run manually with the
+    /// models dir present; prints the error the fail-open path swallows):
+    /// `cargo test -p streaming --features ai face_real_models -- --ignored --nocapture`
+    #[cfg(all(test, feature = "ai"))]
     #[test]
-    fn planar_resize_samples_source_pixels() {
-        // 2x2 → 4x4 nearest neighbour: each quadrant replicates.
+    #[ignore = "needs real model files on disk"]
+    fn face_real_models_diagnostic() {
+        // Diagnostics explicitly opt in.
+        let cfg = FaceConfig {
+            enabled: true,
+            ..FaceConfig::default()
+        };
+        if !std::path::Path::new(&cfg.detect_model).exists() {
+            eprintln!("models not present: {}", cfg.detect_model);
+            return;
+        }
+        let engine = FaceEngine::from_config(&cfg);
+        assert!(
+            engine.is_active(),
+            "engine must load (inactive: {})",
+            engine.inactive_reason_for_diag()
+        );
+        // JPEG from env (any real frame; no image crate in this crate).
+        let path = std::env::var("FACE_DIAG_JPEG").expect("set FACE_DIAG_JPEG");
+        let jpeg = std::fs::read(&path).expect("read jpeg");
+        // Bypass the fail-open wrapper to surface the real error.
+        let inner = engine.inner_for_diag().expect("inner");
+        let reg = FaceRegistry::new();
+        match run_match_inner(inner, &reg, &jpeg, cfg.match_threshold) {
+            Ok(hits) => eprintln!("DIAG ok: {} hits", hits.len()),
+            Err(e) => eprintln!("DIAG error: {e:#}"),
+        }
+    }
+
+    #[test]
+    fn detect_input_conforms_to_fixed_exports() {
+        use super::resolve_detect_input;
+        // The zoo 2023mar YuNet declares a fixed 640×640 input — the
+        // configured 320 must be overridden (this exact mismatch made
+        // every match_jpeg fail on the live device).
+        assert_eq!(resolve_detect_input(640, 640, 320), 640);
+        // Dynamic exports (−1) keep the configured size.
+        assert_eq!(resolve_detect_input(-1, -1, 320), 320);
+        assert_eq!(resolve_detect_input(-1, 640, 320), 320);
+        // Degenerate configured values clamp to something sane.
+        assert_eq!(resolve_detect_input(-1, -1, 0), 32);
+    }
+
+    #[test]
+    fn planar_resize_emits_chw_planes() {
+        // 2x2 HWC → 4x4 CHW: each quadrant replicates per plane; plane 0
+        // holds the first channel of every pixel.
         let src = vec![
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
         ];
         let dst = resize_planar(&src, 2, 2, 4, 4);
         assert_eq!(dst.len(), 4 * 4 * 3);
-        assert_eq!(dst[0], 1.0);
+        let plane = 16;
+        // First channel plane: pixels 1,4,7,10 replicated per quadrant.
+        assert_eq!(
+            &dst[..plane],
+            &vec![
+                1.0, 1.0, 4.0, 4.0, 1.0, 1.0, 4.0, 4.0, 7.0, 7.0, 10.0, 10.0, 7.0, 7.0, 10.0, 10.0
+            ][..]
+        );
+        // Third channel plane ends with pixel (1,1)'s blue value.
         assert_eq!(dst[dst.len() - 1], 12.0);
     }
 }

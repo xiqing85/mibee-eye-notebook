@@ -99,7 +99,12 @@ impl CloudAi {
                 .connect_timeout(Duration::from_secs(15))
                 .build()
                 .expect("reqwest client"),
-            base_url: std::sync::RwLock::new(DEFAULT_BASE_URL.into()),
+            base_url: std::sync::RwLock::new(
+                std::env::var("MIBEE_EYE_CLOUD_BASE_URL")
+                    .ok()
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| DEFAULT_BASE_URL.into()),
+            ),
         }
     }
 

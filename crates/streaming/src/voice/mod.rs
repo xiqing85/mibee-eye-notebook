@@ -1057,7 +1057,7 @@ fn compute_embedding(
     let call = observability::model_call("speaker", "campplus");
     let r = {
         let _span = call.enter();
-        extractor.create_stream().and_then(|mut stream| {
+        extractor.create_stream().and_then(|stream| {
             stream.accept_waveform(16_000, samples);
             if !extractor.is_ready(&stream) {
                 return None;

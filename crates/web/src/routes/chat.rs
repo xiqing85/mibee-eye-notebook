@@ -200,6 +200,42 @@ pub async fn web_block(tools: &streaming::tools::ToolsConfig, user_text: &str) -
     }
 }
 
+/// Which engine answers this chat turn (SPEC §4.10 routing): the cloud
+/// answers first when configured — text via `chat_model`, `vision:true`
+/// via `vision_model` on a fresh frame — with the local engines as the
+/// fallback (or the only path when the cloud is off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRoute {
+    CloudVision,
+    CloudChat,
+    LocalVlm,
+    LocalLlm,
+}
+
+/// Pure routing decision (truth-table tested); execution happens in
+/// [`chat`].
+#[must_use]
+pub fn route_chat(
+    cloud_on: bool,
+    vision: bool,
+    cloud_vision_ready: bool,
+    vlm_active: bool,
+) -> ChatRoute {
+    if cloud_on {
+        if vision && cloud_vision_ready {
+            return ChatRoute::CloudVision;
+        }
+        if !vision {
+            return ChatRoute::CloudChat;
+        }
+        // vision:true but the cloud has no vision model — local VLM.
+    }
+    if vision && vlm_active {
+        return ChatRoute::LocalVlm;
+    }
+    ChatRoute::LocalLlm
+}
+
 fn unix_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -248,6 +284,8 @@ pub async fn chat(
     let conv = crate::convtrace::convtrace().start("chat");
     conv.add_turn();
     let camera_id = primary_camera_id(&pool).await;
+    let cloud_on = cloud.enabled();
+    let route = route_chat(cloud_on, body.vision, cloud.vision_ready(), vlm.is_active());
     let tools_now = tools.read().expect("tools config lock poisoned").clone();
     let ctx = TurnContext {
         scene: camera_id
@@ -259,13 +297,105 @@ pub async fn chat(
     };
     let scene = ctx.scene.clone();
 
-    // Explicit VLM Q&A (#29): the question itself goes to the vision
+    // Turn assembly (shared by cloud and local paths — the cloud gets
+    // the same persona/grounding system turn, SPEC #35).
+    let mut turns: Vec<ChatTurn> = vec![build_system_turn(&ctx, &body.text)];
+    turns.extend(body.history.iter().take(8).cloned());
+    turns.push(ChatTurn {
+        role: "user".into(),
+        content: body.text.clone(),
+    });
+    let grounded = if scene.is_some() { "scene" } else { "none" };
+
+    // ── Cloud routing (SPEC §4.10: text→chat_model, vision→vision_model
+    // on a fresh frame; failures fall back locally when allowed).
+    let fresh_jpeg: Option<Arc<[u8]>> = match camera_id.as_deref() {
+        Some(id) if matches!(route, ChatRoute::CloudVision | ChatRoute::LocalVlm) => {
+            streams.latest_jpeg(id).await
+        }
+        _ => None,
+    };
+    if route == ChatRoute::CloudVision
+        && let Some(jpeg) = fresh_jpeg.clone()
+    {
+        let model_id = cloud.config().vision_model.clone();
+        let mut span = conv.span(
+            "cloud.vision",
+            &model_id,
+            "云端看图应答",
+            vec![("grounded".to_string(), "vlm".to_string())],
+        );
+        let jpeg: Vec<u8> = jpeg.iter().copied().collect();
+        match span
+            .run(cloud.complete_with_usage(&turns, Some(&jpeg), None, None))
+            .await
+        {
+            Ok((reply, usage)) => {
+                span.tokens(usage.map(|u| u.0), usage.map(|u| u.1))
+                    .finish_ok();
+                conv.close();
+                return Ok((
+                    StatusCode::OK,
+                    axum::Json(json!({
+                        "reply": reply,
+                        "engine": "cloud",
+                        "grounded": "vlm",
+                        "applied": "immediate",
+                    })),
+                ));
+            }
+            Err(e) => {
+                span.finish_err();
+                if !cloud.config().fallback_local {
+                    conv.close();
+                    return Err(ApiError::internal(format!("cloud: {e}")));
+                }
+                tracing::warn!(error = %e, "chat: cloud vision failed — falling back to local");
+            }
+        }
+    } else if route == ChatRoute::CloudChat {
+        let model_id = cloud.config().chat_model.clone();
+        let mut span = conv.span(
+            "cloud.chat",
+            &model_id,
+            "云端应答",
+            vec![("grounded".to_string(), grounded.to_string())],
+        );
+        match span
+            .run(cloud.complete_with_usage(&turns, None, None, None))
+            .await
+        {
+            Ok((reply, usage)) => {
+                span.tokens(usage.map(|u| u.0), usage.map(|u| u.1))
+                    .finish_ok();
+                conv.close();
+                return Ok((
+                    StatusCode::OK,
+                    axum::Json(json!({
+                        "reply": reply,
+                        "engine": "cloud",
+                        "grounded": grounded,
+                        "applied": "immediate",
+                    })),
+                ));
+            }
+            Err(e) => {
+                span.finish_err();
+                if !cloud.config().fallback_local {
+                    conv.close();
+                    return Err(ApiError::internal(format!("cloud: {e}")));
+                }
+                tracing::warn!(error = %e, "chat: cloud reply failed — falling back to local llm");
+            }
+        }
+    }
+
+    // ── Local VLM Q&A (#29): the question itself goes to the vision
     // model with a fresh frame. Any failure falls through to the
     // grounded LLM path — never a hard error for an optional mode.
     if body.vision
         && vlm.is_active()
-        && let Some(id) = camera_id.as_deref()
-        && let Some(jpeg) = streams.latest_jpeg(id).await
+        && let Some(jpeg) = fresh_jpeg
     {
         let vlm_variant = vlm.model_variant();
         let vlm = Arc::clone(&vlm);
@@ -296,6 +426,7 @@ pub async fn chat(
                     StatusCode::OK,
                     axum::Json(json!({
                         "reply": reply,
+                        "engine": "vlm",
                         "grounded": "vlm",
                         "applied": "immediate",
                     })),
@@ -308,28 +439,28 @@ pub async fn chat(
         }
     }
 
-    let mut turns: Vec<ChatTurn> = vec![build_system_turn(&ctx, &body.text)];
-    turns.extend(body.history.iter().take(8).cloned());
-    turns.push(ChatTurn {
-        role: "user".into(),
-        content: body.text.clone(),
-    });
+    // ── Local LLM (the only path when the cloud is off, the fallback
+    // when it failed). Token counts flow into the conversation span
+    // (SPEC §3.3).
     let engine_variant = engine.model_variant();
     let engine = Arc::clone(&engine);
     let mut span = conv.span(
         "llm",
         &engine_variant,
         "本地应答",
-        vec![(
-            "grounded".to_string(),
-            if scene.is_some() { "scene" } else { "none" }.to_string(),
-        )],
+        vec![("grounded".to_string(), grounded.to_string())],
     );
     let reply = match span
-        .run(tokio::task::spawn_blocking(move || engine.complete(&turns)))
+        .run(tokio::task::spawn_blocking(move || {
+            engine.complete_with_usage(&turns)
+        }))
         .await
     {
-        Ok(Ok(reply)) => reply,
+        Ok(Ok((reply, prompt_tokens, completion_tokens))) => {
+            span.tokens(Some(prompt_tokens), Some(completion_tokens))
+                .finish_ok();
+            reply
+        }
         Ok(Err(e)) => {
             span.finish_err();
             conv.close();
@@ -340,13 +471,13 @@ pub async fn chat(
             return Err(ApiError::internal(format!("llm task: {e}")));
         }
     };
-    span.finish_ok();
     conv.close();
     Ok((
         StatusCode::OK,
         axum::Json(json!({
             "reply": reply,
-            "grounded": if scene.is_some() { "scene" } else { "none" },
+            "engine": "local",
+            "grounded": grounded,
             "applied": "immediate",
         })),
     ))
@@ -440,6 +571,25 @@ mod tests {
         // Out-of-range values clamp instead of panicking.
         assert_eq!(weekday_name(0), "周一");
         assert_eq!(weekday_name(9), "周日");
+    }
+
+    #[test]
+    fn chat_routing_truth_table() {
+        use super::ChatRoute::*;
+        use super::route_chat;
+        // Cloud on, plain text → cloud chat model (SPEC §4.10).
+        assert_eq!(route_chat(true, false, false, false), CloudChat);
+        // Cloud on with a vision model → cloud vision.
+        assert_eq!(route_chat(true, true, true, false), CloudVision);
+        // Cloud on, vision but no vision_model configured → local VLM.
+        assert_eq!(route_chat(true, true, false, true), LocalVlm);
+        // Cloud off, vision with local VLM → local VLM.
+        assert_eq!(route_chat(false, true, false, true), LocalVlm);
+        // Vision but no VLM anywhere → grounded local LLM.
+        assert_eq!(route_chat(false, true, false, false), LocalLlm);
+        assert_eq!(route_chat(true, true, false, false), LocalLlm);
+        // Plain text without cloud → local LLM.
+        assert_eq!(route_chat(false, false, false, true), LocalLlm);
     }
 
     #[test]
