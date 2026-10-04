@@ -1239,12 +1239,13 @@ async fn main() -> anyhow::Result<()> {
                                 let turns = turns.clone();
                                 match span
                                     .run(tokio::task::spawn_blocking(move || {
-                                        engine.complete(&turns)
+                                        engine.complete_with_usage(&turns)
                                     }))
                                     .await
                                 {
-                                    Ok(Ok(reply)) => {
-                                        span.finish_ok();
+                                    Ok(Ok((reply, prompt_tokens, completion_tokens))) => {
+                                        span.tokens(Some(prompt_tokens), Some(completion_tokens))
+                                            .finish_ok();
                                         Ok(reply)
                                     }
                                     Ok(Err(e)) => {
