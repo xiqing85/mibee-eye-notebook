@@ -173,7 +173,7 @@ additionally swaps the LLM model file by available memory (full/mid/lite).
 ```toml
 [resources]
 feature_gate = "auto"   # auto | all
-reserve_mib = 768       # headroom kept out of the budget
+reserve_mib = 512       # headroom kept out of the budget
 auto_tier = false       # pick the LLM tier model by available memory
 ```
 

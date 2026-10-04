@@ -40,7 +40,10 @@ pub struct ResourcesConfig {
     /// admits AI features greedily against the boot memory budget;
     /// `"all"` boots every enabled feature (legacy behaviour).
     pub feature_gate: String,
-    /// Headroom kept out of the budget in auto mode (MiB).
+    /// Headroom kept out of the budget in auto mode (MiB). 512:
+    /// MemAvailable already excludes reclaimable page cache, and the
+    /// file-size ×1.15 factor plus per-engine overheads carry the rest
+    /// of the conservatism.
     pub reserve_mib: u64,
 }
 
@@ -49,7 +52,7 @@ impl Default for ResourcesConfig {
         Self {
             auto_tier: false,
             feature_gate: "auto".into(),
-            reserve_mib: 768,
+            reserve_mib: 512,
         }
     }
 }

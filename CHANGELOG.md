@@ -8,7 +8,7 @@
   hosts no longer launch every AI feature: `[resources] feature_gate = "auto"`
   (the default) estimates each enabled feature's resident cost from its model
   files and admits them greedily against the boot memory budget
-  (`MemAvailable − reserve_mib`, default reserve 768 MiB) in a fixed priority
+  (`MemAvailable − reserve_mib`, default reserve 512 MiB) in a fixed priority
   order, shedding the heavy tail (VLM/LLM/…) when it does not fit.
   `feature_gate = "all"` restores the boot-everything behaviour. The decision
   table is exposed as `capabilities.resource` (status page "Resource Profile"

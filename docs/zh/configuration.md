@@ -172,7 +172,7 @@ rate_limit_window_secs = 60
 ```toml
 [resources]
 feature_gate = "auto"   # auto | all
-reserve_mib = 768       # 预算外保留的余量
+reserve_mib = 512       # 预算外保留的余量
 auto_tier = false       # 按可用内存选 LLM 档位模型
 ```
 

@@ -244,5 +244,5 @@ enabled = false
 # memory (full ≥8 GiB / mid ≥4 GiB / lite below).
 [resources]
 # feature_gate = "auto"
-# reserve_mib = 768
+# reserve_mib = 512
 # auto_tier = false
