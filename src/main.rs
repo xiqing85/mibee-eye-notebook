@@ -124,6 +124,43 @@ async fn main() -> anyhow::Result<()> {
     let mut config = mibee_eye::config::AppConfig::load(&args.config)?;
     config.validate()?;
 
+    // Resolve advertised host: use configured value or auto-detect LAN IP
+    let advertised_host = match &config.web.advertised_host {
+        Some(host) if !host.is_empty() => host.clone(),
+        _ => get_first_non_loopback_ipv4().unwrap_or_else(|| "127.0.0.1".to_string()),
+    };
+    tracing::info!(advertised_host = %advertised_host, "resolved advertised host");
+
+    // Initialise rate limit config from security settings
+    security::rate_limit::init_rate_limit_config(
+        config.security.rate_limit_max,
+        config.security.rate_limit_window_secs,
+    );
+
+    // Initialise tracing (subscriber, optional OTLP export + Loki log shipping)
+    let loki_endpoint = config
+        .observability
+        .logs
+        .as_ref()
+        .map(|l| l.endpoint.clone());
+    let loki_labels = config
+        .observability
+        .logs
+        .as_ref()
+        .map(|l| l.labels.clone())
+        .unwrap_or_default();
+    observability::init_tracing(
+        &config.observability.log_level,
+        false,
+        if config.observability.otel_endpoint.is_empty() {
+            None
+        } else {
+            Some(config.observability.otel_endpoint.clone())
+        },
+        loki_endpoint,
+        loki_labels,
+    )?;
+
     // Feature-level resource admission (SPEC appendix A #40), before any
     // engine is built. The LLM tier model resolves first (#30-E) so the
     // gate charges the file that will actually load.
@@ -298,43 +335,6 @@ async fn main() -> anyhow::Result<()> {
             .count(),
         "resource gate: boot feature admission resolved"
     );
-
-    // Resolve advertised host: use configured value or auto-detect LAN IP
-    let advertised_host = match &config.web.advertised_host {
-        Some(host) if !host.is_empty() => host.clone(),
-        _ => get_first_non_loopback_ipv4().unwrap_or_else(|| "127.0.0.1".to_string()),
-    };
-    tracing::info!(advertised_host = %advertised_host, "resolved advertised host");
-
-    // Initialise rate limit config from security settings
-    security::rate_limit::init_rate_limit_config(
-        config.security.rate_limit_max,
-        config.security.rate_limit_window_secs,
-    );
-
-    // Initialise tracing (subscriber, optional OTLP export + Loki log shipping)
-    let loki_endpoint = config
-        .observability
-        .logs
-        .as_ref()
-        .map(|l| l.endpoint.clone());
-    let loki_labels = config
-        .observability
-        .logs
-        .as_ref()
-        .map(|l| l.labels.clone())
-        .unwrap_or_default();
-    observability::init_tracing(
-        &config.observability.log_level,
-        false,
-        if config.observability.otel_endpoint.is_empty() {
-            None
-        } else {
-            Some(config.observability.otel_endpoint.clone())
-        },
-        loki_endpoint,
-        loki_labels,
-    )?;
 
     // Initialise database - create SqlitePool for web CRUD and Connection for security calls
     let db_path_str = args.db_path.to_string_lossy().to_string();
