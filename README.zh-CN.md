@@ -30,6 +30,7 @@
 - **浏览器预览** — MJPEG 多部分实时流、JPEG 快照端点、fMP4/MSE H.264 直播（`stream.mse`），可选低分辨率省流子码流（`stream.sub.mse`、RTSP `/live/{id}/sub`、ONVIF `sub` Profile —— 每相机 `config.substream`，SPEC 附录 A #20）
 - **资源约束** — 信号量控制的并发（最多 16 路流）、每流内存预算
 - **可观测性** — 结构化日志、OpenTelemetry 追踪（132+ 仪器化 span）、Prometheus 指标（14+ 计数器/仪表）、可选的 Loki 远程日志发送
+- **资源自适应** — 启动时按可用内存对 AI 功能做预算制准入（`[resources] feature_gate`），小内存主机自动裁掉重模型尾部；准入表经状态页"资源档位"卡与 `capabilities.resource` 暴露
 - **安全性** — 速率限制与指数退避、CSRF（双提交 cookie）、CSP 头、TLS 仅
 - **动态管理** — 通过 Web 界面协议热切换（无需重启）、热插拔摄像头检测（udev）、SSE 实时事件
 - **低资源占用** — 目标 <5% CPU 空闲占用、<200 MB 内存；尽可能零拷贝

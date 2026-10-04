@@ -1195,6 +1195,10 @@ mod tests {
         m.process_open_fds.set(42);
         m.system_net_rx_bytes.set(1_000);
         m.system_net_tx_bytes.set(2_000);
+        // Boot-time feature admission (SPEC appendix A #40).
+        m.resource_budget_mib.set(1_596);
+        m.feature_admitted.with_label_values(&["vlm"]).set(0);
+        m.feature_admitted.with_label_values(&["ai"]).set(1);
         let output = m.render();
         assert!(
             output.contains("mibee_eye_system_cpu_percent 23.5"),
@@ -1210,6 +1214,18 @@ mod tests {
         );
         assert!(
             output.contains("mibee_eye_system_net_rx_bytes 1000"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mibee_eye_resource_budget_mib 1596"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mibee_eye_feature_admitted{name=\"ai\"} 1"),
+            "{output}"
+        );
+        assert!(
+            output.contains("mibee_eye_feature_admitted{name=\"vlm\"} 0"),
             "{output}"
         );
     }

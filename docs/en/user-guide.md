@@ -126,8 +126,13 @@ cloud service.
 - **Devices** — enumerate the machine's V4L2 video and ALSA audio devices,
   with the formats each video device supports. Use it to find the right
   device index before adding a camera or microphone.
-- **Status** — device identity (name, model, firmware, uptime) and protocol
-  runtime state (ONVIF / GB28181 running or not).
+- **Status** — device identity (name, model, firmware, uptime), protocol
+  runtime state (ONVIF / GB28181 running or not), live resource charts,
+  and the **Resource Profile** card: which AI features were admitted at
+  boot against the memory budget, each one's estimated cost and, when a
+  feature did not start, why (off in config / out of memory budget /
+  dependency off). Small-memory hosts shed the heavy tail automatically;
+  the decision re-evaluates on restart.
 - **Settings** — the unified configuration editor: protocol sections
   (ONVIF, GB28181, RTMP push, recording, watermark) apply immediately on
   save; UI preferences (language, theme) persist per browser.

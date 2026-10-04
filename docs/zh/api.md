@@ -64,7 +64,7 @@ Cookie 会话 + CSRF 双提交：
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/status` | device_name / model / vendor / firmware / uptime / cameras |
-| GET | `/api/capabilities` | 规范超集（`multi_camera`、`camera_management`、`camera_control`、`devices`、`mjpeg`、`mse`、`events`、`config_apply` 等）+ 端侧智能布尔位 `ai` / `zones` / `audio_ai` / `voice` / `chat` / `vlm` / `ocr` / `substream` + 主机硬件探测扩展字段 `system`、`recommended_profiles`，`events` 追加按能力门控的事件名 |
+| GET | `/api/capabilities` | 规范超集（`multi_camera`、`camera_management`、`camera_control`、`devices`、`mjpeg`、`mse`、`events`、`config_apply` 等）+ 端侧智能布尔位 `ai` / `zones` / `audio_ai` / `voice` / `chat` / `vlm` / `ocr` / `substream` + 主机硬件探测扩展字段 `system`、`recommended_profiles` + `events` 追加按能力门控的事件名 + `resource` 启动期功能准入快照（SPEC 附录 A #40：`{mode, total_mib, available_mib, budget_mib, reserve_mib, features:[{name, cost_mib, admitted, reason}]}`，reason 码 `off_config`/`off_budget`/`dependency`）+ `llm_tier`（full/mid/lite/manual）|
 
 ### 相机（规范 §4）
 
