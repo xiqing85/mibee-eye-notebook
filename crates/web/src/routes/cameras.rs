@@ -286,6 +286,12 @@ mod tests {
         db: SqlitePool,
         auth_db: Arc<Mutex<Connection>>,
     ) -> crate::server::AppRouterState {
+        let event_tx = Arc::new(crate::routes::events::new_event_bus());
+        let conversations = Arc::new(crate::conversations::ConversationLog::new(
+            db.clone(),
+            event_tx.clone(),
+            true,
+        ));
         crate::server::AppRouterState {
             db,
             auth_db,
@@ -295,7 +301,7 @@ mod tests {
                 protocols::rtsp_server::RtspServerConfig::default(),
             )),
             protocol_configs: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            event_tx: Arc::new(crate::routes::events::new_event_bus()),
+            event_tx,
             advertised_host: Arc::new("localhost".to_string()),
             ai: Arc::new(streaming::ai::AiEngine::from_parts(
                 streaming::ai::AiConfig::default(),
@@ -339,6 +345,7 @@ mod tests {
             restart_tx: tokio::sync::watch::channel(false).0,
             models: crate::server::AppRouterState::models_cloud_for_tests().0,
             cloud: crate::server::AppRouterState::models_cloud_for_tests().1,
+            conversations,
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),

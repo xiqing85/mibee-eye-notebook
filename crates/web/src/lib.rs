@@ -4,6 +4,8 @@ pub mod alarm;
 pub mod assets;
 pub mod cloud;
 pub mod config;
+/// Conversation records — the human-readable dialogue turn log (SPEC v1 §3.4).
+pub mod conversations;
 /// Conversation model-call chain tracing (SPEC v1 §3.3).
 pub mod convtrace;
 pub mod db;

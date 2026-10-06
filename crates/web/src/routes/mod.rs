@@ -20,6 +20,7 @@ pub mod cameras;
 pub mod capabilities;
 pub mod chat;
 pub mod config_api;
+pub mod conversations;
 pub mod detections;
 pub mod devices;
 pub mod events;

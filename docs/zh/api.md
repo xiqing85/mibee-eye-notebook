@@ -136,6 +136,17 @@ Cookie 会话 + CSRF 双提交：
 
 配套 `/metrics`（公开，Prometheus 文本）暴露每模型资源族：`mibee_model_inferences_total{model,variant}`、`mibee_model_inference_seconds`/`mibee_model_cpu_seconds` 直方图、`mibee_model_inflight{model}`、`mibee_model_errors_total`、`mibee_model_tokens_total{...,kind=prompt|completion}`，及系统/进程资源 gauge（`mibee_eye_system_*`/`mibee_eye_process_*`）。对话环容量 200 对话 × 每对话 64 span。
 
+### 对话记录（规范 §3.4）
+
+人读的对话逐轮记录——用户说了什么（HTTP 提问或语音转写原文）、设备"想了什么"（每次内部模型调用/路由决策一条摘要条目，含失败回落腿）、AI 答了什么、用的哪个引擎。语音交互发生在浏览器之外，这里是其可见载体；无回复轮（决策判 ignore）以 `reply_text: null` 诚实落库。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/conversations?limit=` | 最近对话轮（缺省 50 上限 200，倒序） |
+
+轮对象：`{"id","conversation_id","origin":"voice"|"http","started_ms","user_text","thinking":[{"source","model","note","duration_ms"}],"reply_text","engine":"cloud"|"local"|"vlm"|null}`。
+每轮完成同时经 SSE `conversation` 事件推送（`conversations` 能力门控）。SQLite 持久、FIFO 封顶 1000 轮；`[conversations] enabled = false` 整体关闭记录（隐私开关，能力亦不通告）。
+
 ### 主机设备（规范 §4.8）
 
 | 方法 | 路径 | 说明 |

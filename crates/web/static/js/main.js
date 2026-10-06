@@ -21,6 +21,7 @@ import { loadConfig, initSettings } from './settings.js';
 import { checkApi, refreshStatus, initStatus, startStatusPolling } from './status.js';
 import { initModelMetrics, startModelMetricsPolling } from './modelmetrics.js';
 import { initTraces, startTracesPolling, refreshTraces, tracesCap } from './traces.js';
+import { initConvLog, refreshConvLog, handleConversationEvent } from './convlog.js';
 import { renderDevices, initDevices } from './devices.js';
 import { renderRecords, renderSpeakers, renderMeetings, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
 import { renderModels, initModels, updateModelsVisibility, handleModelTask } from './models.js';
@@ -83,7 +84,7 @@ export function showView(name) {
   if (name === 'status') { checkApi(); refreshStatus(); }
   if (name === 'devices') renderDevices();
   if (name === 'records') { renderRecords(); renderMeetings(); }
-  if (name === 'assistant') { renderSpeakers(); }
+  if (name === 'assistant') { renderSpeakers(); refreshConvLog(); }
 }
 
 function teardownApp() {
@@ -121,6 +122,7 @@ async function enterApp() {
   initWaveform();
   initModelMetrics();
   initTraces();
+  initConvLog();
   refreshCameraSelect();
   if (store.ptzEnabled) fetchPtz();
   if (hasCap('zones')) refreshZones();
@@ -135,6 +137,7 @@ async function enterApp() {
     alarm: (p) => { handleAlarmEvent(p); recordsSseHook('alarm', p); },
     voice_transcript: (p) => { handleVoiceTranscript(p); recordsSseHook('voice_transcript', p); },
     chat_reply: handleChatReplyEvent,
+    conversation: handleConversationEvent,
     zone_event: () => { /* zone events ride the alarm/toast path */ },
     param_changed: handleParamChanged,
     recording: (p) => {
@@ -188,7 +191,7 @@ function initNav() {
 /// The Assistant destination exists when any of its features does:
 /// chat, face enrollment, or speaker voiceprints.
 function updateAssistantVisibility() {
-  const show = hasCap('chat') || hasCap('face') || hasCap('voice_speakers');
+  const show = hasCap('chat') || hasCap('face') || hasCap('voice_speakers') || hasCap('conversations');
   document.querySelectorAll('.nav-tab[data-view="assistant"]').forEach((tab) => {
     tab.classList.toggle('hidden', !show);
   });

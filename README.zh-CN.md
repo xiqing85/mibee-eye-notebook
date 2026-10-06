@@ -29,6 +29,8 @@
 - **本地录制** — MP4 分段归档，自动清理，可按摄像头配置
 - **浏览器预览** — MJPEG 多部分实时流、JPEG 快照端点、fMP4/MSE H.264 直播（`stream.mse`），可选低分辨率省流子码流（`stream.sub.mse`、RTSP `/live/{id}/sub`、ONVIF `sub` Profile —— 每相机 `config.substream`，SPEC 附录 A #20）
 - **资源约束** — 信号量控制的并发（最多 16 路流）、每流内存预算
+- **对话记录（规范 §3.4）** — 每轮对话（语音或网页）落持久人读日志：听到/输入文本、逐模型调用的内部"思考"条目（决策/云端/VLM/本地 LLM/TTS，含失败回落腿）与 AI 回复及引擎；`GET /api/conversations` + 实时 SSE `conversation` 事件驱动助手页"对话记录"卡；无回复轮诚实落库
+- **桌面集成（规范附录 A #42）** — 有桌面会话的主机上提供托盘图标 + 桌面通知（ksni StatusNotifierItem + org.freedesktop.Notifications，纯 Rust D-Bus）；告警上升沿通知、左键打开 Web 界面；headless 服务器完全 fail-open
 - **可观测性** — 结构化日志、OpenTelemetry 追踪（132+ 仪器化 span）、Prometheus 指标（14+ 计数器/仪表）、可选的 Loki 远程日志发送
 - **资源自适应** — 启动时按可用内存对 AI 功能做预算制准入（`[resources] feature_gate`），小内存主机自动裁掉重模型尾部；准入表经状态页"资源档位"卡与 `capabilities.resource` 暴露
 - **安全性** — 速率限制与指数退避、CSRF（双提交 cookie）、CSP 头、TLS 仅

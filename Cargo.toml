@@ -82,6 +82,11 @@ schemars = { version = "0.8", features = ["chrono"] }
 # Video watermark (SPEC v1 §5.2): pure-Rust font rasterizer + local-time clock.
 fontdue = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Desktop integration (SPEC appendix A #42): tray via StatusNotifierItem and
+# notifications via org.freedesktop.Notifications — both pure-Rust zbus, no
+# libdbus C library (headless hosts just lack a session bus → fail-open).
+ksni = "0.3"
+notify-rust = { version = "4", default-features = false, features = ["z"] }
 
 [package]
 name = "mibee-eye"
@@ -118,3 +123,5 @@ streaming = { path = "crates/streaming" }
 capture = { path = "crates/capture" }
 dirs = "6"
 libc.workspace = true
+ksni.workspace = true
+notify-rust.workspace = true

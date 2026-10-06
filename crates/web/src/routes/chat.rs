@@ -263,6 +263,7 @@ pub async fn chat(
     Extension(tools): Extension<crate::server::SharedTools>,
     Extension(wake_word): Extension<Arc<crate::routes::capabilities::WakeWord>>,
     Extension(cloud): Extension<Arc<crate::cloud::CloudAi>>,
+    Extension(convlog): Extension<Arc<crate::conversations::ConversationLog>>,
     Extension(pool): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     body: axum::extract::Json<ChatRequest>,
@@ -283,6 +284,12 @@ pub async fn chat(
     // the model chain inside is recorded by convtrace spans below.
     let conv = crate::convtrace::convtrace().start("chat");
     conv.add_turn();
+    // Conversation record (SPEC §3.4): the same turn as a human-readable
+    // log entry — prompt, one thinking note per leg (failed fallbacks
+    // included), reply + engine. Finished on every exit path below.
+    let mut draft =
+        crate::conversations::TurnDraft::new(crate::conversations::TurnOrigin::Http, conv.id())
+            .user_text(body.text.clone());
     let camera_id = primary_camera_id(&pool).await;
     let cloud_on = cloud.enabled();
     let route = route_chat(cloud_on, body.vision, cloud.vision_ready(), vlm.is_active());
@@ -326,14 +333,22 @@ pub async fn chat(
             vec![("grounded".to_string(), "vlm".to_string())],
         );
         let jpeg: Vec<u8> = jpeg.iter().copied().collect();
+        let leg_start = std::time::Instant::now();
         match span
             .run(cloud.complete_with_usage(&turns, Some(&jpeg), None, None))
             .await
         {
             Ok((reply, usage)) => {
+                let dur = leg_start.elapsed().as_millis() as u64;
                 span.tokens(usage.map(|u| u.0), usage.map(|u| u.1))
                     .finish_ok();
+                let note = match usage {
+                    Some((p, c)) => format!("云端看图应答 · {p}↑/{c}↓ tok"),
+                    None => "云端看图应答".to_string(),
+                };
+                draft = draft.think("cloud.vision", &model_id, note, dur);
                 conv.close();
+                convlog.finish(draft.reply(reply.clone(), "cloud")).await;
                 return Ok((
                     StatusCode::OK,
                     axum::Json(json!({
@@ -345,12 +360,27 @@ pub async fn chat(
                 ));
             }
             Err(e) => {
+                let dur = leg_start.elapsed().as_millis() as u64;
                 span.finish_err();
                 if !cloud.config().fallback_local {
                     conv.close();
+                    convlog
+                        .finish(draft.think(
+                            "cloud.vision",
+                            &model_id,
+                            format!("云端看图失败：{e}（不回落）"),
+                            dur,
+                        ))
+                        .await;
                     return Err(ApiError::internal(format!("cloud: {e}")));
                 }
                 tracing::warn!(error = %e, "chat: cloud vision failed — falling back to local");
+                draft = draft.think(
+                    "cloud.vision",
+                    &model_id,
+                    format!("云端看图失败：{e} — 回落本地"),
+                    dur,
+                );
             }
         }
     } else if route == ChatRoute::CloudChat {
@@ -361,14 +391,22 @@ pub async fn chat(
             "云端应答",
             vec![("grounded".to_string(), grounded.to_string())],
         );
+        let leg_start = std::time::Instant::now();
         match span
             .run(cloud.complete_with_usage(&turns, None, None, None))
             .await
         {
             Ok((reply, usage)) => {
+                let dur = leg_start.elapsed().as_millis() as u64;
                 span.tokens(usage.map(|u| u.0), usage.map(|u| u.1))
                     .finish_ok();
+                let note = match usage {
+                    Some((p, c)) => format!("云端应答 · {p}↑/{c}↓ tok"),
+                    None => "云端应答".to_string(),
+                };
+                draft = draft.think("cloud.chat", &model_id, note, dur);
                 conv.close();
+                convlog.finish(draft.reply(reply.clone(), "cloud")).await;
                 return Ok((
                     StatusCode::OK,
                     axum::Json(json!({
@@ -380,12 +418,27 @@ pub async fn chat(
                 ));
             }
             Err(e) => {
+                let dur = leg_start.elapsed().as_millis() as u64;
                 span.finish_err();
                 if !cloud.config().fallback_local {
                     conv.close();
+                    convlog
+                        .finish(draft.think(
+                            "cloud.chat",
+                            &model_id,
+                            format!("云端失败：{e}（不回落）"),
+                            dur,
+                        ))
+                        .await;
                     return Err(ApiError::internal(format!("cloud: {e}")));
                 }
                 tracing::warn!(error = %e, "chat: cloud reply failed — falling back to local llm");
+                draft = draft.think(
+                    "cloud.chat",
+                    &model_id,
+                    format!("云端失败：{e} — 回落本地"),
+                    dur,
+                );
             }
         }
     }
@@ -406,6 +459,7 @@ pub async fn chat(
             "看图直答",
             vec![("grounded".to_string(), "vlm".to_string())],
         );
+        let leg_start = std::time::Instant::now();
         let answered = match span
             .run(tokio::task::spawn_blocking(move || {
                 vlm.answer_jpeg(&jpeg, &question)
@@ -415,13 +469,24 @@ pub async fn chat(
             Ok(r) => r,
             Err(e) => {
                 conv.close();
+                convlog
+                    .finish(draft.think(
+                        "vlm",
+                        &vlm_variant,
+                        format!("看图直答任务失败：{e}"),
+                        leg_start.elapsed().as_millis() as u64,
+                    ))
+                    .await;
                 return Err(ApiError::internal(format!("vlm task: {e}")));
             }
         };
         match answered {
             Ok(reply) => {
+                let dur = leg_start.elapsed().as_millis() as u64;
                 span.finish_ok();
+                draft = draft.think("vlm", &vlm_variant, "看图直答", dur);
                 conv.close();
+                convlog.finish(draft.reply(reply.clone(), "vlm")).await;
                 return Ok((
                     StatusCode::OK,
                     axum::Json(json!({
@@ -433,8 +498,15 @@ pub async fn chat(
                 ));
             }
             Err(e) => {
+                let dur = leg_start.elapsed().as_millis() as u64;
                 span.finish_err();
                 tracing::warn!(error = %e, "chat: vlm Q&A failed — falling back to llm");
+                draft = draft.think(
+                    "vlm",
+                    &vlm_variant,
+                    format!("看图直答失败：{e} — 回落本地"),
+                    dur,
+                );
             }
         }
     }
@@ -450,6 +522,7 @@ pub async fn chat(
         "本地应答",
         vec![("grounded".to_string(), grounded.to_string())],
     );
+    let leg_start = std::time::Instant::now();
     let reply = match span
         .run(tokio::task::spawn_blocking(move || {
             engine.complete_with_usage(&turns)
@@ -457,21 +530,42 @@ pub async fn chat(
         .await
     {
         Ok(Ok((reply, prompt_tokens, completion_tokens))) => {
+            let dur = leg_start.elapsed().as_millis() as u64;
             span.tokens(Some(prompt_tokens), Some(completion_tokens))
                 .finish_ok();
+            draft = draft.think(
+                "llm",
+                &engine_variant,
+                format!("本地应答 · prompt {prompt_tokens}↑ / completion {completion_tokens}↓ tok"),
+                dur,
+            );
             reply
         }
         Ok(Err(e)) => {
+            let dur = leg_start.elapsed().as_millis() as u64;
             span.finish_err();
             conv.close();
+            convlog
+                .finish(draft.think("llm", &engine_variant, format!("本地应答失败：{e}"), dur))
+                .await;
             return Err(ApiError::internal(format!("llm: {e}")));
         }
         Err(e) => {
+            let dur = leg_start.elapsed().as_millis() as u64;
             conv.close();
+            convlog
+                .finish(draft.think(
+                    "llm",
+                    &engine_variant,
+                    format!("本地应答任务失败：{e}"),
+                    dur,
+                ))
+                .await;
             return Err(ApiError::internal(format!("llm task: {e}")));
         }
     };
     conv.close();
+    convlog.finish(draft.reply(reply.clone(), "local")).await;
     Ok((
         StatusCode::OK,
         axum::Json(json!({

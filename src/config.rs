@@ -344,6 +344,12 @@ pub struct AppConfig {
     /// Model manager (SPEC §4.9): where the model catalog installs files.
     #[serde(default)]
     pub models: ModelsConfig,
+    /// Desktop integration (SPEC appendix A #42): tray + notifications.
+    #[serde(default)]
+    pub desktop: DesktopConfig,
+    /// Conversation records (SPEC §3.4): privacy master switch.
+    #[serde(default)]
+    pub conversations: ConversationsConfig,
 }
 
 /// `[models]` — the download root for the model manager (SPEC §4.9).
@@ -361,6 +367,57 @@ impl Default for ModelsConfig {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Desktop integration & conversation records
+// ---------------------------------------------------------------------------
+
+fn default_true() -> bool {
+    true
+}
+
+/// Desktop integration (`[desktop]`, SPEC appendix A #42): tray icon +
+/// desktop notifications on hosts with a desktop session. All fail-open
+/// — a headless server skips the feature entirely.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesktopConfig {
+    /// Show a StatusNotifierItem tray icon when a session bus exists.
+    #[serde(default = "default_true")]
+    pub tray: bool,
+    /// Desktop notifications for alarm rising edges.
+    #[serde(default = "default_true")]
+    pub notifications: bool,
+    /// Also notify on completed voice replies (default off — the reply
+    /// is already spoken aloud via TTS).
+    #[serde(default)]
+    pub notify_conversations: bool,
+}
+
+impl Default for DesktopConfig {
+    fn default() -> Self {
+        Self {
+            tray: true,
+            notifications: true,
+            notify_conversations: false,
+        }
+    }
+}
+
+/// Conversation records (`[conversations]`, SPEC appendix A #41):
+/// privacy master switch for the dialogue-turn log. Disabled → records
+/// nothing and advertises no `conversations` capability.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConversationsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for ConversationsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 impl AppConfig {
     /// Load configuration from a TOML file.
     ///

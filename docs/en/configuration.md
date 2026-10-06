@@ -181,6 +181,41 @@ The admission table surfaces as `capabilities.resource` (status page
 "Resource Profile" card) and as `mibee_eye_feature_admitted` /
 `mibee_eye_resource_budget_mib` Prometheus gauges. Re-evaluated on restart.
 
+### [conversations] - Dialogue turn records (SPEC §3.4)
+
+Master switch for the human-readable dialogue log: every turn (voice or
+web chat) is persisted in SQLite — heard/input text, internal "thinking"
+entries (decision / cloud / VLM / LLM / TTS, failed fallback legs
+included) and the AI reply with its engine — served at
+`GET /api/conversations` and pushed live over SSE `conversation` events
+(assistant page "Conversation Log" card). FIFO-capped at 1000 turns;
+write failures never touch the conversation pipeline. `enabled = false`
+records nothing and hides the card (privacy switch).
+
+```toml
+[conversations]
+enabled = true
+```
+
+### [desktop] - Tray icon & desktop notifications (SPEC appendix A #42)
+
+Desktop-session presence for hosts with a GUI. All fail-open: without a
+session bus (`DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`) the
+whole feature is skipped with one log line — headless servers are
+unaffected. The tray shows a camera icon; left-click (or the menu entry)
+opens the web UI via `xdg-open` (prefers `web.http_port` when set, else
+the TLS port). Notifications fire on every accepted alarm rising edge
+(visual / sound / zone); the first failed send (no notification daemon)
+latches them off for the run.
+
+```toml
+[desktop]
+tray = true                # StatusNotifierItem tray icon
+notifications = true       # desktop notifications on alarm edges
+notify_conversations = false  # also notify on completed voice replies
+```
+
+
 ### [observability] - Monitoring and Logging
 
 Configure OpenTelemetry tracing, application logging, and optional remote log shipping.
