@@ -145,6 +145,26 @@ configured.
 List item: `{"id","origin":"chat"|"voice","started_at_ms","duration_ms","turns","models":[...],"status":"ok"|"partial"|"error","open"}`.
 Span object: `{"span_id","parent_id","model","variant","label","start_ms","duration_ms","cpu_ms","status","tokens_prompt","tokens_completion","attributes"}`.
 
+### Conversation records (SPEC §3.4)
+
+The human-readable dialogue turn log — what the user said (HTTP prompt or
+ASR transcript), what the device "thought" (one summary entry per internal
+model call or routing decision, failed fallback legs included), and what
+the AI replied with which engine. Voice interactions happen away from the
+browser; this is where they become visible. No-reply turns (decision said
+ignore) are honestly recorded with `reply_text: null`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/conversations?limit=` | Recent turns (default 50, cap 200), newest first |
+
+Turn object:
+`{"id","conversation_id","origin":"voice"|"http","started_ms","user_text","thinking":[{"source","model","note","duration_ms"}],"reply_text","engine":"cloud"|"local"|"vlm"|null}`.
+Every finished turn also rides the SSE `conversation` event (gated by the
+`conversations` capability). Stored in SQLite, FIFO-capped at 1000 turns;
+`[conversations] enabled = false` turns recording off entirely (privacy
+switch — the capability is not advertised either).
+
 ### Devices (SPEC §4.8)
 
 | Method | Path | Description |

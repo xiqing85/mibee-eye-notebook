@@ -160,6 +160,120 @@ pub async fn clear_hearing_records(pool: &SqlitePool) -> Result<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// Conversation records (SPEC v1 §3.4)
+// ---------------------------------------------------------------------------
+
+use crate::conversations::ConversationTurn;
+use crate::conversations::TurnDraft;
+
+/// FIFO cap applied on every insert (SPEC §3.4 storage semantics).
+pub const CONVERSATION_TURNS_CAP: i64 = 1000;
+
+/// Persist one finished dialogue turn, FIFO-pruning to `cap` rows, and
+/// return the row as stored (with its id). Fail-open at the call site:
+/// callers log the error and move on — the conversation pipeline is
+/// never touched by recording failures.
+pub async fn insert_conversation_turn_with_cap(
+    pool: &SqlitePool,
+    draft: TurnDraft,
+    cap: i64,
+) -> Result<ConversationTurn> {
+    let turn = draft.into_turn(0);
+    let thinking_json = serde_json::to_string(&turn.thinking).unwrap_or_else(|_| "[]".to_string());
+    let mut tx = pool.begin().await.context("conversation turn: begin")?;
+    sqlx::query(
+        "INSERT INTO conversation_turns (conversation_id, origin, started_ms, user_text, thinking_json, reply_text, engine) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(&turn.conversation_id)
+    .bind(&turn.origin)
+    .bind(turn.started_ms)
+    .bind(&turn.user_text)
+    .bind(&thinking_json)
+    .bind(&turn.reply_text)
+    .bind(&turn.engine)
+    .execute(&mut *tx)
+    .await
+    .context("conversation turn: insert")?;
+    let (id,): (i64,) = sqlx::query_as("SELECT last_insert_rowid()")
+        .fetch_one(&mut *tx)
+        .await
+        .context("conversation turn: rowid")?;
+    sqlx::query(&format!(
+        "DELETE FROM conversation_turns WHERE id NOT IN \
+         (SELECT id FROM conversation_turns ORDER BY id DESC LIMIT {cap})"
+    ))
+    .execute(&mut *tx)
+    .await
+    .context("conversation turn: prune")?;
+    tx.commit().await.context("conversation turn: commit")?;
+    Ok(ConversationTurn { id, ..turn })
+}
+
+/// [`insert_conversation_turn_with_cap`] at the production cap.
+pub async fn insert_conversation_turn(
+    pool: &SqlitePool,
+    draft: TurnDraft,
+) -> Result<ConversationTurn> {
+    insert_conversation_turn_with_cap(pool, draft, CONVERSATION_TURNS_CAP).await
+}
+
+/// Row shape for [`ConversationTurn`] (thinking is stored as JSON).
+type ConversationTurnRow = (
+    i64,
+    String,
+    String,
+    i64,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
+/// List conversation turns, newest first (SPEC §3.4: `limit` default 50,
+/// cap 200). Thinking entries decode from their JSON column.
+pub async fn list_conversation_turns(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<ConversationTurn>> {
+    let limit = limit.clamp(1, 200);
+    let rows: Vec<ConversationTurnRow> = sqlx::query_as(
+        "SELECT id, conversation_id, origin, started_ms, user_text, thinking_json, reply_text, engine \
+         FROM conversation_turns ORDER BY id DESC LIMIT ?1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .context("conversation turn: list")?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                conversation_id,
+                origin,
+                started_ms,
+                user_text,
+                thinking_json,
+                reply_text,
+                engine,
+            )| {
+                ConversationTurn {
+                    id,
+                    conversation_id,
+                    origin,
+                    started_ms,
+                    user_text,
+                    thinking: serde_json::from_str(&thinking_json).unwrap_or_default(),
+                    reply_text,
+                    engine,
+                }
+            },
+        )
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
 // Voiceprint speaker profiles (SPEC appendix A notebook dialect #25)
 // ---------------------------------------------------------------------------
 

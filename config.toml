@@ -246,3 +246,30 @@ enabled = false
 # feature_gate = "auto"
 # reserve_mib = 512
 # auto_tier = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conversation records (`[conversations]`, SPEC §3.4): the human-readable
+# dialogue turn log — heard/input text, internal "thinking" entries (one
+# per model call or routing decision, failed fallback legs included) and
+# the AI reply with its engine. Persisted in SQLite (FIFO, newest 1000
+# turns), served at GET /api/conversations + live SSE `conversation`
+# events, shown in the assistant page "Conversation Log" card. Set
+# enabled = false to record nothing and hide the card (privacy switch).
+[conversations]
+# enabled = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Desktop integration (`[desktop]`, SPEC appendix A #42): tray icon +
+# desktop notifications when the service runs on a Linux host WITH a
+# desktop session. All fail-open — a headless server skips everything
+# with one log line and behaves exactly as before.
+# - tray: StatusNotifierItem icon; left-click or menu opens the web UI
+#   (xdg-open; prefers web.http_port when set, else the TLS port).
+# - notifications: desktop notification on every accepted alarm rising
+#   edge (visual "检测到 N 个目标" / sound "听到：Dog" / zone events).
+# - notify_conversations: also notify when a voice reply completes
+#   (body = reply excerpt). Off by default — the reply is already spoken.
+[desktop]
+# tray = true
+# notifications = true
+# notify_conversations = false

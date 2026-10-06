@@ -162,6 +162,13 @@ pub enum CameraEvent {
         description: String,
         elapsed_s: f64,
     },
+    /// A dialogue turn finished (SPEC v1 §3.4 `conversation`): the full
+    /// record — heard/input text, internal thinking entries, reply and
+    /// engine. No-reply turns ride the same event with `reply_text:null`.
+    ConversationRecord {
+        #[serde(flatten)]
+        turn: crate::conversations::ConversationTurn,
+    },
 }
 
 /// Type alias for the broadcast sender used to fan out camera events.
@@ -384,6 +391,9 @@ fn event_to_sse(event: CameraEvent) -> Event {
             })
             .to_string(),
         ),
+        CameraEvent::ConversationRecord { turn } => Event::default()
+            .event("conversation")
+            .data(serde_json::to_value(turn).unwrap_or_default().to_string()),
     }
 }
 

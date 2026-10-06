@@ -180,6 +180,27 @@ auto_tier = false       # 按可用内存选 LLM 档位模型
 `mibee_eye_feature_admitted` / `mibee_eye_resource_budget_mib` Prometheus
 gauge 输出。重启时按届时水位重算。
 
+### [conversations] - 对话记录（规范 §3.4）
+
+人读对话日志总开关：每轮对话（语音或网页）落 SQLite——听到/输入文本、内部"思考"条目（决策/云端/VLM/本地 LLM/TTS，含失败回落腿）与 AI 回复及引擎——经 `GET /api/conversations` 查询、SSE `conversation` 事件实时推送（助手页"对话记录"卡）。FIFO 封顶 1000 轮；写失败绝不影响对话管线。`enabled = false` 不记录且隐藏卡片（隐私开关）。
+
+```toml
+[conversations]
+enabled = true
+```
+
+### [desktop] - 托盘图标与桌面通知（规范附录 A #42）
+
+带桌面会话主机的本机存在感。全部 fail-open：无会话总线（`DBUS_SESSION_BUS_ADDRESS` 或 `$XDG_RUNTIME_DIR/bus`）整体跳过、仅记一行日志——headless 服务器零影响。托盘显示相机图标，左键（或菜单项）经 `xdg-open` 打开 Web 界面（优先 `web.http_port`，否则 TLS 端口）。每次告警上升沿（视觉/声音/区域）发桌面通知；首次发送失败（无通知守护）即在本轮运行内停用。
+
+```toml
+[desktop]
+tray = true                # StatusNotifierItem 托盘图标
+notifications = true       # 告警上升沿桌面通知
+notify_conversations = false  # 语音回复完成时也通知
+```
+
+
 ### [observability] - 监控和日志记录
 
 配置 OpenTelemetry 跟踪、应用程序日志记录和可选的远程日志推送。

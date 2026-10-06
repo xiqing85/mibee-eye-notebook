@@ -2083,3 +2083,18 @@ input[type="range"]::-moz-range-thumb {
 .res-cost { font-size: 11.5px; color: var(--text-faint); flex: none; }
 .res-reason { font-size: 11px; color: var(--text-faint); flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .res-row-off .res-name { color: var(--text-faint); }
+
+/* Conversation records card (SPEC §3.4) */
+.convlog-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.conv-turn { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
+.conv-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-faint); }
+.conv-head .state-pill { margin-left: auto; }
+.conv-user, .conv-reply { font-size: 13px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.conv-reply { background: var(--accent-soft, rgba(59,130,246,.07)); border-radius: 8px; padding: 6px 9px; }
+.conv-label { display: inline-block; font-size: 11px; font-weight: 700; color: var(--text-faint); margin-right: 6px; }
+.conv-thinking-toggle { align-self: flex-start; }
+.conv-thinking { display: flex; flex-direction: column; gap: 4px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.conv-think-entry { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.conv-think-src { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--accent-text, #3b82f6); }
+.conv-think-note { flex: 1; min-width: 0; color: var(--text-faint); line-height: 1.4; word-break: break-word; }
+.conv-think-dur { flex: none; font-size: 11px; color: var(--text-faint); }

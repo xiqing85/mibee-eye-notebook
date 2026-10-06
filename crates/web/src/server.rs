@@ -96,6 +96,10 @@ pub struct AppRouterState {
     /// Online AI via OpenRouter (SPEC §4.10) — live config, hot-swapped
     /// by PUT /api/cloud.
     pub cloud: Arc<crate::cloud::CloudAi>,
+    /// Dialogue turn record sink (SPEC v1 §3.4) — shared by the HTTP
+    /// chat route, the voice bridge, the capabilities document and the
+    /// record list endpoint.
+    pub conversations: Arc<crate::conversations::ConversationLog>,
 }
 
 impl AppRouterState {
@@ -222,6 +226,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     };
     let llm_tier = state.llm_tier.clone();
     let resource = state.resource.clone();
+    let conversations = state.conversations.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -374,6 +379,11 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             "/api/traces/conversations/{id}",
             get(routes::traces::get_conversation),
         )
+        // Dialogue turn records (SPEC v1 §3.4)
+        .route(
+            "/api/conversations",
+            get(routes::conversations::list_conversations),
+        )
         // Protocol runtime status stays as a device extension (dialect A7).
         .route(
             "/api/protocols/runtime-status",
@@ -448,6 +458,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(state.restart_tx.clone()))
         .layer(Extension(state.models.clone()))
         .layer(Extension(state.cloud.clone()))
+        .layer(Extension(conversations))
         .layer(Extension(meeting))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
@@ -472,6 +483,12 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
 ///
 /// Provided for backward compatibility with existing tests.
 pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Router {
+    let event_tx = Arc::new(routes::events::new_event_bus());
+    let conversations = Arc::new(crate::conversations::ConversationLog::new(
+        db.clone(),
+        event_tx.clone(),
+        true,
+    ));
     build_app_with_state(AppRouterState {
         db,
         auth_db,
@@ -480,7 +497,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
         protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
-        event_tx: Arc::new(routes::events::new_event_bus()),
+        event_tx,
         advertised_host: Arc::new("localhost".to_string()),
         ai: Arc::new(streaming::ai::AiEngine::from_parts(
             streaming::ai::AiConfig::default(),
@@ -524,6 +541,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         )),
         models: AppRouterState::models_cloud_for_tests().0,
         cloud: AppRouterState::models_cloud_for_tests().1,
+        conversations,
     })
 }
 
@@ -546,6 +564,12 @@ pub async fn test_app_with_user() -> Router {
     .expect("Failed to seed test user");
     drop(conn);
 
+    let event_tx = Arc::new(routes::events::new_event_bus());
+    let conversations = Arc::new(crate::conversations::ConversationLog::new(
+        pool.clone(),
+        event_tx.clone(),
+        true,
+    ));
     crate::server::build_app_with_state(AppRouterState {
         db: pool,
         auth_db,
@@ -554,7 +578,7 @@ pub async fn test_app_with_user() -> Router {
         rtsp_server: Arc::new(RtspServer::new(RtspServerConfig::default())),
         protocol_configs: Arc::new(Mutex::new(HashMap::new())),
         protocol_runtime: Arc::new(Mutex::new(ProtocolRuntime::new())),
-        event_tx: Arc::new(routes::events::new_event_bus()),
+        event_tx,
         advertised_host: Arc::new("localhost".to_string()),
         ai: Arc::new(streaming::ai::AiEngine::from_parts(
             streaming::ai::AiConfig::default(),
@@ -598,6 +622,7 @@ pub async fn test_app_with_user() -> Router {
         )),
         models: AppRouterState::models_cloud_for_tests().0,
         cloud: AppRouterState::models_cloud_for_tests().1,
+        conversations,
     })
 }
 
@@ -804,6 +829,12 @@ pub async fn run(
     let wake_word = Arc::new(crate::routes::capabilities::WakeWord(
         streaming::voice::DEFAULT_WAKE_WORD.into(),
     ));
+    let event_tx = Arc::new(routes::events::new_event_bus());
+    let conversations = Arc::new(crate::conversations::ConversationLog::new(
+        db.clone(),
+        event_tx.clone(),
+        true,
+    ));
     let state = AppRouterState {
         db,
         auth_db,
@@ -812,7 +843,7 @@ pub async fn run(
         rtsp_server,
         protocol_configs,
         protocol_runtime,
-        event_tx: Arc::new(routes::events::new_event_bus()),
+        event_tx,
         advertised_host: Arc::new(advertised_host),
         ai,
         audio_ai,
@@ -832,6 +863,7 @@ pub async fn run(
         restart_tx,
         models,
         cloud,
+        conversations,
     };
     let app = build_app_with_state(state);
 
@@ -906,6 +938,7 @@ pub async fn run_with_shutdown(
     restart_tx: watch::Sender<bool>,
     models: Arc<routes::models_api::ModelManager>,
     cloud: Arc<crate::cloud::CloudAi>,
+    conversations: Arc<crate::conversations::ConversationLog>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -949,6 +982,7 @@ pub async fn run_with_shutdown(
         restart_tx,
         models,
         cloud,
+        conversations,
     };
     let app = build_app_with_state(state);
 

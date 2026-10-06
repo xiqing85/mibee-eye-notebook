@@ -265,6 +265,11 @@ const DICT = {
     tracesTitle: '对话调用链', tracesDesc: '每次对话经过的模型、调用顺序与资源消耗转移',
     tracesEmpty: '暂无对话记录', tracesRefresh: '刷新',
     traceOriginChat: '对话', traceOriginVoice: '语音', traceTurns: '轮',
+    // Conversation records (SPEC §3.4)
+    convTitle: '对话记录', convDesc: '每轮对话的完整记录：听到的内容、内部思考过程与 AI 回复（含无回复轮）',
+    convEmpty: '暂无对话记录', convRefresh: '刷新',
+    convHeard: '听到', convAsked: '输入', convReply: '回复',
+    convNoReply: '无回复', convThinking: '思考过程', convHideThinking: '收起思考',
     // Resource profile (SPEC appendix A #40)
     resTitle: '资源档位', resDesc: '启动时按可用内存做预算制功能准入——小内存主机会自动裁剪重模型，重启后按届时水位重算',
     resModeAuto: '自动适配', resModeAll: '全量启动',
@@ -531,6 +536,11 @@ const DICT = {
     tracesTitle: 'Call Chains', tracesDesc: 'Models, call order and resource consumption per conversation',
     tracesEmpty: 'No conversations yet', tracesRefresh: 'Refresh',
     traceOriginChat: 'Chat', traceOriginVoice: 'Voice', traceTurns: 'turns',
+    // Conversation records (SPEC §3.4)
+    convTitle: 'Conversation Log', convDesc: 'Full record of each turn: what was heard, the internal thinking, and the AI reply (no-reply turns included)',
+    convEmpty: 'No conversation turns yet', convRefresh: 'Refresh',
+    convHeard: 'Heard', convAsked: 'Input', convReply: 'Reply',
+    convNoReply: 'No reply', convThinking: 'Thinking', convHideThinking: 'Hide thinking',
     // Resource profile (SPEC appendix A #40)
     resTitle: 'Resource Profile', resDesc: 'AI features are admitted against the boot-time memory budget — small hosts shed heavy models automatically; re-evaluated on restart',
     resModeAuto: 'Auto', resModeAll: 'All on',

@@ -4,6 +4,35 @@
 
 ### Added
 
+- **Conversation records (SPEC v1 §3.4 + appendix A #41).** A persistent,
+  human-readable log of every dialogue turn — voice utterances and web
+  chats alike. Each turn carries the heard/input text, one "thinking"
+  entry per internal model call or routing decision (decision triage,
+  cloud chat/vision with their failure-and-fallback legs, local VLM/LLM
+  with token counts, TTS playback), and the AI reply with the engine
+  that produced it; no-reply turns (decision said ignore) are honestly
+  recorded with `reply_text: null`. Served at `GET /api/conversations`
+  (SQLite, FIFO-capped at 1000) and pushed live as SSE `conversation`
+  events; the assistant page gains a "Conversation Log" card with
+  collapsible thinking entries (capability-gated, negative-compatible).
+  `[conversations] enabled = false` turns recording off entirely
+  (privacy switch).
+
+- **Desktop integration: tray icon + notifications (SPEC appendix A
+  #42).** On Linux hosts with a desktop session (session-bus probe:
+  `DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`) the service now
+  shows a StatusNotifierItem tray icon (left-click/menu opens the web UI
+  via `xdg-open`, preferring `web.http_port` when set) and fires desktop
+  notifications on every accepted alarm rising edge (visual / sound /
+  zone); `notify_conversations` additionally notifies on completed
+  voice replies. Pure-Rust D-Bus (ksni + notify-rust, zbus — no libdbus
+  C library). Entirely fail-open: headless servers skip the feature with
+  one log line. The service typically starts before the user logs in, so
+  the tray keeps retrying registration every 60 s until a desktop
+  session appears, and a failed notification pauses its channel and
+  re-arms after 10 minutes — both come alive with the session, without
+  log spam.
+
 - **Boot-time feature resource gating (SPEC appendix A #40).** Small-memory
   hosts no longer launch every AI feature: `[resources] feature_gate = "auto"`
   (the default) estimates each enabled feature's resident cost from its model

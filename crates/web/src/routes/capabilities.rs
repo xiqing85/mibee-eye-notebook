@@ -64,6 +64,7 @@ pub async fn get_capabilities(
     Extension(vlm): Extension<Arc<streaming::vlm::VlmEngine>>,
     Extension(stream_manager): Extension<Arc<crate::stream_manager::StreamManager>>,
     Extension(_protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
+    Extension(convlog): Extension<Arc<crate::conversations::ConversationLog>>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
     static CACHE: std::sync::OnceLock<CapabilitiesResponse> = std::sync::OnceLock::new();
@@ -96,6 +97,10 @@ pub async fn get_capabilities(
     }
     if voice.is_active() {
         events.push("voice_transcript");
+    }
+    // Dialogue turn records (SPEC §3.4): one SSE event per finished turn.
+    if convlog.is_enabled() {
+        events.push("conversation");
     }
     // Meeting lifecycle (SPEC appendix A #27).
     if meeting.is_active() {
@@ -145,6 +150,8 @@ pub async fn get_capabilities(
         "voice_speakers": voice_speakers_capable(voice.is_active(), voice.speaker_capable()),
         // Local LLM dialogue (`POST /api/chat`).
         "chat": chat.is_active(),
+        // Dialogue turn records (SPEC §3.4) — the human-readable log.
+        "conversations": convlog.is_enabled(),
         // Resource tier the LLM booted into (#30-E).
         "llm_tier": llm_tier.0.as_str(),
         // Boot-time feature admission snapshot (appendix A #40):
@@ -223,6 +230,13 @@ fn observability_document() -> serde_json::Value {
 mod tests {
     use super::*;
 
+    /// In-memory pool for the ConversationLog fixture — capabilities only
+    /// reads its enabled flag, so migrations never run here.
+    async fn create_test_pool() -> sqlx::SqlitePool {
+        let (pool, _auth) = crate::db::create_test_dbs().await;
+        pool
+    }
+
     #[test]
     fn capabilities_response_is_serialisable() {
         let system = probe();
@@ -277,6 +291,11 @@ mod tests {
             Extension(Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             ))),
+            Extension(Arc::new(crate::conversations::ConversationLog::new(
+                create_test_pool().await,
+                Arc::new(crate::routes::events::new_event_bus()),
+                true,
+            ))),
             Extension(security::middleware::AuthenticatedUser("admin".to_string())),
         )
         .await
@@ -286,6 +305,14 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["watermark"], serde_json::json!(true));
+        // Conversation records (SPEC §3.4) advertise when enabled.
+        assert_eq!(json["conversations"], serde_json::json!(true));
+        assert!(
+            json["events"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("conversation"))
+        );
         // No active streams → substream capability false (SPEC appendix
         // A #20: it follows an active substream pipeline, not the config).
         assert_eq!(json["substream"], serde_json::json!(false));

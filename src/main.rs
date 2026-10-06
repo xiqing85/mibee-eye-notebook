@@ -451,6 +451,22 @@ async fn main() -> anyhow::Result<()> {
     // hot-plug monitor share one bus with the web server.
     let event_tx = Arc::new(web::routes::events::new_event_bus());
 
+    // Conversation records (SPEC §3.4): the shared dialogue-turn sink for
+    // the HTTP chat route, the voice bridge and the record list endpoint.
+    let conversations_log = Arc::new(web::conversations::ConversationLog::new(
+        pool.clone(),
+        Arc::clone(&event_tx),
+        config.conversations.enabled,
+    ));
+
+    // Desktop integration (SPEC appendix A #42): tray icon + desktop
+    // notifications — no-ops without a desktop session (fail-open).
+    let desktop = mibee_eye::desktop::Desktop::new(&config.desktop);
+    mibee_eye::desktop::spawn_tray(
+        &config.desktop,
+        &mibee_eye::desktop::web_ui_url(config.web.http_port, config.web.port),
+    );
+
     // AI detection engine (fail-open: a missing model / ONNX Runtime library
     // leaves it inactive; the service runs on without AI).
     // The runtime model choice (SPEC §4.6 activate) persists as a db
@@ -538,6 +554,7 @@ async fn main() -> anyhow::Result<()> {
         let notifier_slot = Arc::clone(&notifier_slot);
         let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
         let onvif_events_slot = Arc::clone(&onvif_events_slot);
+        let desktop_ai_alarm = Arc::clone(&desktop);
         tokio::spawn(async move {
             loop {
                 match ai_events.recv().await {
@@ -628,6 +645,9 @@ async fn main() -> anyhow::Result<()> {
                                 class: None,
                                 score: None,
                             });
+                            // Desktop notification rides the same accepted
+                            // edge (SPEC appendix A #42; no-op headless).
+                            desktop_ai_alarm.notify_alarm("ai", sig.targets, None);
                             // VLM description of the triggering frame (SPEC
                             // appendix A #23): the alarm never waits for it —
                             // the description arrives as its own SSE event.
@@ -949,6 +969,7 @@ async fn main() -> anyhow::Result<()> {
         let grounding_sound = Arc::clone(&grounding_state);
         let sound_pool_for_scene = pool.clone();
         let streams_for_sound = Arc::clone(&segment_registry);
+        let desktop_sound_alarm = Arc::clone(&desktop);
         tokio::spawn(async move {
             loop {
                 match sound_events.recv().await {
@@ -1000,6 +1021,8 @@ async fn main() -> anyhow::Result<()> {
                             class: Some(ev.class.clone()),
                             score: Some(ev.score),
                         });
+                        // Desktop notification (SPEC appendix A #42).
+                        desktop_sound_alarm.notify_alarm("audio", 1, Some(&ev.class));
                         if alarm_notify_gate.load(std::sync::atomic::Ordering::SeqCst) {
                             let notifier =
                                 notifier_slot.lock().expect("gb notifier slot lock").clone();
@@ -1056,6 +1079,7 @@ async fn main() -> anyhow::Result<()> {
         let grounding_zones = Arc::clone(&grounding_state);
         let notifier_slot = Arc::clone(&notifier_slot);
         let alarm_notify_gate = Arc::clone(&alarm_notify_gate);
+        let desktop_zone_alarm = Arc::clone(&desktop);
         tokio::spawn(async move {
             let mut engines: HashMap<String, streaming::ai::zones::ZoneEngine> = HashMap::new();
             loop {
@@ -1106,6 +1130,8 @@ async fn main() -> anyhow::Result<()> {
                                 label: ze.label.clone(),
                                 timestamp_ms: ze.timestamp_ms,
                             });
+                            // Desktop notification (SPEC appendix A #42).
+                            desktop_zone_alarm.notify_alarm("zone", 1, Some(&ze.zone));
                             if alarm_notify_gate.load(std::sync::atomic::Ordering::SeqCst) {
                                 let notifier =
                                     notifier_slot.lock().expect("gb notifier slot lock").clone();
@@ -1143,6 +1169,8 @@ async fn main() -> anyhow::Result<()> {
         let chat_for_voice = chat_engine.clone();
         let cloud_for_voice = cloud_ai.clone();
         let decision_for_voice = decision_engine.clone();
+        let convlog_for_voice = Arc::clone(&conversations_log);
+        let desktop_for_voice = Arc::clone(&desktop);
         let grounding_for_voice = Arc::clone(&grounding_state);
         let streams_for_voice = Arc::clone(&segment_registry);
         let tools_for_voice = Arc::clone(&shared_tools);
@@ -1239,6 +1267,16 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }
                         };
+                        // Conversation record (SPEC §3.4): one turn per
+                        // utterance — finished on every exit path below
+                        // (reply, ignore decision, or failure). The draft
+                        // collects the internal "thinking" entries as the
+                        // legs run.
+                        let mut draft = web::conversations::TurnDraft::new(
+                            web::conversations::TurnOrigin::Voice,
+                            conv.id(),
+                        )
+                        .user_text(ev.transcript.clone());
                         // Decision triage (SPEC appendix A #26): one Laya
                         // typed decision classifies the transcript before
                         // any local-LLM tokens are spent. `ignore` skips
@@ -1253,6 +1291,7 @@ async fn main() -> anyhow::Result<()> {
                             let ts = ev.timestamp_ms;
                             let mut decision_span =
                                 conv.span("decision", "laya", "意图决策", vec![]);
+                            let decision_started = std::time::Instant::now();
                             let decision = match decision_span
                                 .run(tokio::task::spawn_blocking(move || {
                                     engine
@@ -1288,12 +1327,23 @@ async fn main() -> anyhow::Result<()> {
                             if let Some((d, transcript, ts)) = decision {
                                 tracing::info!(
                                     choice = %d.label,
-                                    confidence = %d.confidence,
+                                    confidence = d.confidence,
                                     "decision: voice triage"
                                 );
                                 skip_reply = streaming::decision::triage_skips_reply(
                                     &d.label,
                                     &ev.transcript,
+                                );
+                                let mut decision_note =
+                                    format!("意图={}（置信度 {:.2}）", d.label, d.confidence);
+                                if skip_reply {
+                                    decision_note.push_str(" → 不回复");
+                                }
+                                draft = draft.think(
+                                    "decision",
+                                    "laya",
+                                    decision_note,
+                                    decision_started.elapsed().as_millis() as u64,
                                 );
                                 let _ = tx_for_decision.send(
                                     web::routes::events::CameraEvent::VoiceDecision {
@@ -1362,14 +1412,20 @@ async fn main() -> anyhow::Result<()> {
                             let user_turn = ev.transcript.clone();
                             let conv_for_answer = conv.clone();
                             let conv_for_reply = conv.clone();
+                            let convlog_for_reply = Arc::clone(&convlog_for_voice);
+                            let desktop_for_conversation = Arc::clone(&desktop_for_voice);
                             // Answer path (SPEC §4.10): the cloud answers
                             // first when configured — same persona/grounding
                             // system turn — and the local model is the
                             // fallback (or the only path when cloud is off).
                             // Each model call opens a conversation span
                             // (SPEC §3.3) — the fallback keeps the failed
-                            // cloud span visible in the chain.
+                            // cloud span visible in the chain. The record
+                            // draft rides along (SPEC §3.4): success
+                            // returns it with the reply; failure returns it
+                            // with the error thinking note appended.
                             let answer = async move {
+                                let mut draft = draft;
                                 if cloud.enabled() {
                                     let model_id = cloud.config().chat_model.clone();
                                     let mut span = conv_for_answer.span(
@@ -1378,21 +1434,43 @@ async fn main() -> anyhow::Result<()> {
                                         "云端应答",
                                         vec![],
                                     );
+                                    let leg_start = std::time::Instant::now();
                                     match span
                                         .run(cloud.complete_with_usage(&turns, None, None, None))
                                         .await
                                     {
                                         Ok((reply, usage)) => {
+                                            let dur = leg_start.elapsed().as_millis() as u64;
                                             span.tokens(usage.map(|u| u.0), usage.map(|u| u.1))
                                                 .finish_ok();
-                                            return Ok(reply);
+                                            let note = match usage {
+                                                Some((p, c)) => {
+                                                    format!("云端应答 · {p}↑/{c}↓ tok")
+                                                }
+                                                None => "云端应答".to_string(),
+                                            };
+                                            draft = draft.think("cloud.chat", &model_id, note, dur);
+                                            return Ok((draft, reply, "cloud"));
                                         }
                                         Err(e) => {
+                                            let dur = leg_start.elapsed().as_millis() as u64;
                                             span.finish_err();
                                             tracing::warn!(error = %e, "cloud: voice reply failed — falling back to local llm");
                                             if !cloud.config().fallback_local {
-                                                return Err(format!("cloud: {e}"));
+                                                draft = draft.think(
+                                                    "cloud.chat",
+                                                    &model_id,
+                                                    format!("云端失败：{e}（不回落）"),
+                                                    dur,
+                                                );
+                                                return Err(draft);
                                             }
+                                            draft = draft.think(
+                                                "cloud.chat",
+                                                &model_id,
+                                                format!("云端失败：{e} — 回落本地"),
+                                                dur,
+                                            );
                                         }
                                     }
                                 }
@@ -1401,6 +1479,7 @@ async fn main() -> anyhow::Result<()> {
                                     conv_for_answer.span("llm", &variant, "本地应答", vec![]);
                                 let engine = engine.clone();
                                 let turns = turns.clone();
+                                let leg_start = std::time::Instant::now();
                                 match span
                                     .run(tokio::task::spawn_blocking(move || {
                                         engine.complete_with_usage(&turns)
@@ -1408,23 +1487,46 @@ async fn main() -> anyhow::Result<()> {
                                     .await
                                 {
                                     Ok(Ok((reply, prompt_tokens, completion_tokens))) => {
+                                        let dur = leg_start.elapsed().as_millis() as u64;
                                         span.tokens(Some(prompt_tokens), Some(completion_tokens))
                                             .finish_ok();
-                                        Ok(reply)
+                                        draft = draft.think(
+                                            "llm",
+                                            &variant,
+                                            format!(
+                                                "本地应答 · prompt {prompt_tokens}↑ / completion {completion_tokens}↓ tok"
+                                            ),
+                                            dur,
+                                        );
+                                        Ok((draft, reply, "local"))
                                     }
                                     Ok(Err(e)) => {
+                                        let dur = leg_start.elapsed().as_millis() as u64;
                                         span.finish_err();
-                                        Err(format!("llm: {e}"))
+                                        draft = draft.think(
+                                            "llm",
+                                            &variant,
+                                            format!("本地应答失败：{e}"),
+                                            dur,
+                                        );
+                                        Err(draft)
                                     }
                                     Err(e) => {
+                                        let dur = leg_start.elapsed().as_millis() as u64;
                                         span.finish_err();
-                                        Err(format!("llm task: {e}"))
+                                        draft = draft.think(
+                                            "llm",
+                                            &variant,
+                                            format!("本地应答任务失败：{e}"),
+                                            dur,
+                                        );
+                                        Err(draft)
                                     }
                                 }
                             };
                             tokio::spawn(async move {
                                 match answer.await {
-                                    Ok(reply) => {
+                                    Ok((mut draft, reply, engine_label)) => {
                                         // Extend the conversation session with
                                         // this Q/A pair (trimmed to the last 4
                                         // pairs = 8 turns).
@@ -1476,14 +1578,29 @@ async fn main() -> anyhow::Result<()> {
                                                 vec![],
                                             );
                                             voice_engine_for_reply.begin_playback_mute();
+                                            let tts_started = std::time::Instant::now();
                                             match span
                                                 .run(async { tts_for_reply.speak(&reply) })
                                                 .await
                                             {
-                                                Ok(_) => span.finish_ok(),
+                                                Ok(_) => {
+                                                    span.finish_ok();
+                                                    draft = draft.think(
+                                                        tts_model,
+                                                        "vits",
+                                                        "已播报",
+                                                        tts_started.elapsed().as_millis() as u64,
+                                                    );
+                                                }
                                                 Err(e) => {
                                                     span.finish_err();
                                                     tracing::warn!(error = %e, "tts: speak failed");
+                                                    draft = draft.think(
+                                                        tts_model,
+                                                        "vits",
+                                                        format!("播报失败：{e}"),
+                                                        tts_started.elapsed().as_millis() as u64,
+                                                    );
                                                 }
                                             }
                                             voice_engine_for_reply.end_playback_mute();
@@ -1493,17 +1610,32 @@ async fn main() -> anyhow::Result<()> {
                                         // reply finished playing — earlier would
                                         // let the mic capture our own TTS.
                                         voice_engine_for_reply.arm_follow_up();
+                                        // Desktop notification for the finished
+                                        // reply (opt-in, SPEC appendix A #42).
+                                        desktop_for_conversation.notify_conversation(&reply);
+                                        // Record the completed turn (SPEC §3.4)
+                                        // — persist + SSE `conversation`.
+                                        convlog_for_reply
+                                            .finish(draft.reply(reply.clone(), engine_label))
+                                            .await;
                                     }
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "voice auto-reply failed");
+                                    Err(draft) => {
+                                        tracing::warn!("voice auto-reply failed");
                                         conv_for_reply.close();
+                                        // The failed legs are already thinking
+                                        // notes on the draft — record the
+                                        // no-reply turn (SPEC §3.4).
+                                        convlog_for_reply.finish(draft).await;
                                     }
                                 }
                             });
                         } else {
                             // No reply path ran (decision said ignore, or
                             // the chat engine is inactive): the trace — at
-                            // most a decision span — ends here.
+                            // most a decision span — ends here. The record
+                            // keeps the decision note — no-reply turns are
+                            // honestly logged (SPEC §3.4).
+                            convlog_for_voice.finish(draft).await;
                             conv.close();
                         }
                     }
@@ -1868,6 +2000,7 @@ async fn main() -> anyhow::Result<()> {
         restart_tx,
         model_manager,
         cloud_ai.clone(),
+        conversations_log,
     )
     .await?;
 
