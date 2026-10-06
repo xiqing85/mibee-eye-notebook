@@ -27,8 +27,11 @@
   zone); `notify_conversations` additionally notifies on completed
   voice replies. Pure-Rust D-Bus (ksni + notify-rust, zbus — no libdbus
   C library). Entirely fail-open: headless servers skip the feature with
-  one log line; the first failed notification send latches notifications
-  off for the run.
+  one log line. The service typically starts before the user logs in, so
+  the tray keeps retrying registration every 60 s until a desktop
+  session appears, and a failed notification pauses its channel and
+  re-arms after 10 minutes — both come alive with the session, without
+  log spam.
 
 - **Boot-time feature resource gating (SPEC appendix A #40).** Small-memory
   hosts no longer launch every AI feature: `[resources] feature_gate = "auto"`

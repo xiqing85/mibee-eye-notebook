@@ -31,6 +31,13 @@ pub fn session_bus_available() -> bool {
     session_bus_available_from(addr.as_deref(), xdg_bus.as_deref())
 }
 
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn truncate_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -82,13 +89,26 @@ pub fn web_ui_url(http_port: u16, tls_port: u16) -> String {
     }
 }
 
-/// Notification fanout. The first failed send (no notification daemon /
-/// bus gone) latches the feature off — a headless host must not spam
-/// the log on every alarm.
+/// Notification fanout. A failed send (no notification daemon yet — the
+/// service may start before the user logs in) pauses notifications and
+/// re-arms after [`NOTIFY_RETRY_AFTER_SECS`], so the feature comes alive
+/// with the desktop session without spamming the log on every alarm.
 pub struct Desktop {
     notifications_on: bool,
     notify_conversations: bool,
     available: Arc<AtomicBool>,
+    /// Unix-ms instant after which a latched-off sender re-arms.
+    retry_at_ms: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// How long a failed notification channel stays quiet before re-arming.
+const NOTIFY_RETRY_AFTER_SECS: u64 = 600;
+
+/// Pure gate for the lazy re-arm (unit-tested): attempt when armed, or
+/// when the retry cooldown elapsed.
+#[must_use]
+pub fn should_attempt(available: bool, retry_at_ms: u64, now_ms: u64) -> bool {
+    available || now_ms >= retry_at_ms
 }
 
 impl Desktop {
@@ -102,15 +122,21 @@ impl Desktop {
             notifications_on,
             notify_conversations: config.notify_conversations,
             available: Arc::new(AtomicBool::new(notifications_on)),
+            retry_at_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
     /// Fire one desktop notification (spawned; never blocks the caller).
     fn notify(&self, summary: String, body: String) {
-        if !self.available.load(Ordering::Relaxed) {
+        if !should_attempt(
+            self.available.load(Ordering::Relaxed),
+            self.retry_at_ms.load(Ordering::Relaxed),
+            unix_now_ms(),
+        ) {
             return;
         }
         let available = Arc::clone(&self.available);
+        let retry_at_ms = Arc::clone(&self.retry_at_ms);
         tokio::spawn(async move {
             let sent = Notification::new()
                 .summary(&summary)
@@ -119,10 +145,18 @@ impl Desktop {
                 .show_async()
                 .await;
             if sent.is_err() {
-                // No notifications daemon (or the bus died): latch off
-                // instead of erroring on every subsequent event.
+                // No notifications daemon (yet): pause and re-arm after
+                // the cooldown — the user may log in later.
                 available.store(false, Ordering::Relaxed);
-                tracing::info!("desktop: notification send failed — disabled for this run");
+                retry_at_ms.store(
+                    unix_now_ms() + NOTIFY_RETRY_AFTER_SECS * 1000,
+                    Ordering::Relaxed,
+                );
+                tracing::info!(
+                    "desktop: notification send failed — retrying in {NOTIFY_RETRY_AFTER_SECS}s"
+                );
+            } else {
+                available.store(true, Ordering::Relaxed);
             }
         });
     }
@@ -220,16 +254,31 @@ pub fn spawn_tray(config: &DesktopConfig, url: &str) {
         tracing::info!("desktop: no session bus — tray skipped (headless host)");
         return;
     }
-    let tray = MiBeeTray {
-        url: url.to_string(),
-    };
+    let url = url.to_string();
     tokio::spawn(async move {
         use ksni::TrayMethods;
-        match tray.spawn().await {
-            Ok(_handle) => tracing::info!("desktop: tray icon started"),
-            Err(e) => {
-                tracing::info!(error = %e, "desktop: tray unavailable (fail-open)")
+        // The service often starts before the user logs in (boot /
+        // lingering user manager); keep retrying so the tray appears
+        // once a desktop session does. One attempt per minute is a
+        // single D-Bus round trip.
+        let mut first_failure = true;
+        loop {
+            let tray = MiBeeTray { url: url.clone() };
+            match tray.spawn().await {
+                Ok(_handle) => {
+                    tracing::info!("desktop: tray icon started");
+                    return;
+                }
+                Err(e) => {
+                    if first_failure {
+                        tracing::info!(error = %e, "desktop: tray unavailable yet — retrying every 60s (fail-open)");
+                        first_failure = false;
+                    } else {
+                        tracing::debug!(error = %e, "desktop: tray retry failed");
+                    }
+                }
             }
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         }
     });
 }
@@ -274,6 +323,16 @@ mod tests {
     fn conversation_notification_truncates_body() {
         let (_, b) = conversation_notification(&"很".repeat(300));
         assert_eq!(b.chars().count(), NOTIFY_BODY_MAX_CHARS);
+    }
+
+    #[test]
+    fn notification_rearm_gate_truth_table() {
+        // Armed → always attempt.
+        assert!(should_attempt(true, u64::MAX, 0));
+        // Latched off, cooldown active → skip.
+        assert!(!should_attempt(false, 1_000_000, 999_999));
+        // Cooldown elapsed → re-arm attempt.
+        assert!(should_attempt(false, 1_000_000, 1_000_000));
     }
 
     #[test]
