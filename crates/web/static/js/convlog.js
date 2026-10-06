@@ -7,7 +7,7 @@
 
 import { api } from './api.js';
 import { store } from './store.js';
-import { $, esc } from './ui.js';
+import { $, esc, confirmDlg } from './ui.js';
 import { t } from './i18n.js';
 
 let turns = [];
@@ -112,4 +112,13 @@ export function initConvLog() {
   if (card) card.classList.toggle('hidden', !convLogCap());
   const btn = $('convlog-refresh');
   if (btn) btn.addEventListener('click', () => refreshConvLog());
+  const clear = $('convlog-clear');
+  if (clear) {
+    clear.addEventListener('click', async () => {
+      const ok = await confirmDlg({ message: t('convClearConfirm'), danger: true });
+      if (!ok) return;
+      const r = await api.del('/api/conversations');
+      if (r.ok) refreshConvLog();
+    });
+  }
 }

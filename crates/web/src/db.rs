@@ -273,6 +273,16 @@ pub async fn list_conversation_turns(
         .collect())
 }
 
+/// Delete every conversation turn; returns the number of rows removed
+/// (SPEC §3.4 clear-all, `hearing_records` precedent).
+pub async fn clear_conversation_turns(pool: &SqlitePool) -> Result<usize> {
+    let result = sqlx::query("DELETE FROM conversation_turns")
+        .execute(pool)
+        .await
+        .context("conversation turn: clear")?;
+    Ok(result.rows_affected() as usize)
+}
+
 // ---------------------------------------------------------------------------
 // Voiceprint speaker profiles (SPEC appendix A notebook dialect #25)
 // ---------------------------------------------------------------------------
