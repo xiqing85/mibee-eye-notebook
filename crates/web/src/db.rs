@@ -709,6 +709,83 @@ pub fn init_auth_db(path: &str) -> Result<Connection> {
     Ok(conn)
 }
 
+/// The migrations directory embedded at compile time — the complete,
+/// self-contained migration set that ships inside the binary. Deployed
+/// instances used to rely on a `migrations/` directory landing next to
+/// the binary (WorkingDirectory); forgetting to copy a new file made the
+/// new tables silently missing while inserts only WARNed (2026-10-06
+/// incident with `conversation_turns`). The embedded set is now the base
+/// and can never drift from the shipped code.
+static EMBEDDED_MIGRATIONS: include_dir::Dir =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/../../migrations");
+
+/// Site-local migrations dir overlay (first existing wins), letting a
+/// deployment add or shadow migrations without rebuilding. Same search
+/// order the disk-only implementation used:
+///   1. `migrations/` relative to the current working directory,
+///   2. the build-time path `{CARGO_MANIFEST_DIR}/../../migrations`,
+///   3. `/usr/local/share/mibee-eye/migrations` (Dockerfile install).
+fn local_migrations_dir() -> Option<std::path::PathBuf> {
+    let candidates = [
+        Path::new("migrations").to_path_buf(),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(|p| p.join("migrations"))
+            .unwrap_or_else(|| Path::new("migrations").to_path_buf()),
+        Path::new("/usr/local/share/mibee-eye/migrations").to_path_buf(),
+    ];
+    candidates.into_iter().find(|p| p.is_dir())
+}
+
+/// Parse a migration file name into `(version, name)`: "012_foo.sql" →
+/// `(12, "012_foo.sql")`. Non-conforming names are ignored.
+fn migration_number(name: &str) -> Option<i32> {
+    if !name.ends_with(".sql") {
+        return None;
+    }
+    name.split('_').next()?.parse().ok()
+}
+
+/// The full migration set: embedded files overlaid by any site-local
+/// dir entries, keyed by version number. Local files win on collision.
+fn collect_migrations() -> Vec<(i32, String, String)> {
+    use std::collections::BTreeMap;
+    let mut set: BTreeMap<i32, (String, String)> = BTreeMap::new();
+    for file in EMBEDDED_MIGRATIONS.files() {
+        let name = file
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if let Some(num) = migration_number(name) {
+            set.insert(
+                num,
+                (
+                    name.to_string(),
+                    file.contents_utf8().unwrap_or("").to_string(),
+                ),
+            );
+        }
+    }
+    if let Some(dir) = local_migrations_dir()
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(num) = migration_number(&name) else {
+                continue;
+            };
+            if let Ok(sql) = std::fs::read_to_string(entry.path()) {
+                set.insert(num, (name, sql));
+            }
+        }
+    }
+    set.into_iter()
+        .map(|(num, (name, sql))| (num, name, sql))
+        .collect()
+}
+
 /// Ensure the schema_version table exists, read current version, apply pending
 /// migrations, and update the version.
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -725,72 +802,16 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             .await
             .unwrap_or(0);
 
-    // Discover migration files: look for `{migrations_dir}/NNN_*.sql`.
-    //
-    // Resolution order (first existing dir wins):
-    //   1. `migrations/` relative to the current working directory — this is
-    //      what deployed instances use (WorkingDirectory=~/mibee-eye, with
-    //      migrations/ deployed alongside the binary).
-    //   2. The build-time path `{CARGO_MANIFEST_DIR}/../../migrations` — used
-    //      during `cargo run` from the source tree. In a deployed binary this
-    //      path points to the build container and won't exist, so we fall back.
-    //   3. `/usr/local/share/mibee-eye/migrations` — the container install
-    //      location baked into the Dockerfile.
-    let migrations_dir = {
-        let cwd_migrations = Path::new("migrations");
-        if cwd_migrations.is_dir() {
-            cwd_migrations.to_path_buf()
-        } else {
-            let build_time = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .and_then(Path::parent)
-                .map(|p| p.join("migrations"))
-                .unwrap_or_else(|| Path::new("migrations").to_path_buf());
-            if build_time.is_dir() {
-                build_time
-            } else {
-                Path::new("/usr/local/share/mibee-eye/migrations").to_path_buf()
-            }
-        }
-    };
-
-    if !migrations_dir.exists() {
-        // No migrations directory — nothing to do
-        return Ok(());
-    }
-
-    let mut entries: Vec<_> = std::fs::read_dir(&migrations_dir)
-        .context("Failed to read migrations directory")?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "sql")
-                .unwrap_or(false)
-        })
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            // Parse numeric prefix: "001_initial.sql" -> 1
-            let num: i32 = name.split('_').next().and_then(|s| s.parse().ok())?;
-            Some((num, e.path()))
-        })
-        .collect();
-
-    entries.sort_by_key(|(num, _)| *num);
-
     // Apply each migration that hasn't been applied yet
-    for (num, path) in &entries {
-        if *num <= current_version {
+    for (num, name, sql) in collect_migrations() {
+        if num <= current_version {
             continue;
         }
-
-        let sql = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read migration file: {}", path.display()))?;
 
         sqlx::query(&sql)
             .execute(pool)
             .await
-            .with_context(|| format!("Failed to apply migration {}", num))?;
+            .with_context(|| format!("Failed to apply migration {num} ({name})"))?;
 
         sqlx::query("INSERT INTO schema_version (version) VALUES (?1)")
             .bind(num)
@@ -798,7 +819,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             .await
             .context("Failed to update schema_version")?;
 
-        tracing::info!(migration = num, "Applied database migration");
+        tracing::info!(migration = num, name = %name, "Applied database migration");
     }
 
     Ok(())
@@ -1930,5 +1951,42 @@ mod tests {
             rows.iter()
                 .all(|(k, v)| !k.starts_with("cloud") && !v.contains("sk-or-test"))
         );
+    }
+
+    #[test]
+    fn migration_number_parses_names() {
+        assert_eq!(migration_number("001_initial.sql"), Some(1));
+        assert_eq!(migration_number("012_conversations.sql"), Some(12));
+        assert_eq!(migration_number("notes.txt"), None);
+        assert_eq!(migration_number("garbage.sql"), None);
+    }
+
+    /// The compile-time embedded set must cover every .sql file in the
+    /// repo's migrations/ dir — a misconfigured include path would
+    /// otherwise silently ship an incomplete schema (the 2026-10-06
+    /// deployed-missing-migration incident, made impossible).
+    #[test]
+    fn embedded_migrations_cover_the_repo_set() {
+        let repo_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let expected: std::collections::BTreeSet<String> = std::fs::read_dir(&repo_dir)
+            .expect("repo migrations dir")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".sql"))
+            .collect();
+        assert!(!expected.is_empty());
+        let embedded: std::collections::BTreeSet<String> = EMBEDDED_MIGRATIONS
+            .files()
+            .map(|f| {
+                f.path()
+                    .file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        let missing: Vec<_> = expected.difference(&embedded).collect();
+        assert!(missing.is_empty(), "missing from embedded set: {missing:?}");
+        assert!(embedded.contains("012_conversations.sql"));
     }
 }

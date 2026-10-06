@@ -646,6 +646,7 @@ mmproj_path = "models/vlm/mmproj-qwen3-vl-2b-instruct-q8_0.gguf"
 n_ctx = 2048
 n_threads = 2
 max_tokens = 100
+repeat_penalty = 1.1
 prompt = "这是安防摄像头的告警画面。请用一句中文描述画面里发生了什么。"
 ```
 
@@ -659,6 +660,7 @@ prompt = "这是安防摄像头的告警画面。请用一句中文描述画面�
 | `n_ctx` | u32 | `2048` | Context window (the image alone costs ~1k positions). |
 | `n_threads` | u32 | `2` | CPU threads. |
 | `max_tokens` | u32 | `100` | Generation cap per description. |
+| `repeat_penalty` | f32 | `1.1` | Repetition penalty over the last 64 generated tokens (llama.cpp semantics). Greedy decoding loops on list items in hard frames without it; `1.0` disables. |
 | `prompt` | String | Chinese security-phrasing instruction | Instruction shown to the model; the answer should be one sentence. |
 
 **Notes:**
