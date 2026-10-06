@@ -382,7 +382,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         // Dialogue turn records (SPEC v1 §3.4)
         .route(
             "/api/conversations",
-            get(routes::conversations::list_conversations),
+            get(routes::conversations::list_conversations)
+                .delete(routes::conversations::clear_conversations),
         )
         // Protocol runtime status stays as a device extension (dialect A7).
         .route(

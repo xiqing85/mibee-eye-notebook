@@ -270,6 +270,7 @@ const DICT = {
     convEmpty: '暂无对话记录', convRefresh: '刷新',
     convHeard: '听到', convAsked: '输入', convReply: '回复',
     convNoReply: '无回复', convThinking: '思考过程', convHideThinking: '收起思考',
+    convClear: '清空', convClearConfirm: '确定清空全部对话记录？此操作不可撤销。',
     // Resource profile (SPEC appendix A #40)
     resTitle: '资源档位', resDesc: '启动时按可用内存做预算制功能准入——小内存主机会自动裁剪重模型，重启后按届时水位重算',
     resModeAuto: '自动适配', resModeAll: '全量启动',
@@ -541,6 +542,7 @@ const DICT = {
     convEmpty: 'No conversation turns yet', convRefresh: 'Refresh',
     convHeard: 'Heard', convAsked: 'Input', convReply: 'Reply',
     convNoReply: 'No reply', convThinking: 'Thinking', convHideThinking: 'Hide thinking',
+    convClear: 'Clear all', convClearConfirm: 'Clear ALL conversation records? This cannot be undone.',
     // Resource profile (SPEC appendix A #40)
     resTitle: 'Resource Profile', resDesc: 'AI features are admitted against the boot-time memory budget — small hosts shed heavy models automatically; re-evaluated on restart',
     resModeAuto: 'Auto', resModeAll: 'All on',
