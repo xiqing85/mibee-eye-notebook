@@ -613,6 +613,7 @@ mmproj_path = "models/vlm/mmproj-qwen3-vl-2b-instruct-q8_0.gguf"
 n_ctx = 2048
 n_threads = 2
 max_tokens = 100
+repeat_penalty = 1.1
 prompt = "这是安防摄像头的告警画面。请用一句中文描述画面里发生了什么。"
 ```
 

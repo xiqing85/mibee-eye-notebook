@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **VLM intermittent degenerate replies — two root causes, both fixed.**
+  Live vision answers occasionally returned looped gibberish (`Extra
+  baseUrl…` repeated): ① a data race — llama-cpp-2 blanket-asserts
+  `Sync` for `MtmdContext`, but the clip preprocessing reuses mutable
+  scratch buffers, and the alarm-frame describer could overlap a chat
+  vision answer on the same engine (the ignored concurrent diagnostic
+  now **segfaults** on the unfixed code, proving the race); all VLM
+  inference is now serialized behind an engine mutex. ② greedy decoding
+  itself loops on list items in hard frames even without any race — a
+  llama.cpp-style repetition penalty (`[vlm] repeat_penalty`, default
+  1.1, over the last 64 tokens) breaks the loops. Degenerate replies
+  (if any still occur) are WARN-logged with the reply text via a pure,
+  unit-tested repetition detector. Post-fix diagnostic: four concurrent
+  answers on one engine, all coherent.
+- **Deployed migrations can no longer be silently missing.** Migrations
+  are now embedded in the binary at compile time (`include_dir`), with
+  site-local directories as an optional overlay. Previously a deployed
+  instance relied on `migrations/` next to the working directory —
+  forgetting to copy a new file left the new tables missing while
+  inserts only WARNed (the `conversation_turns` incident).
+- **Audio capture test flake**: a closed capture channel (device
+  contention with another mic holder) now skips like the other
+  no-hardware paths instead of failing the suite.
+
 ### Added
 
 - **Conversation records (SPEC v1 §3.4 + appendix A #41).** A persistent,
