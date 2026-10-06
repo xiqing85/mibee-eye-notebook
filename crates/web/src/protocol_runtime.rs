@@ -1042,7 +1042,9 @@ impl ProtocolRuntime {
     /// (digest auth), keepalive, catalog, INVITE/ACK/BYE with its own SDP
     /// answers, and PS-over-RTP media push sourced from the first active
     /// camera via [`StreamManagerFrameSource`].
-    #[tracing::instrument(skip(self, stream_manager))]
+    // `config` carries the SIP register password — never record it in
+    // the span (the INFO line inside logs the identifying fields).
+    #[tracing::instrument(skip(self, stream_manager, config))]
     pub async fn start_gb28181(
         &mut self,
         config: &Gb28181RuntimeConfig,
