@@ -437,6 +437,10 @@ paraformer_model = "models/voice/paraformer/model.int8.onnx"
 paraformer_tokens = "models/voice/paraformer/tokens.txt"
 capture_secs = 4
 num_threads = 1
+# 连续对话（#30-B）：每次语音回复后开启等长跟问窗口，窗口内无需唤醒词
+# （0 = 关闭）。
+follow_up_window_secs = 0.0
+vad_model = "models/voice/vad/silero_vad.onnx"
 ```
 
 **字段参考：**
@@ -478,6 +482,10 @@ AVX2 档 CPU。
 [llm]
 enabled = false
 model_path = "models/llm/qwen3-0.6b-q8_0.gguf"
+# 资源分层（#30-E）：[resources] auto_tier = true 时按启动可用内存选档
+# （≥8 GiB full / ≥4 GiB mid / 否则 lite）；空值回落 model_path。
+model_path_mid = ""
+model_path_lite = ""
 n_ctx = 1024
 n_threads = 2
 max_tokens = 200
@@ -586,6 +594,12 @@ tokens = "models/voice/melo/tokens.txt"
 dict_dir = "models/voice/melo/dict"
 rule_fsts = "models/voice/melo/number.fst,models/voice/melo/date.fst"
 player = "aplay -q"
+# 分语言模型（#30-D）：按回复语言选音色（粤语特征字→yue、纯 ASCII→en、
+# 否则主模型）；未设置的键回落主模型。
+yue_model = ""
+yue_lexicon = ""
+en_model = ""
+en_lexicon = ""
 ```
 
 **字段参考：**
@@ -597,6 +611,19 @@ player = "aplay -q"
 | `model` / `lexicon` / `tokens` / `dict_dir` | String | `models/voice/melo/…` | vits-melo-tts-zh_en 音色资产。 |
 | `rule_fsts` | String | `"…/number.fst,…/date.fst"` | 数字/日期归一化 FST（逗号连接）。 |
 | `player` | String | `"aplay -q"` | 播放命令；留空 = 仅合成（不外放）。 |
+
+### [tools] - 对话任务工具
+
+接地系统回合的可选注入块（#30-A）。当前为天气：用户话语含天气意图且
+`weather_enabled` 开启时，拉取 `weather_city` 当前天气进【联网】块（wttr.in，
+`timeout_secs` 限时）。这些键可经 `PUT /api/config` 的 `scene.tools.*` 热调（#31）。
+
+```toml
+[tools]
+weather_enabled = false
+weather_city = ""
+timeout_secs = 5
+```
 
 ### [vlm] - 告警画面图像描述
 

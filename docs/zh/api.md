@@ -103,7 +103,7 @@ Cookie 会话 + CSRF 双提交：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/chat` | 本地 LLM 对话：`{"text","history":[{role,content}]}` → `{"reply"}`（能力位 `chat`；语音环路的回复另经 `chat_reply` SSE 送出） |
+| POST | `/api/chat` | 接地对话：`{"text","history":[{role,content}],"vision"?}` → `{"reply","engine","grounded"}`（能力位 `chat`；语音环路的回复另经 `chat_reply` SSE 送出）。每轮注入实时场景接地（【画面】检测标签计数 + 最近 VLM 描述、【本机】时钟/开机时长/内存、可选【联网】天气——附录 A #29）；`vision:true` 以新鲜帧走 VLM 看图直答（`grounded:"vlm"`，CPU 上较慢），失败回落接地 LLM。配置了云端时云优先、失败回落本地，`engine` ∈ `cloud\|local\|vlm` 披露实际路径（#35） |
 | POST | `/api/ocr` | body = JPEG 原始字节 → `{"items":[{text, score, bbox}]}`（能力位 `ocr`） |
 | GET | `/api/audio/records` | 听觉记录（能力位 `audio_records`）：`{"records":[{id, kind:"sound"\|"voice", text, score, keyword, speaker, timestamp_ms}]}`，最新在前；`?limit=N`（缺省 100、上限 500）、`?kind=sound\|voice` 过滤 |
 | DELETE | `/api/audio/records` | 清空全部记录 → `{"applied":"immediate","removed":N}` |
