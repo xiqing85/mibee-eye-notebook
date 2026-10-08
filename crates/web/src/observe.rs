@@ -711,6 +711,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_summary_and_logs_handlers_shape() {
+        // The summary reads the sampler's cached snapshot; seed one real
+        // sample so the shape assertions don't depend on sampler timing
+        // (the background tick is a production-only guarantee).
+        observe().record_sample(read_sample(), 4.0);
         let app = axum::Router::new()
             .route("/api/metrics/summary", axum::routing::get(metrics_summary))
             .route("/api/logs", axum::routing::get(logs_handler))
