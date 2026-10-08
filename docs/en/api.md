@@ -109,8 +109,8 @@ instead of pretending.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/chat` | Local LLM dialogue: `{"text","history":[{role,content}]}` → `{"reply"}` (capability `chat`; voice-loop replies also arrive as `chat_reply` SSE) |
-| GET | `/api/audio/records` | Hearing records (capability `audio_records`): `{"records":[{id, kind:"sound"\|"voice", text, score, keyword, speaker, timestamp_ms}]}`, newest first; `?limit=N` (default 100, max 500), `?kind=sound\|voice` |
+| POST | `/api/chat` | Grounded dialogue: `{"text","history":[{role,content}],"vision"?}` → `{"reply","engine","grounded"}` (capability `chat`; voice-loop replies also arrive as `chat_reply` SSE). Every turn injects live scene grounding (【画面】detection labels + last VLM description, 【本机】clock/uptime/memory, optional 【联网】weather — appendix A #29). `vision:true` answers from a fresh frame via the VLM (`grounded:"vlm"`, slow on CPU), falling back to the grounded LLM. Cloud-configured devices answer cloud-first with local fallback; `engine` ∈ `cloud\|local\|vlm` discloses the actual path (#35) |
+| GET | `/api/audio/records` | Hearing records (capability `audio_records`): `{"records":[{id, kind:"sound"\|"voice", text, score, keyword, speaker, scene, media_ref, timestamp_ms}]}` (`scene` = what the camera saw at that moment, `media_ref` = the MP4 segment covering it when recording — #30-C), newest first; `?limit=N` (default 100, max 500), `?kind=sound\|voice` |
 | DELETE | `/api/audio/records` | Clear every record → `{"applied":"immediate","removed":N}` |
 | GET | `/api/voice/speakers` | Voiceprint profiles (capability `voice_speakers`, **no side effects**) → `{"speakers":[{id,name,dim,count,created_at}], "enrollment":{name,collected,needed}\|null, "capable":bool}` |
 | POST | `/api/voice/speakers` | Begin enrollment: body `{"name", "utterances"?(default 3, 1..=10)}` — the next `utterances` wake words each collect one embedding sample (poll GET for progress); already-enrolled name → 400 |

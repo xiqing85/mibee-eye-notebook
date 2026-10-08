@@ -110,13 +110,23 @@ crossings arrive as `zone_event` SSE events and as alarm toasts.
 ### Chat panel
 
 When the device advertises `chat`, a round **chat button** floats at the
-bottom-right corner. Open it, type a message, and the on-device LLM answers
-in the panel. The panel keeps your recent turns so you can ask follow-ups.
+bottom-right corner. Open it, type a message, and the assistant answers in
+the panel. The panel keeps your recent turns so you can ask follow-ups.
 Replies to voice interactions arrive in the same panel (or as a toast, if it
 is closed) — see [Talking to the device](#talking-to-the-device-voice).
 
-The LLM runs **on the device** (llama.cpp + Qwen3); nothing is sent to any
-cloud service.
+Every turn is **grounded** (appendix A #29): the answer knows what the
+camera currently sees (live detection labels + the last VLM alarm
+description), the local clock and system state, and — when configured —
+the weather. The 👁 toggle asks the question about a **fresh camera
+frame** via the vision-language model (tens of seconds on CPU; the reply
+badge shows the `vlm` path, plain turns carry a `scene` badge).
+
+By default the model runs **on the device** (llama.cpp + Qwen3). When
+cloud AI is configured (appendix A #35) chat goes cloud-first with local
+fallback — the reply's engine field shows which path answered. A live
+microphone waveform strip under the chat log dances while you speak
+(appendix A #36).
 
 ### Cameras / Devices / Status / Settings
 
@@ -246,6 +256,9 @@ Tips:
 
 - Speak *after* the wake word; the capture window starts when the word is
   recognized. Keep the utterance within the capture window (4 s).
+- With `follow_up_window_secs > 0` you can keep talking **without** the
+  wake word right after a spoken reply — the VAD window catches the whole
+  follow-up sentence (appendix A #30).
 - If wake words are never recognized, check the microphone input device and
   level first (see [Troubleshooting](#troubleshooting)).
 - The wake-word sensitivity and the keyword list are configuration keys

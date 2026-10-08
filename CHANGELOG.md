@@ -28,6 +28,33 @@
   contention with another mic holder) now skips like the other
   no-hardware paths instead of failing the suite.
 
+- **Dialogue dialect & quality fixes**: Cantonese vernacular detection
+  (而家-class questions kept their written-form characters through ASR
+  and mis-routed the reply language), explicit reply-language nudges,
+  per-language TTS models needing their own companion tokens table (the
+  Cantonese model read the Mandarin table's path and exited 255 — the
+  table is now derived from each model's own directory), TTS synthesis
+  on 2 threads (halves spoken-reply latency on 4+-core hosts), a
+  weekday-name off-by-one (Sunday-first array met a Monday-first `%u`),
+  and an `llm_tier` newtype fix (the bare `Arc<String>` Extension
+  collided with the advertised-host slot and reported the LAN IP as the
+  tier).
+
+- **face.recog decoder fixes** (was failing on every detection event,
+  fail-open had hidden it): the zoo 2023 YuNet checkpoint needs its
+  declared fixed input size (config'd 320 was rejected), its output is
+  multi-head cls/obj/bbox (decoded per the model author's reference
+  implementation — score = cls·obj, no sigmoid, stride-anchored boxes),
+  and SFace's graph input/output names are captured at load instead of
+  hardcoded. Verified on a real face photo: score 0.83 with an accurate
+  box, and the production instance went from constant failures to 87
+  inferences with zero errors.
+
+- **GB28181 SIP password no longer logged**: the `start_gb28181`
+  tracing span recorded the whole runtime config — password included —
+  into journald; the config is now skipped (identifying fields were
+  already logged by the INFO line inside).
+
 ### Added
 
 - **Conversation records (SPEC v1 §3.4 + appendix A #41).** A persistent,
@@ -42,7 +69,9 @@
   events; the assistant page gains a "Conversation Log" card with
   collapsible thinking entries (capability-gated, negative-compatible).
   `[conversations] enabled = false` turns recording off entirely
-  (privacy switch).
+  (privacy switch), and `DELETE /api/conversations` clears every stored
+  turn (`{"applied":"immediate","removed":N}`; assistant-card button
+  with a danger confirmation).
 
 - **Desktop integration: tray icon + notifications (SPEC appendix A
   #42).** On Linux hosts with a desktop session (session-bus probe:
@@ -95,6 +124,42 @@
     get the full chain when `otel_endpoint` is set.
   - `capabilities.observability` gains additive keys `traces:true`,
     `model_metrics:true`.
+
+- **Grounded dialogue (SPEC appendix A #29).** Every chat turn (web and
+  voice alike) injects live scene grounding: the system turn carries a
+  【画面】 block (fresh AI-detection label counts plus the last VLM alarm
+  description, marked stale when lagging), a 【本机】 block (local clock
+  with weekday, uptime, load, available memory — "what time is it" is
+  answered from the clock, not model memory) and, when the utterance
+  looks weather-related and `[tools] weather_enabled` is set, a 【联网】
+  weather block. `vision:true` on `POST /api/chat` answers from a fresh
+  camera frame via the VLM (`grounded:"vlm"`, tens of seconds on CPU),
+  falling back to the grounded LLM on any failure; the `grounded` field
+  discloses the actual path.
+
+- **Dialogue scene capability pack (SPEC appendix A #30).** Continuous
+  conversation (`[voice] follow_up_window_secs`, default off: after a
+  spoken reply a VAD window accepts follow-ups without the wake word;
+  requires the silero VAD model), per-language TTS (Cantonese / English
+  / Mandarin models selected by reply language, falling back to the main
+  model), LLM resource tiers (`[llm] model_path_mid` / `model_path_lite`
+  picked by available memory when `[resources] auto_tier` is on), and
+  correlated hearing records (`scene` summary + `media_ref` pointing at
+  the MP4 segment covering the moment, when recording is on).
+
+- **HTTP cloud routing for chat (SPEC appendix A #35).** With cloud AI
+  configured, `POST /api/chat` goes cloud-first — text via `chat_model`,
+  `vision:true` via `vision_model` on a fresh frame — wearing the same
+  grounded system turn, and falls back to the local engines on failure
+  (configurable). The `engine` field discloses which path answered
+  ("cloud" | "local" | "vlm"); a custom OpenAI-compatible gateway can be
+  set via `MIBEE_EYE_CLOUD_BASE_URL`.
+
+- **Real-time voice waveform (SPEC appendix A #36).** The assistant chat
+  panel gains a live microphone waveform strip fed by the `audio_level`
+  SSE event (perceptual dBFS mapping — a linear RMS scale left real
+  speech at an unreadable 0.03-0.1; attack/release smoothing, speech
+  state highlights the mic icon).
 
 ### Fixed
 

@@ -449,7 +449,11 @@ Wake-word detection with offline speech-to-text. Requires the `voice` cargo
 feature (sherpa-onnx linked statically at build time). After a wake word is
 recognized, `capture_secs` of audio are transcribed offline and emitted as a
 `voice_transcript` SSE event; with `[llm]` enabled the transcript is answered
-by the local LLM, and with `[tts]` enabled the reply is spoken.
+by the local LLM, and with `[tts]` enabled the reply is spoken. With
+`follow_up_window_secs > 0` the reply opens a follow-up window in which the
+VAD endpoint detector transcribes whole utterances without a new wake word
+(hot-adjustable via `PUT /api/config` `scene.voice.follow_up_window_secs`;
+`scene.voice.wake_word` is restart-class).
 
 ```toml
 [voice]
@@ -465,6 +469,10 @@ paraformer_model = "models/voice/paraformer/model.int8.onnx"
 paraformer_tokens = "models/voice/paraformer/tokens.txt"
 capture_secs = 4
 num_threads = 1
+# Continuous dialogue (#30-B): after each spoken reply, a VAD window of
+# this length accepts follow-ups WITHOUT the wake word (0 = off).
+follow_up_window_secs = 0.0
+vad_model = "models/voice/vad/silero_vad.onnx"
 ```
 
 **Field Reference:**
@@ -502,6 +510,11 @@ web chat panel and the voice-loop replies (`chat_reply` SSE). Requires the
 [llm]
 enabled = false
 model_path = "models/llm/qwen3-0.6b-q8_0.gguf"
+# Resource tiers (#30-E): with [resources] auto_tier = true the boot-time
+# available memory picks the tier (>=8 GiB full / >=4 GiB mid / else lite);
+# empty values fall back to model_path.
+model_path_mid = ""
+model_path_lite = ""
 n_ctx = 1024
 n_threads = 2
 max_tokens = 200
@@ -618,6 +631,13 @@ tokens = "models/voice/melo/tokens.txt"
 dict_dir = "models/voice/melo/dict"
 rule_fsts = "models/voice/melo/number.fst,models/voice/melo/date.fst"
 player = "aplay -q"
+# Per-language models (#30-D): the reply language picks the voice
+# (Cantonese cue-chars -> yue, pure ASCII -> en, else the main model);
+# unset keys fall back to the main model.
+yue_model = ""
+yue_lexicon = ""
+en_model = ""
+en_lexicon = ""
 ```
 
 **Field Reference:**
@@ -629,6 +649,21 @@ player = "aplay -q"
 | `model` / `lexicon` / `tokens` / `dict_dir` | String | `models/voice/melo/…` | vits-melo-tts-zh_en voice assets. |
 | `rule_fsts` | String | `"…/number.fst,…/date.fst"` | Number/date normalization FSTs (comma-joined). |
 | `player` | String | `"aplay -q"` | Playback command; empty = synthesize only (no speaker output). |
+
+### [tools] - Dialogue Task Tools
+
+Optional blocks the grounded system turn may inject (#30-A). Currently the
+weather: when the user's utterance looks weather-related and
+`weather_enabled` is on, current conditions for `weather_city` are fetched
+(wttr.in, bounded by `timeout_secs`) into the 【联网】 block. These keys are
+hot-adjustable via `PUT /api/config` `scene.tools.*` (#31).
+
+```toml
+[tools]
+weather_enabled = false
+weather_city = ""
+timeout_secs = 5
+```
 
 ### [vlm] - Alarm-Frame Image Descriptions
 

@@ -21,7 +21,8 @@
 - **对外协议** — RTSP 服务端（客户端拉流）、RTMP 推流、ONVIF 设备端点、GB/T 28181 设备注册（全部默认关闭，通过 Web 界面启用）
 - **GB/T 28181-2022 设备面** — 告警事件（SSE `alarm` + Alarm NOTIFY，AI 上升沿 + 冷却）、DeviceControl（IFrameCmd 强制关键帧、RecordCmd 录像门）、优雅注销（REGISTER Expires: 0）、静态 MobilePosition 上报、DeviceConfig FrameMirror 运行时镜像、SIP-Date 校时观察——全部随共享库 gb28181-rs 提供
 - **端侧智能（全部故障开放、主动开启）** — 视觉目标检测（NanoDet）实时叠加框；声音事件检测（YAMNet）发出 `source: "audio"` 告警（投票平滑 + 逐类冷却）；用户绘制入侵/越线区域 + ByteTrack 子集跟踪（`zone_event` SSE）；OCR（PP-OCR v4/v5，`POST /api/ocr`）——SPEC 附录 A #21
-- **语音交互** — 唤醒词小蜜蜂（sherpa-onnx zipformer KWS）→ 离线 paraformer 中文转写 → 本地 LLM 回复（llama.cpp + Qwen3 GGUF）→ TTS 播报（sherpa-onnx CLI 子进程，GPL 隔离）；`voice_transcript` / `chat_reply` SSE——SPEC 附录 A #22
+- **语音交互** — 唤醒词小蜜蜂（sherpa-onnx zipformer KWS）→ 离线 paraformer 三语转写 → 本地 LLM 回复（llama.cpp + Qwen3 GGUF）→ 按回复语言选音色的 TTS 播报（粤/英/普通话；sherpa-onnx CLI 子进程，GPL 隔离）；跟问窗口内免唤醒连续对话（`follow_up_window_secs`）；对话面板实时麦克风波形条（`audio_level` SSE）——SPEC 附录 A #22/#30/#36
+- **接地对话（SPEC 附录 A #29/#35）** — 每轮回答都知道相机当前看到什么（实时检测 + VLM 告警描述）、本地时钟与系统状态，可选注入天气；`vision:true` 把新鲜帧交给端侧 VLM 看图直答；配置云端后对话云优先、失败回落本地（`engine` 披露实际路径）
 - **告警智能** — 告警画面的视觉-语言描述（Qwen3-VL 经 llama.cpp mtmd），异步 `alarm_description` SSE，绝不延迟告警本身；单飞调度 + 描述间隔下限
 - **H.264 / H.265** — 手写 NAL 单元解析器、关键帧检测、SPS/PPS 提取
 - **MiBee NVR 集成** — REST API 客户端、摄像头同步、SSE 事件流
