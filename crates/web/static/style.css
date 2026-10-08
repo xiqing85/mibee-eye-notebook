@@ -1646,6 +1646,8 @@ input[type="range"]::-moz-range-thumb {
   #view-system { padding-bottom: 90px; }
   .assistant-grid { grid-template-columns: 1fr; padding-bottom: 90px; }
   .chat-log { height: 300px; }
+  #agent-waveform { height: 84px; }
+  .agent-hero { margin: 0 var(--space-sm) var(--space-sm); }
   .models-grid { grid-template-columns: 1fr; padding-bottom: 90px; }
   #view-records { padding-bottom: 90px; }
   #view-models { padding-bottom: 90px; }
@@ -1683,6 +1685,7 @@ input[type="range"]::-moz-range-thumb {
   .spinner { animation-duration: 2.5s; }
   .toast, .view.active, .confirm-overlay, .confirm-box { animation: none; }
   .live-dot.active, .status-badge.online .badge-dot, .unsaved-dot { animation: none; opacity: 1; }
+  .agent-dot, .chat-tool.running .chat-tool-name::after { animation: none; }
   * { transition-duration: .01ms !important; }
 }
 
@@ -1766,16 +1769,38 @@ input[type="range"]::-moz-range-thumb {
 .assistant-side { display: flex; flex-direction: column; gap: var(--space-md); min-width: 0; }
 .card-desc { font-size: .78rem; color: var(--text-secondary); margin: -8px 0 var(--space-md); }
 .chat-card { display: flex; flex-direction: column; }
+.chat-card-head { display: flex; align-items: center; gap: 10px; }
+.chat-card-head h3 { flex: 1; }
+.chat-toolbar { display: flex; align-items: center; gap: 10px; }
+.chat-count { font-size: 11px; color: var(--text-faint); }
 .chat-log {
-  height: clamp(240px, calc(100vh - var(--nav-h) - 320px), 460px);
+  height: clamp(240px, calc(100vh - var(--nav-h) - 380px), 460px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   padding: var(--space-xs) 0;
 }
+/* WeChat-style rows: avatar + bubble, user right (accent), AI left. */
+.chat-row { display: flex; gap: 8px; align-items: flex-end; }
+.chat-row.mine { flex-direction: row-reverse; }
+.chat-row.mine .chat-bubble-wrap { align-items: flex-end; }
+.chat-avatar {
+  flex: none;
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+  margin-bottom: 2px;
+}
+.chat-avatar.theirs {
+  background: color-mix(in srgb, var(--accent, #00c8a0) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #00c8a0) 50%, transparent);
+  color: var(--accent-text);
+}
+.chat-avatar.mine { background: rgba(127,140,160,.16); border: 1px solid var(--border-light); color: var(--text-secondary); }
+.chat-bubble-wrap { display: flex; flex-direction: column; gap: 5px; max-width: 86%; min-width: 0; }
 .chat-bubble {
-  max-width: 86%;
   padding: 7px 11px;
   border-radius: 12px;
   font-size: 13px;
@@ -1783,16 +1808,17 @@ input[type="range"]::-moz-range-thumb {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.chat-bubble.mine {
-  align-self: flex-end;
-  background: color-mix(in srgb, var(--accent, #3aa0ff) 22%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent, #3aa0ff) 45%, transparent);
+.chat-row.mine .chat-bubble {
+  background: color-mix(in srgb, var(--accent, #00c8a0) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #00c8a0) 45%, transparent);
+  border-bottom-right-radius: 4px;
 }
-.chat-bubble.theirs {
-  align-self: flex-start;
+.chat-row.theirs .chat-bubble {
   background: rgba(127, 140, 160, .12);
   border: 1px solid var(--border-light);
+  border-bottom-left-radius: 4px;
 }
+.chat-engine { display: inline-block; margin-left: 7px; padding: 0 6px; border-radius: 8px; font-size: 10px; vertical-align: 1px; border: 1px solid var(--border-light); color: var(--text-faint); }
 .chat-input-row {
   display: flex;
   gap: var(--space-xs);
@@ -1840,8 +1866,12 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-dim, inherit);
 }
 .chat-badge.vlm {
-  border-color: color-mix(in srgb, var(--accent, #3aa0ff) 55%, transparent);
-  background: color-mix(in srgb, var(--accent, #3aa0ff) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #00c8a0) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #00c8a0) 18%, transparent);
+}
+.chat-badge.voice {
+  border-color: color-mix(in srgb, #10b981 45%, transparent);
+  background: rgba(16,185,129,.14);
 }
 
 /* ===== Records view (audio_records, SPEC appendix A #24) ===== */
@@ -2023,18 +2053,50 @@ input[type="range"]::-moz-range-thumb {
 .model-privacy { font-size: .76rem; color: var(--warn, #b8860b); margin: var(--space-sm) 0; }
 .models-cloud-form { max-width: 480px; }
 
-/* ===== Voice waveform strip (SPEC §6 audio_level) ===== */
-.chat-waveform {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 2px 4px; border-top: 1px solid var(--border);
-  transition: border-color var(--ease-normal);
+/* ===== Voiceprint hero (SPEC §6 audio_level + agent_step states) ===== */
+.agent-hero {
+  max-width: var(--content-w);
+  margin: 0 auto var(--space-sm);
+  padding: var(--space-sm) var(--space-md) 0;
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--accent, #00c8a0) 26%, var(--border));
 }
-.chat-waveform .icon { color: var(--text-faint); flex-shrink: 0; transition: color var(--ease-normal); }
-.chat-waveform canvas { width: 100%; height: 44px; display: block; }
-/* Speaking state: the mic icon and the strip edge light up, so "is a
-   conversation happening" is answerable at a glance. */
-.chat-waveform.speaking { border-top-color: var(--accent-border); }
-.chat-waveform.speaking .icon { color: var(--accent-text); filter: drop-shadow(0 0 4px rgba(0, 200, 160, .6)); }
+/* Faint accent glow behind the trace so the hero reads as the
+   assistant's "presence" rather than another data card. */
+.agent-hero::before {
+  content: '';
+  position: absolute; inset: -40% 30% auto;
+  height: 160%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent, #00c8a0) 16%, transparent), transparent);
+  pointer-events: none;
+}
+.agent-hero-top {
+  display: flex; align-items: center; gap: 12px;
+  position: relative;
+}
+.agent-state {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 700;
+  padding: 2px 10px; border-radius: 999px;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  transition: color var(--ease-normal), border-color var(--ease-normal), background var(--ease-normal);
+}
+.agent-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-faint);
+  transition: background var(--ease-normal), box-shadow var(--ease-normal);
+}
+.agent-state.listening { color: var(--accent-text); border-color: var(--accent-border); background: color-mix(in srgb, var(--accent, #00c8a0) 10%, transparent); }
+.agent-state.listening .agent-dot { background: var(--accent); animation: live-pulse 1.6s infinite; }
+.agent-state.thinking { color: var(--accent-text); border-color: var(--accent-border); }
+.agent-state.thinking .agent-dot { background: var(--accent); animation: blink 1s infinite; }
+.agent-state.answering { color: var(--warning, #f0b45c); border-color: color-mix(in srgb, var(--warning, #f0b45c) 50%, transparent); background: color-mix(in srgb, var(--warning, #f0b45c) 10%, transparent); }
+.agent-state.answering .agent-dot { background: var(--warning, #f0b45c); animation: live-pulse 1.2s infinite; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.agent-activity { font-size: 11.5px; color: var(--text-faint); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#agent-waveform { display: block; width: 100%; height: 110px; margin-top: 2px; position: relative; }
 
 /* ─── Per-model resource cards (SPEC §3.3 model_metrics) ───────────── */
 .mm-list { display: flex; flex-direction: column; gap: 10px; }
@@ -2084,17 +2146,68 @@ input[type="range"]::-moz-range-thumb {
 .res-reason { font-size: 11px; color: var(--text-faint); flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .res-row-off .res-name { color: var(--text-faint); }
 
-/* Conversation records card (SPEC §3.4) */
-.convlog-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-.conv-turn { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
-.conv-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-faint); }
-.conv-head .state-pill { margin-left: auto; }
-.conv-user, .conv-reply { font-size: 13px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
-.conv-reply { background: var(--accent-soft, rgba(59,130,246,.07)); border-radius: 8px; padding: 6px 9px; }
-.conv-label { display: inline-block; font-size: 11px; font-weight: 700; color: var(--text-faint); margin-right: 6px; }
-.conv-thinking-toggle { align-self: flex-start; }
-.conv-thinking { display: flex; flex-direction: column; gap: 4px; border-top: 1px dashed var(--border); padding-top: 6px; }
-.conv-think-entry { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
-.conv-think-src { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--accent-text, #3b82f6); }
-.conv-think-note { flex: 1; min-width: 0; color: var(--text-faint); line-height: 1.4; word-break: break-word; }
-.conv-think-dur { flex: none; font-size: 11px; color: var(--text-faint); }
+/* ─── Tool-call cards + thinking drawer + panels (SPEC §3.4/§3.5) ──── */
+.chat-tools { display: flex; flex-direction: column; gap: 5px; }
+.chat-tool {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent, #00c8a0);
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  animation: fade-in .25s var(--ease-fast);
+}
+.chat-tool.running { border-left-color: var(--warning, #f0b45c); }
+.chat-tool.running .chat-tool-name::after {
+  content: '';
+  display: inline-block; width: 9px; height: 9px; margin-left: 6px;
+  border: 1.5px solid var(--warning, #f0b45c); border-top-color: transparent;
+  border-radius: 50%; vertical-align: -1px;
+  animation: spin .8s linear infinite;
+}
+.chat-tool-head { display: flex; align-items: center; gap: 8px; }
+.chat-tool-name { font-weight: 600; font-size: 11.5px; }
+.chat-tool-head .state-pill { margin-left: auto; }
+.chat-tool-dur { font-size: 10.5px; color: var(--text-faint); }
+.chat-tool-args { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-tool-result { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.chat-tool.error { border-left-color: #e0564f; }
+.chat-think-toggle {
+  align-self: flex-start;
+  background: none; border: none; cursor: pointer;
+  font-size: 11px; color: var(--text-faint);
+  padding: 0;
+  transition: color var(--ease-fast);
+}
+.chat-think-toggle:hover { color: var(--accent-text); }
+.chat-think { display: flex; flex-direction: column; gap: 4px; border-left: 2px dashed var(--border); padding-left: 8px; }
+.chat-think-entry { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; }
+.chat-think-src { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--accent-text); }
+.chat-think-src.tool { color: var(--warning, #f0b45c); }
+.chat-think-note { flex: 1; min-width: 0; color: var(--text-faint); line-height: 1.4; word-break: break-word; }
+.chat-think-dur { flex: none; font-size: 10.5px; color: var(--text-faint); }
+
+/* Thinking side panel: live agent timeline + latest turn's chain. */
+.think-live { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.think-live.think-idle { font-size: 12px; color: var(--text-faint); }
+.think-live-row { animation: fade-in .25s var(--ease-fast); }
+.think-turn-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.think-turn-q { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.think-turn { display: flex; flex-direction: column; gap: 6px; }
+.think-step { display: flex; align-items: baseline; gap: 8px; position: relative; padding-left: 14px; font-size: 12px; }
+.think-step-dot { position: absolute; left: 0; top: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent, #00c8a0); }
+.think-step.tool .think-step-dot { background: var(--warning, #f0b45c); }
+.think-step-src { flex: none; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--accent-text); }
+.think-step.tool .think-step-src { color: var(--warning, #f0b45c); }
+.think-step-note { flex: 1; min-width: 0; color: var(--text-faint); line-height: 1.4; word-break: break-word; }
+.think-step-dur { flex: none; font-size: 10.5px; color: var(--text-faint); }
+
+/* Tools & skills card (SPEC §3.5). */
+.tools-list { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
+.tool-row { border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; }
+.tool-row-head { display: flex; align-items: center; gap: 8px; }
+.tool-row-name { font-weight: 600; font-size: 12px; }
+.tool-row-source { margin-left: auto; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 6px; }
+.tool-row-source.builtin { background: color-mix(in srgb, var(--accent, #00c8a0) 14%, transparent); color: var(--accent-text); }
+.tool-row-source.mcp { background: rgba(139,92,246,.16); color: #a78bfa; }
+.tool-row-desc { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; line-height: 1.4; }

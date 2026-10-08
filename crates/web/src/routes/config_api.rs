@@ -593,6 +593,8 @@ mod tests {
             models: crate::server::AppRouterState::models_cloud_for_tests().0,
             cloud: crate::server::AppRouterState::models_cloud_for_tests().1,
             conversations,
+            agent: crate::server::AppRouterState::agent_for_tests().0,
+            agent_config: crate::server::AppRouterState::agent_for_tests().1,
         }
     }
 

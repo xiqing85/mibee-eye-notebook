@@ -100,6 +100,33 @@ pub struct AppRouterState {
     /// chat route, the voice bridge, the capabilities document and the
     /// record list endpoint.
     pub conversations: Arc<crate::conversations::ConversationLog>,
+    /// Agent tool registry (SPEC v1 §3.5): built-ins + MCP servers,
+    /// shared by the chat route, the voice bridge, /api/tools and the
+    /// capabilities document.
+    pub agent: Arc<crate::agent::ToolRegistry>,
+    /// Agent loop configuration (`[agent]`, SPEC appendix A #43) — read
+    /// by the chat route and the voice bridge to gate the loop.
+    pub agent_config: crate::agent::AgentConfig,
+}
+
+impl AppRouterState {
+    /// Default agent registry for fixtures — built-ins only, no MCP
+    /// servers, agent enabled (the loop itself still needs tools).
+    pub fn agent_for_tests() -> (Arc<crate::agent::ToolRegistry>, crate::agent::AgentConfig) {
+        (
+            {
+                let r = Arc::new(crate::agent::ToolRegistry::new(
+                    Arc::new(std::sync::RwLock::new(
+                        streaming::tools::ToolsConfig::default(),
+                    )),
+                    &crate::agent::AgentConfig::default(),
+                ));
+                r.attach_streams(Arc::new(StreamManager::new()));
+                r
+            },
+            crate::agent::AgentConfig::default(),
+        )
+    }
 }
 
 impl AppRouterState {
@@ -227,6 +254,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let llm_tier = state.llm_tier.clone();
     let resource = state.resource.clone();
     let conversations = state.conversations.clone();
+    let agent = state.agent.clone();
+    let agent_config = state.agent_config.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -385,6 +414,9 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             get(routes::conversations::list_conversations)
                 .delete(routes::conversations::clear_conversations),
         )
+        // Tool/skill registry (SPEC v1 §3.5) — the model-facing tool
+        // list: built-ins + MCP plugin servers.
+        .route("/api/tools", get(crate::agent::tools_api::list_tools))
         // Protocol runtime status stays as a device extension (dialect A7).
         .route(
             "/api/protocols/runtime-status",
@@ -461,6 +493,8 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(state.cloud.clone()))
         .layer(Extension(conversations))
         .layer(Extension(meeting))
+        .layer(Extension(agent))
+        .layer(Extension(agent_config))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
         // HSTS
@@ -543,6 +577,8 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         models: AppRouterState::models_cloud_for_tests().0,
         cloud: AppRouterState::models_cloud_for_tests().1,
         conversations,
+        agent: AppRouterState::agent_for_tests().0,
+        agent_config: AppRouterState::agent_for_tests().1,
     })
 }
 
@@ -624,6 +660,8 @@ pub async fn test_app_with_user() -> Router {
         models: AppRouterState::models_cloud_for_tests().0,
         cloud: AppRouterState::models_cloud_for_tests().1,
         conversations,
+        agent: AppRouterState::agent_for_tests().0,
+        agent_config: AppRouterState::agent_for_tests().1,
     })
 }
 
@@ -865,6 +903,8 @@ pub async fn run(
         models,
         cloud,
         conversations,
+        agent: AppRouterState::agent_for_tests().0,
+        agent_config: AppRouterState::agent_for_tests().1,
     };
     let app = build_app_with_state(state);
 
@@ -940,6 +980,8 @@ pub async fn run_with_shutdown(
     models: Arc<routes::models_api::ModelManager>,
     cloud: Arc<crate::cloud::CloudAi>,
     conversations: Arc<crate::conversations::ConversationLog>,
+    agent: Arc<crate::agent::ToolRegistry>,
+    agent_config: crate::agent::AgentConfig,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     observability::register_metrics()?;
@@ -984,6 +1026,8 @@ pub async fn run_with_shutdown(
         models,
         cloud,
         conversations,
+        agent,
+        agent_config,
     };
     let app = build_app_with_state(state);
 

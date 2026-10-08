@@ -274,3 +274,21 @@ enabled = false
 # tray = true
 # notifications = true
 # notify_conversations = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent tools & skills (`[agent]`, SPEC §3.5 / appendix A #43): the
+# dialogue assistant's tool-calling loop. Built-in tools (time.now /
+# weather.current / camera.snapshot) are always registered; custom
+# plugins plug in as MCP (Model Context Protocol, 2025-06-18) stdio
+# subprocess servers. Empty registry = plain dialogue, zero change.
+[agent]
+# enabled = true
+# max_steps = 3            # tool-call iterations before forcing a text answer
+# step_timeout_ms = 15000  # per tool execution timeout
+#
+# Custom tool plugin example (any MCP stdio server):
+# [[agent.mcp_servers]]
+# name = "home"
+# command = "python3"
+# args = ["/home/mickey/.config/mibee-eye/mcp/home_tools.py"]
+# env = { }

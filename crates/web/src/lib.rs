@@ -1,5 +1,10 @@
 #![cfg_attr(test, deny(warnings))]
+// The capabilities superset json! literal (one entry per SPEC §3.1 key)
+// exceeds the default macro-recursion budget.
+#![recursion_limit = "512"]
 
+/// Tool & skill framework for the dialogue agent (SPEC v1 §3.5).
+pub mod agent;
 pub mod alarm;
 pub mod assets;
 pub mod cloud;

@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Agent tools & skills framework (SPEC §3.5 / appendix A #43).** The
+  dialogue assistant can now call tools: built-ins (`time.now`,
+  `weather.current` reusing the `[tools]` weather config, and
+  `camera.snapshot` returning the fresh-frame viewing endpoint) plus
+  **custom plugin servers via MCP (Model Context Protocol, spec
+  2025-06-18) over stdio** — any MCP server executable configured under
+  `[[agent.mcp_servers]]` is spawned, handshaked (newline-delimited
+  JSON-RPC), its tools listed, and called during dialogue. Cloud
+  providers use native `tools`/`tool_calls`; the local Qwen3 engine
+  uses its native `<tool_call>` prompt format (llama-cpp-2 has no
+  tools-aware chat template — the section is constructed in-product).
+  Bounded loop (`max_steps`, default 3; last iteration drops the tool
+  table to force a text answer), per-call timeout, tool output capped
+  at 8 KiB before entering model context, tool failures fed back
+  honestly. New config `[agent]` (`enabled`/`max_steps`/
+  `step_timeout_ms`), new endpoint `GET /api/tools`, new SSE event
+  `agent_step` (tool running/done/error + phase thinking/answering),
+  new capability key `tools:{enabled,count}`; `/api/chat` responses
+  carry the additive `tool_calls` array and conversation records gain
+  `source:"tool"` thinking entries. Voice answers run the same loop
+  (same fail-open: any error falls back to the legacy single-shot
+  legs). Empty registry = plain dialogue, zero behavior change.
+
+- **Assistant page redesign (mibee-eye-webui vNext, synced):** a
+  full-width voiceprint hero (real `audio_level` envelope driving a
+  scrolling multi-layer mirrored waveform with idle/listening/thinking/
+  answering states), WeChat-style chat with history restored from
+  `/api/conversations`, inline tool-call cards, collapsible thinking
+  drawers, a live thinking side panel (`agent_step` timeline + latest
+  turn's chain) and a tools & skills registry card.
+
 ### Fixed
 
 - **VLM intermittent degenerate replies — two root causes, both fixed.**

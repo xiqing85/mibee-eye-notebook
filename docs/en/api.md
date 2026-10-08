@@ -99,7 +99,7 @@ This replaces the former `GET/PUT /api/settings` and the per-protocol
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"` or `"audio"`, `targets` / `class` + `score`, `timestamp` epoch-ms), `zone_event` (`{camera_id, zone, event, track_id, label, timestamp}`), `voice_transcript` (`{keyword, transcript, speaker, timestamp}` — `speaker` is the best-matching enrolled voiceprint, "" when unknown), `chat_reply` (`{source, reply, timestamp}`), `voice_decision` (`{camera_id, transcript, choice, confidence, act_probability, timestamp}` — the intent decision over a voice transcript), `alarm_description` (`{camera_id, alarm_timestamp, description, elapsed_s}`), `meeting_state` (`{camera_id:"all", meeting_id, status:"recording"\|"processing"\|"done"\|"failed", timestamp}` — meeting lifecycle, SPEC appendix A #27). Each capability-gated event is only emitted while its engine is active. |
+| GET | `/api/events` | SSE stream (`text/event-stream`, 15 s keepalive). Events: `camera_added`, `camera_offlined`, `ai_detection`, `ai_model_changed`, `alarm` (SPEC §6: `camera_id`, `active: true`, `source: "ai"` or `"audio"`, `targets` / `class` + `score`, `timestamp` epoch-ms), `zone_event` (`{camera_id, zone, event, track_id, label, timestamp}`), `voice_transcript` (`{keyword, transcript, speaker, timestamp}` — `speaker` is the best-matching enrolled voiceprint, "" when unknown), `chat_reply` (`{source, reply, timestamp}`), `voice_decision` (`{camera_id, transcript, choice, confidence, act_probability, timestamp}` — the intent decision over a voice transcript), `alarm_description` (`{camera_id, alarm_timestamp, description, elapsed_s}`), `meeting_state` (`{camera_id:"all", meeting_id, status:"recording"\|"processing"\|"done"\|"failed", timestamp}` — meeting lifecycle, SPEC appendix A #27), `conversation` (`{id, conversation_id, origin, user_text, thinking[], reply_text, engine}` — one finished dialogue turn, SPEC §3.4; `thinking` may carry `source:"tool"` entries), `agent_step` (`{conversation_id, kind:"tool"\|"phase", state, tool?, args?, result?, duration_ms?}` — live agent tool executions and phase switches, SPEC §3.5). Each capability-gated event is only emitted while its engine is active. |
 
 ### On-device intelligence (device extension)
 
@@ -109,7 +109,7 @@ instead of pretending.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/chat` | Grounded dialogue: `{"text","history":[{role,content}],"vision"?}` → `{"reply","engine","grounded"}` (capability `chat`; voice-loop replies also arrive as `chat_reply` SSE). Every turn injects live scene grounding (【画面】detection labels + last VLM description, 【本机】clock/uptime/memory, optional 【联网】weather — appendix A #29). `vision:true` answers from a fresh frame via the VLM (`grounded:"vlm"`, slow on CPU), falling back to the grounded LLM. Cloud-configured devices answer cloud-first with local fallback; `engine` ∈ `cloud\|local\|vlm` discloses the actual path (#35) |
+| POST | `/api/chat` | Grounded dialogue: `{"text","history":[{role,content}],"vision"?}` → `{"reply","engine","grounded"}` (capability `chat`; voice-loop replies also arrive as `chat_reply` SSE). Every turn injects live scene grounding (【画面】detection labels + last VLM description, 【本机】clock/uptime/memory, optional 【联网】weather — appendix A #29). `vision:true` answers from a fresh frame via the VLM (`grounded:"vlm"`, slow on CPU), falling back to the grounded LLM. Cloud-configured devices answer cloud-first with local fallback; `engine` ∈ `cloud\|local\|vlm` discloses the actual path (#35). With tools registered (§3.5) text turns run the agent tool loop and the response carries the additive `tool_calls: [{name, args, ok, result, duration_ms}]` array (#43) |
 | GET | `/api/audio/records` | Hearing records (capability `audio_records`): `{"records":[{id, kind:"sound"\|"voice", text, score, keyword, speaker, scene, media_ref, timestamp_ms}]}` (`scene` = what the camera saw at that moment, `media_ref` = the MP4 segment covering it when recording — #30-C), newest first; `?limit=N` (default 100, max 500), `?kind=sound\|voice` |
 | DELETE | `/api/audio/records` | Clear every record → `{"applied":"immediate","removed":N}` |
 | GET | `/api/voice/speakers` | Voiceprint profiles (capability `voice_speakers`, **no side effects**) → `{"speakers":[{id,name,dim,count,created_at}], "enrollment":{name,collected,needed}\|null, "capable":bool}` |
@@ -164,6 +164,22 @@ Every finished turn also rides the SSE `conversation` event (gated by the
 `conversations` capability). Stored in SQLite, FIFO-capped at 1000 turns;
 `[conversations] enabled = false` turns recording off entirely (privacy
 switch — the capability is not advertised either).
+
+### Agent tools & skills (SPEC §3.5)
+
+The dialogue assistant's tool registry — built-in device capabilities
+plus deployer-registered MCP (Model Context Protocol 2025-06-18) stdio
+subprocess servers. This listing is the "what is exposed to the model"
+transparency surface; capability key `tools` (`{enabled, count}`).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/tools` | Tool list → `{"tools":[{name, description, input_schema, source}]}`; `source` = `"builtin"` or `"mcp:<server>"` |
+
+Built-ins: `time.now`, `weather.current` (requires `[tools] weather_city`),
+`camera.snapshot` (fresh frame + viewing endpoint). Live executions ride
+the SSE `agent_step` event and land in the conversation record's
+`thinking` entries as `source:"tool"`.
 
 ### Devices (SPEC §4.8)
 

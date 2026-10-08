@@ -271,6 +271,19 @@ const DICT = {
     convHeard: '听到', convAsked: '输入', convReply: '回复',
     convNoReply: '无回复', convThinking: '思考过程', convHideThinking: '收起思考',
     convClear: '清空', convClearConfirm: '确定清空全部对话记录？此操作不可撤销。',
+    convCleared: '对话记录已清空',
+    // Agent hero + thinking panel + tools (SPEC §3.5 / §6 agent_step)
+    agentStateIdle: '待命', agentStateListening: '聆听中', agentStateThinking: '思考中',
+    agentStateAnswering: '回答中',
+    agentActivityThink: '正在思考…', agentActivityTool: '正在调用 {name}…',
+    chatAvatarAi: '蜂', chatAvatarMe: '我', chatHeardBadge: '听到',
+    chatTurns: '{n} 轮',
+    thinkTitle: '思考过程', thinkDesc: '工具调用实时时间线 + 最近一轮的完整内部调用（模型/工具/决策/TTS）',
+    thinkLiveEmpty: '暂无进行中的调用', thinkTurnEmpty: '该轮无内部调用记录',
+    toolRunning: '执行中', toolDone: '完成', toolError: '失败',
+    toolsTitle: '工具与技能', toolsDesc: '助手可调用的技能清单——内置能力与 MCP 插件服务器（自定义工具经配置接入）',
+    toolsRefresh: '刷新', toolsEmpty: '暂无可用工具',
+    toolsSourceBuiltin: '内置', toolsSourceMcp: 'MCP·{name}',
     // Resource profile (SPEC appendix A #40)
     resTitle: '资源档位', resDesc: '启动时按可用内存做预算制功能准入——小内存主机会自动裁剪重模型，重启后按届时水位重算',
     resModeAuto: '自动适配', resModeAll: '全量启动',
@@ -543,6 +556,19 @@ const DICT = {
     convHeard: 'Heard', convAsked: 'Input', convReply: 'Reply',
     convNoReply: 'No reply', convThinking: 'Thinking', convHideThinking: 'Hide thinking',
     convClear: 'Clear all', convClearConfirm: 'Clear ALL conversation records? This cannot be undone.',
+    convCleared: 'Conversation records cleared',
+    // Agent hero + thinking panel + tools (SPEC §3.5 / §6 agent_step)
+    agentStateIdle: 'Standby', agentStateListening: 'Listening', agentStateThinking: 'Thinking',
+    agentStateAnswering: 'Answering',
+    agentActivityThink: 'Thinking…', agentActivityTool: 'Calling {name}…',
+    chatAvatarAi: 'AI', chatAvatarMe: 'Me', chatHeardBadge: 'Heard',
+    chatTurns: '{n} turns',
+    thinkTitle: 'Thinking', thinkDesc: 'Live tool-call timeline + the latest turn\'s full internal chain (models/tools/decision/TTS)',
+    thinkLiveEmpty: 'No activity', thinkTurnEmpty: 'No internal calls recorded for this turn',
+    toolRunning: 'Running', toolDone: 'Done', toolError: 'Error',
+    toolsTitle: 'Tools & Skills', toolsDesc: 'Skills the assistant can call — built-ins and MCP plugin servers (custom tools plug in via config)',
+    toolsRefresh: 'Refresh', toolsEmpty: 'No tools available',
+    toolsSourceBuiltin: 'Built-in', toolsSourceMcp: 'MCP·{name}',
     // Resource profile (SPEC appendix A #40)
     resTitle: 'Resource Profile', resDesc: 'AI features are admitted against the boot-time memory budget — small hosts shed heavy models automatically; re-evaluated on restart',
     resModeAuto: 'Auto', resModeAll: 'All on',
@@ -621,6 +647,9 @@ export function applyLang() {
   });
   document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => {
     node.setAttribute('placeholder', t(node.dataset.i18nPlaceholder));
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach((node) => {
+    node.setAttribute('title', t(node.dataset.i18nTitle));
   });
   document.querySelectorAll('.lang-btn').forEach((b) => {
     b.textContent = store.lang === 'zh' ? 'EN' : '中';

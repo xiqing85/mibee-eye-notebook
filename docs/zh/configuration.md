@@ -189,6 +189,34 @@ gauge 输出。重启时按届时水位重算。
 enabled = true
 ```
 
+### [agent] - 对话 Agent 工具与技能（SPEC §3.5 / 附录 A #43）
+
+对话助手的工具调用循环。内置工具恒注册：`time.now`（本地时间）、
+`weather.current`（复用 `[tools]` 天气配置——需设置 `weather_city`）、
+`camera.snapshot`（最新画面 + 查看地址）。**自定义插件**以 MCP
+（Model Context Protocol，spec 2025-06-18）stdio 子进程服务器接入：任意
+MCP 服务器可执行文件皆可——设备 spawn 它、经换行分帧 JSON-RPC 握手、
+列出其工具、在对话中按需调用（问天气 → 模型调 `weather.current` → 结果
+回填 → 回复引用真实数据）。工具结果进入模型上下文前截断 8 KiB；工具
+失败如实回填（模型据实告知，绝不编造）。注册表为空（无任何工具）时对话
+退化为普通路径，行为零变化。云端走原生 `tools`/`tool_calls` API；本地
+Qwen3 走其原生 `<tool_call>` 提示格式。`GET /api/tools` 列出暴露给模型的
+全部工具（透明性清单）。信任边界：MCP 服务器是部署者显式配置的本地子
+进程——不自动安装、不远程发现；后续版本可为敏感操作增加逐工具确认门。
+
+```toml
+[agent]
+enabled = true
+max_steps = 3             # 工具调用轮数上限，超限强制文字收口
+step_timeout_ms = 15000   # 单次工具执行超时
+
+# 自定义工具插件示例（任意 MCP stdio 服务器）：
+[[agent.mcp_servers]]
+name = "home"
+command = "python3"
+args = ["/home/you/.config/mibee-eye/mcp/home_tools.py"]
+```
+
 ### [desktop] - 托盘图标与桌面通知（规范附录 A #42）
 
 带桌面会话主机的本机存在感。全部 fail-open：无会话总线（`DBUS_SESSION_BUS_ADDRESS` 或 `$XDG_RUNTIME_DIR/bus`）整体跳过、仅记一行日志——headless 服务器零影响。托盘显示相机图标，左键（或菜单项）经 `xdg-open` 打开 Web 界面（优先 `web.http_port`，否则 TLS 端口）。每次告警上升沿（视觉/声音/区域）发桌面通知；首次发送失败（无通知守护）即在本轮运行内停用。
