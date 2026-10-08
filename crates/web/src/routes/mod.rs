@@ -46,8 +46,16 @@ pub fn chrono_now() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-/// Server start instant, set once on first access.
+/// Server boot instant. `LazyLock` initializes on **first access**, so
+/// [`mark_boot_time`] must be called at the very start of the server run
+/// paths — otherwise /api/health `uptime` counts from the first health
+/// request instead of process boot (its documented semantics).
 static START_TIME: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// Capture the boot instant (idempotent; the first call wins).
+pub fn mark_boot_time() {
+    std::sync::LazyLock::force(&START_TIME);
+}
 
 /// In-memory tracking of login failures for per-user exponential-backoff lockout.
 struct LoginFailures {

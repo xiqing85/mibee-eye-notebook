@@ -861,6 +861,7 @@ pub async fn run(
     models: Arc<routes::models_api::ModelManager>,
     cloud: Arc<crate::cloud::CloudAi>,
 ) -> anyhow::Result<()> {
+    crate::routes::mark_boot_time();
     observability::register_metrics()?;
 
     let auth_db = Arc::new(Mutex::new(auth_db));
@@ -984,6 +985,7 @@ pub async fn run_with_shutdown(
     agent_config: crate::agent::AgentConfig,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
+    crate::routes::mark_boot_time();
     observability::register_metrics()?;
     // Boot-time feature admission onto the scrape surface (#40).
     observability::publish_resource_profile(
