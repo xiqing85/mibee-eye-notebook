@@ -65,6 +65,8 @@ pub async fn get_capabilities(
     Extension(stream_manager): Extension<Arc<crate::stream_manager::StreamManager>>,
     Extension(_protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
     Extension(convlog): Extension<Arc<crate::conversations::ConversationLog>>,
+    Extension(agent): Extension<Arc<crate::agent::ToolRegistry>>,
+    Extension(agent_config): Extension<crate::agent::AgentConfig>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
     static CACHE: std::sync::OnceLock<CapabilitiesResponse> = std::sync::OnceLock::new();
@@ -101,6 +103,16 @@ pub async fn get_capabilities(
     // Dialogue turn records (SPEC §3.4): one SSE event per finished turn.
     if convlog.is_enabled() {
         events.push("conversation");
+    }
+    // Agent tool-calling steps (SPEC §3.5 `agent_step`): emitted while
+    // the agent loop can engage at all.
+    let tool_count = if agent_config.enabled {
+        agent.cached_specs().len()
+    } else {
+        0
+    };
+    if agent_config.enabled && tool_count > 0 {
+        events.push("agent_step");
     }
     // Meeting lifecycle (SPEC appendix A #27).
     if meeting.is_active() {
@@ -152,6 +164,9 @@ pub async fn get_capabilities(
         "chat": chat.is_active(),
         // Dialogue turn records (SPEC §3.4) — the human-readable log.
         "conversations": convlog.is_enabled(),
+        // Tool/skill framework (SPEC §3.5): built-ins + MCP plugin
+        // servers; `count` mirrors the current registry listing.
+        "tools": tools_document(agent_config.enabled, tool_count),
         // Resource tier the LLM booted into (#30-E).
         "llm_tier": llm_tier.0.as_str(),
         // Boot-time feature admission snapshot (appendix A #40):
@@ -214,12 +229,18 @@ fn observability_document() -> serde_json::Value {
         "metrics": true,
         "logs": true,
         "requests": true,
-        // Conversation model-call chains (SPEC §3.3) and per-model
+        // Conversation model call chains (SPEC §3.3) and per-model
         // Prometheus families (appendix A #39) — additive keys, absence
         // means false for older frontends.
         "traces": true,
         "model_metrics": true,
     })
+}
+
+/// The `tools` capability object (SPEC §3.5) — same nesting-trick as
+/// [`observability_document`].
+fn tools_document(enabled: bool, count: usize) -> serde_json::Value {
+    serde_json::json!({ "enabled": enabled, "count": count })
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +317,8 @@ mod tests {
                 Arc::new(crate::routes::events::new_event_bus()),
                 true,
             ))),
+            Extension(crate::server::AppRouterState::agent_for_tests().0),
+            Extension(crate::server::AppRouterState::agent_for_tests().1),
             Extension(security::middleware::AuthenticatedUser("admin".to_string())),
         )
         .await
@@ -312,6 +335,17 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::json!("conversation"))
+        );
+        // Tool/skill framework (SPEC §3.5): the fixture registry carries
+        // the built-ins, so the capability object + agent_step event ride
+        // along.
+        assert_eq!(json["tools"]["enabled"], serde_json::json!(true));
+        assert!(json["tools"]["count"].as_u64().unwrap_or(0) >= 2);
+        assert!(
+            json["events"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("agent_step"))
         );
         // No active streams → substream capability false (SPEC appendix
         // A #20: it follows an active substream pipeline, not the config).

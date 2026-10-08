@@ -12,8 +12,10 @@ import { initLive, startLive, stopLive, refreshCameraSelect, renderDetections } 
 import { initAi, handleModelChanged } from './ai.js';
 import { handleAlarmEvent, handleAlarmDescription, handleVoiceTranscript } from './alarm.js';
 import { initZones, updateZonesVisibility, refreshZones, renderZonesOverlay } from './zones.js';
-import { initChat, updateChatVisibility, handleChatReplyEvent } from './chat.js';
+import { initChat, updateChatVisibility, handleChatReplyEvent, refreshChatHistory, handleConversationEvent } from './chat.js';
 import { initWaveform, updateWaveformVisibility, handleAudioLevel } from './waveform.js';
+import { initThink, handleAgentStep, handleTurnFinished, showTurnThinking } from './think.js';
+import { initTools, refreshTools, startToolsPolling } from './tools.js';
 import { initPtz, fetchPtz, updatePtzVisibility, handlePtzEvent } from './ptz.js';
 import { initImaging, handleParamChanged } from './imaging.js';
 import { refreshCameras, renderCameras, initCameras, stopCameras, announceRecording } from './cameras.js';
@@ -21,7 +23,6 @@ import { loadConfig, initSettings } from './settings.js';
 import { checkApi, refreshStatus, initStatus, startStatusPolling } from './status.js';
 import { initModelMetrics, startModelMetricsPolling } from './modelmetrics.js';
 import { initTraces, startTracesPolling, refreshTraces, tracesCap } from './traces.js';
-import { initConvLog, refreshConvLog, handleConversationEvent } from './convlog.js';
 import { renderDevices, initDevices } from './devices.js';
 import { renderRecords, renderSpeakers, renderMeetings, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
 import { renderModels, initModels, updateModelsVisibility, handleModelTask } from './models.js';
@@ -84,7 +85,13 @@ export function showView(name) {
   if (name === 'status') { checkApi(); refreshStatus(); }
   if (name === 'devices') renderDevices();
   if (name === 'records') { renderRecords(); renderMeetings(); }
-  if (name === 'assistant') { renderSpeakers(); refreshConvLog(); }
+  if (name === 'assistant') {
+    renderSpeakers();
+    refreshChatHistory().then((turns) => {
+      if (turns && turns.length) showTurnThinking(turns[0]);
+    });
+    refreshTools();
+  }
 }
 
 function teardownApp() {
@@ -122,7 +129,8 @@ async function enterApp() {
   initWaveform();
   initModelMetrics();
   initTraces();
-  initConvLog();
+  initThink();
+  initTools();
   refreshCameraSelect();
   if (store.ptzEnabled) fetchPtz();
   if (hasCap('zones')) refreshZones();
@@ -137,7 +145,11 @@ async function enterApp() {
     alarm: (p) => { handleAlarmEvent(p); recordsSseHook('alarm', p); },
     voice_transcript: (p) => { handleVoiceTranscript(p); recordsSseHook('voice_transcript', p); },
     chat_reply: handleChatReplyEvent,
-    conversation: handleConversationEvent,
+    conversation: (turn) => {
+      handleConversationEvent(turn);
+      handleTurnFinished(turn);
+    },
+    agent_step: handleAgentStep,
     zone_event: () => { /* zone events ride the alarm/toast path */ },
     param_changed: handleParamChanged,
     recording: (p) => {
@@ -152,6 +164,7 @@ async function enterApp() {
   startStatusPolling();
   startModelMetricsPolling();
   startTracesPolling();
+  startToolsPolling();
   if (tracesCap()) refreshTraces();
   // Restore the last view after a reload; default to live view.
   showView(currentView());

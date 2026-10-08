@@ -39,6 +39,14 @@ export function disconnectEvents() {
   setEventsBadge('offline');
 }
 
+/// Test hook: dispatch a payload through the same handler path a real
+/// SSE event takes (used by the visual check suite for deterministic
+/// live-timeline assertions without waiting on broadcast cadence).
+export function dispatchTestEvent(type, payload) {
+  const fn = handlers[type];
+  if (fn) fn(payload || {});
+}
+
 function setEventsBadge(cls) {
   badge('events-badge', 'events-label', cls, t(cls === 'online' ? 'connected' : 'disconnected'));
 }

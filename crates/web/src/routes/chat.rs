@@ -264,6 +264,9 @@ pub async fn chat(
     Extension(wake_word): Extension<Arc<crate::routes::capabilities::WakeWord>>,
     Extension(cloud): Extension<Arc<crate::cloud::CloudAi>>,
     Extension(convlog): Extension<Arc<crate::conversations::ConversationLog>>,
+    Extension(registry): Extension<Arc<crate::agent::ToolRegistry>>,
+    Extension(agent_config): Extension<crate::agent::AgentConfig>,
+    Extension(event_tx): Extension<Arc<crate::routes::events::EventBus>>,
     Extension(pool): Extension<SqlitePool>,
     Extension(_user): Extension<AuthenticatedUser>,
     body: axum::extract::Json<ChatRequest>,
@@ -313,6 +316,146 @@ pub async fn chat(
         content: body.text.clone(),
     });
     let grounded = if scene.is_some() { "scene" } else { "none" };
+
+    // ── Agent tool loop (SPEC §3.5): text routes with a non-empty
+    // registry run the tool-calling loop first; any failure falls
+    // through to the legacy single-shot legs unchanged (fail-open).
+    if !body.vision
+        && matches!(route, ChatRoute::CloudChat | ChatRoute::LocalLlm)
+        && registry.agent_ready(&agent_config)
+    {
+        let cloud_first = route == ChatRoute::CloudChat;
+        let engine_label = if cloud_first { "cloud" } else { "local" };
+        let (think_source, model_id) = if cloud_first {
+            ("cloud.chat", cloud.config().chat_model.clone())
+        } else {
+            ("llm", engine.model_variant())
+        };
+        let channel: Box<dyn crate::agent::runner::ModelChannel> = if cloud_first {
+            Box::new(crate::agent::channels::CloudChannel {
+                cloud: Arc::clone(&cloud),
+                timeout_secs: cloud.config().timeout_secs,
+            })
+        } else {
+            Box::new(crate::agent::channels::LocalChannel {
+                engine: Arc::clone(&engine),
+            })
+        };
+        let conv_id = conv.id().to_string();
+        let tx = Arc::clone(&event_tx);
+        // (source, model, note, duration) — folded into the draft after.
+        let mut thinks: Vec<(String, String, String, u64)> = Vec::new();
+        let agent_started = std::time::Instant::now();
+        let send_step = |tx: &crate::routes::events::EventBus,
+                         conv_id: &str,
+                         kind: &str,
+                         state: &str,
+                         tool: Option<String>,
+                         args: Option<serde_json::Value>,
+                         result: Option<String>,
+                         duration_ms: Option<u64>| {
+            let _ = tx.send(crate::routes::events::CameraEvent::AgentStep {
+                conversation_id: conv_id.to_string(),
+                kind: kind.to_string(),
+                state: state.to_string(),
+                tool,
+                args,
+                result,
+                duration_ms,
+                note: None,
+            });
+        };
+        let outcome = crate::agent::runner::run_agent(
+            &registry,
+            channel.as_ref(),
+            &turns,
+            engine_label,
+            agent_config.max_steps,
+            std::time::Duration::from_millis(agent_config.step_timeout_ms.max(1000)),
+            |step| match step {
+                crate::agent::AgentStep::PhaseThinking => {
+                    send_step(&tx, &conv_id, "phase", "thinking", None, None, None, None);
+                }
+                crate::agent::AgentStep::PhaseAnswering { engine } => {
+                    let _ = engine; // the SSE note field stays unused in v1
+                    send_step(&tx, &conv_id, "phase", "answering", None, None, None, None);
+                }
+                crate::agent::AgentStep::ToolStarted { name, args } => {
+                    send_step(
+                        &tx,
+                        &conv_id,
+                        "tool",
+                        "running",
+                        Some(name.clone()),
+                        Some(args.clone()),
+                        None,
+                        None,
+                    );
+                }
+                crate::agent::AgentStep::ToolFinished {
+                    name: _,
+                    args: _,
+                    record,
+                } => {
+                    send_step(
+                        &tx,
+                        &conv_id,
+                        "tool",
+                        if record.ok { "done" } else { "error" },
+                        Some(record.name.clone()),
+                        Some(record.args.clone()),
+                        Some(record.result.clone()),
+                        Some(record.duration_ms),
+                    );
+                    thinks.push((
+                        "tool".to_string(),
+                        record.name.clone(),
+                        record.result.clone(),
+                        record.duration_ms,
+                    ));
+                }
+            },
+        )
+        .await;
+        match outcome {
+            Ok(out) => {
+                let dur = agent_started.elapsed().as_millis() as u64;
+                conv.close();
+                let mut d = draft;
+                for (source, model, note, ms) in thinks {
+                    d = d.think(&source, &model, note, ms);
+                }
+                let note = if out.tokens.0 > 0 || out.tokens.1 > 0 {
+                    format!(
+                        "agent 应答 · prompt {}↑ / completion {}↓ tok（含 {} 次工具调用）",
+                        out.tokens.0,
+                        out.tokens.1,
+                        out.tool_calls.len()
+                    )
+                } else {
+                    format!("agent 应答（含 {} 次工具调用）", out.tool_calls.len())
+                };
+                d = d.think(think_source, &model_id, note, dur);
+                convlog
+                    .finish(d.reply(out.reply.clone(), engine_label))
+                    .await;
+                return Ok((
+                    StatusCode::OK,
+                    axum::Json(json!({
+                        "reply": out.reply,
+                        "engine": engine_label,
+                        "grounded": grounded,
+                        "applied": "immediate",
+                        "tool_calls": out.tool_calls,
+                    })),
+                ));
+            }
+            Err(e) => {
+                // Fail-open: the legacy legs below answer instead.
+                tracing::warn!(error = %e, "chat: agent loop failed — falling back to legacy legs");
+            }
+        }
+    }
 
     // ── Cloud routing (SPEC §4.10: text→chat_model, vision→vision_model
     // on a fresh frame; failures fall back locally when allowed).

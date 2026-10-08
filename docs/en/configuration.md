@@ -197,6 +197,41 @@ records nothing and hides the card (privacy switch).
 enabled = true
 ```
 
+### [agent] - Agent tools & skills (SPEC §3.5 / appendix A #43)
+
+The dialogue assistant's tool-calling loop. Built-in tools are always
+registered: `time.now` (local clock), `weather.current` (reuses the
+`[tools]` weather config — requires `weather_city` to be set), and
+`camera.snapshot` (fresh frame + viewing endpoint). **Custom plugins**
+plug in as MCP (Model Context Protocol, spec 2025-06-18) stdio
+subprocess servers: any MCP server executable works — the device spawns
+it, handshakes over newline-delimited JSON-RPC, lists its tools, and
+calls them during dialogue (ask about weather → the model calls
+`weather.current` → the observation is fed back → the reply cites real
+data). Tool results are truncated to 8 KiB before entering the model
+context; tool failures are reported to the model honestly (it says so
+instead of inventing data). An empty registry (no tools at all)
+degrades dialogue to the plain non-agent path with zero behavior
+change. Cloud providers use their native `tools`/`tool_calls` API; the
+local Qwen3 engine uses its native `<tool_call>` prompt format.
+`GET /api/tools` lists everything exposed to the model (transparency
+surface). Trust boundary: MCP servers are deployer-configured local
+subprocesses — nothing is auto-installed or discovered remotely; later
+releases can add per-tool confirmation gates for sensitive actions.
+
+```toml
+[agent]
+enabled = true
+max_steps = 3             # tool-call iterations before forcing a text answer
+step_timeout_ms = 15000   # per tool execution timeout
+
+# Custom tool plugin example (any MCP stdio server):
+[[agent.mcp_servers]]
+name = "home"
+command = "python3"
+args = ["/home/you/.config/mibee-eye/mcp/home_tools.py"]
+```
+
 ### [desktop] - Tray icon & desktop notifications (SPEC appendix A #42)
 
 Desktop-session presence for hosts with a GUI. All fail-open: without a

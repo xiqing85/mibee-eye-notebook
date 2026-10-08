@@ -194,6 +194,160 @@ impl CloudAi {
         result
     }
 
+    /// Agent tool-calling round trip (SPEC §3.5): the OpenAI-compatible
+    /// `tools` array goes out with the request; the reply may carry
+    /// `tool_calls` instead of (or alongside) text. `with_tools == false`
+    /// drops the tool table (the loop's forced final text answer).
+    pub async fn agent_complete(
+        &self,
+        turns: &[ChatTurn],
+        tools: &[crate::agent::ToolSpec],
+        with_tools: bool,
+        timeout_secs: u64,
+    ) -> Result<
+        (
+            Option<String>,
+            Vec<crate::agent::runner::ParsedToolCall>,
+            Option<(u64, u64)>,
+        ),
+        CloudError,
+    > {
+        let cfg = self.config();
+        if cfg.provider == "off" || cfg.api_key.is_empty() {
+            return Err(CloudError::NotEnabled);
+        }
+        let model = cfg.chat_model.clone();
+        if model.is_empty() {
+            return Err(CloudError::NoModel);
+        }
+        let call = observability::model_call("cloud.chat", &model);
+        let result = self
+            .agent_request(&cfg, model, turns, tools, with_tools, timeout_secs)
+            .await;
+        match &result {
+            Ok((_, _, usage)) => {
+                call.finish_ok(usage.map(|u| u.0), usage.map(|u| u.1));
+            }
+            Err(_) => {
+                call.finish_err();
+            }
+        }
+        result
+    }
+
+    /// The agent variant of the raw HTTP round trip (no vision legs).
+    async fn agent_request(
+        &self,
+        cfg: &CloudConfig,
+        model: String,
+        turns: &[ChatTurn],
+        tools: &[crate::agent::ToolSpec],
+        with_tools: bool,
+        timeout_secs: u64,
+    ) -> Result<
+        (
+            Option<String>,
+            Vec<crate::agent::runner::ParsedToolCall>,
+            Option<(u64, u64)>,
+        ),
+        CloudError,
+    > {
+        let messages: Vec<serde_json::Value> = turns
+            .iter()
+            .map(|t| json!({ "role": t.role, "content": t.content }))
+            .collect();
+        let mut body = json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": 512,
+        });
+        if with_tools && !tools.is_empty() {
+            let defs: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.input_schema,
+                        }
+                    })
+                })
+                .collect();
+            body["tools"] = json!(defs);
+            body["tool_choice"] = json!("auto");
+        }
+        let url = format!(
+            "{}/chat/completions",
+            self.base_url.read().expect("cloud base url lock")
+        );
+        let timeout = Duration::from_secs(timeout_secs.max(5));
+        let resp = tokio::time::timeout(
+            timeout,
+            self.http
+                .post(&url)
+                .bearer_auth(&cfg.api_key)
+                .json(&body)
+                .send(),
+        )
+        .await
+        .map_err(|_| CloudError::Timeout)?
+        .map_err(|e| CloudError::Http(format!("request: {e}")))?;
+        let status = resp.status();
+        let payload: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| CloudError::Http(format!("body: {e}")))?;
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(CloudError::InvalidKey);
+        }
+        if !status.is_success() {
+            let msg = payload
+                .pointer("/error/message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            return Err(CloudError::Http(format!("HTTP {status}: {msg}")));
+        }
+        // Text may be absent (null) when the model answers with tool calls.
+        let text = payload
+            .pointer("/choices/0/message/content")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let mut calls = Vec::new();
+        for tc in payload
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let name = match tc.pointer("/function/name").and_then(|v| v.as_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let arguments = tc
+                .pointer("/function/arguments")
+                .and_then(|v| v.as_str())
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_else(|| json!({}));
+            calls.push(crate::agent::runner::ParsedToolCall { name, arguments });
+        }
+        let usage = payload
+            .pointer("/usage/prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .zip(
+                payload
+                    .pointer("/usage/completion_tokens")
+                    .and_then(|v| v.as_u64()),
+            );
+        if text.is_none() && calls.is_empty() {
+            return Err(CloudError::Http(
+                "no content and no tool_calls in reply".into(),
+            ));
+        }
+        Ok((text, calls, usage))
+    }
+
     /// The raw OpenAI-compatible HTTP round trip (no metrics wrapper).
     async fn complete_request(
         &self,

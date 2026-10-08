@@ -412,6 +412,8 @@ mod tests {
             protocol_runtime: Arc::new(tokio::sync::Mutex::new(
                 crate::protocol_runtime::ProtocolRuntime::new(),
             )),
+            agent: crate::server::AppRouterState::agent_for_tests().0,
+            agent_config: crate::server::AppRouterState::agent_for_tests().1,
         }
     }
 

@@ -94,7 +94,7 @@ Cookie 会话 + CSRF 双提交：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"` 或 `"audio"`、`targets` / `class` + `score`、`timestamp` 毫秒时间戳）、`zone_event`（`{camera_id, zone, event, track_id, label, timestamp}`）、`voice_transcript`（`{keyword, transcript, speaker, timestamp}`——`speaker` 为最优匹配的已注册声纹，未知为空串）、`chat_reply`（`{source, reply, timestamp}`）、`voice_decision`（`{camera_id, transcript, choice, confidence, act_probability, timestamp}`——语音转写的意图决策）、`alarm_description`（`{camera_id, alarm_timestamp, description, elapsed_s}`）、`meeting_state`（`{camera_id:"all", meeting_id, status:"recording"\|"processing"\|"done"\|"failed", timestamp}`——会议生命周期，SPEC 附录 A #27）。按能力门控的事件只在对应引擎活跃时送出。 |
+| GET | `/api/events` | SSE 流（`text/event-stream`，15 秒 keepalive）。事件：`camera_added`、`camera_offlined`、`ai_detection`、`ai_model_changed`、`alarm`（SPEC §6：`camera_id`、`active: true`、`source: "ai"` 或 `"audio"`、`targets` / `class` + `score`、`timestamp` 毫秒时间戳）、`zone_event`（`{camera_id, zone, event, track_id, label, timestamp}`）、`voice_transcript`（`{keyword, transcript, speaker, timestamp}`——`speaker` 为最优匹配的已注册声纹，未知为空串）、`chat_reply`（`{source, reply, timestamp}`）、`voice_decision`（`{camera_id, transcript, choice, confidence, act_probability, timestamp}`——语音转写的意图决策）、`alarm_description`（`{camera_id, alarm_timestamp, description, elapsed_s}`）、`meeting_state`（`{camera_id:"all", meeting_id, status:"recording"\|"processing"\|"done"\|"failed", timestamp}`——会议生命周期，SPEC 附录 A #27）、`conversation`（`{id, conversation_id, origin, user_text, thinking[], reply_text, engine}`——一轮对话完成，SPEC §3.4；`thinking` 可含 `source:"tool"` 工具条目）、`agent_step`（`{conversation_id, kind:"tool"\|"phase", state, tool?, args?, result?, duration_ms?}`——agent 工具调用实时过程与阶段切换，SPEC §3.5）。按能力门控的事件只在对应引擎活跃时送出。 |
 
 ### 端侧智能（设备扩展）
 
@@ -103,7 +103,7 @@ Cookie 会话 + CSRF 双提交：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/chat` | 接地对话：`{"text","history":[{role,content}],"vision"?}` → `{"reply","engine","grounded"}`（能力位 `chat`；语音环路的回复另经 `chat_reply` SSE 送出）。每轮注入实时场景接地（【画面】检测标签计数 + 最近 VLM 描述、【本机】时钟/开机时长/内存、可选【联网】天气——附录 A #29）；`vision:true` 以新鲜帧走 VLM 看图直答（`grounded:"vlm"`，CPU 上较慢），失败回落接地 LLM。配置了云端时云优先、失败回落本地，`engine` ∈ `cloud\|local\|vlm` 披露实际路径（#35） |
+| POST | `/api/chat` | 接地对话：`{"text","history":[{role,content}],"vision"?}` → `{"reply","engine","grounded"}`（能力位 `chat`；语音环路的回复另经 `chat_reply` SSE 送出）。每轮注入实时场景接地（【画面】检测标签计数 + 最近 VLM 描述、【本机】时钟/开机时长/内存、可选【联网】天气——附录 A #29）；`vision:true` 以新鲜帧走 VLM 看图直答（`grounded:"vlm"`，CPU 上较慢），失败回落接地 LLM。配置了云端时云优先、失败回落本地，`engine` ∈ `cloud\|local\|vlm` 披露实际路径（#35）。注册了工具（§3.5）时文本轮走 agent 工具循环，响应加法携带 `tool_calls: [{name, args, ok, result, duration_ms}]` 数组（#43） |
 | POST | `/api/ocr` | body = JPEG 原始字节 → `{"items":[{text, score, bbox}]}`（能力位 `ocr`） |
 | GET | `/api/audio/records` | 听觉记录（能力位 `audio_records`）：`{"records":[{id, kind:"sound"\|"voice", text, score, keyword, speaker, timestamp_ms}]}`，最新在前；`?limit=N`（缺省 100、上限 500）、`?kind=sound\|voice` 过滤 |
 | DELETE | `/api/audio/records` | 清空全部记录 → `{"applied":"immediate","removed":N}` |
@@ -146,6 +146,20 @@ Cookie 会话 + CSRF 双提交：
 
 轮对象：`{"id","conversation_id","origin":"voice"|"http","started_ms","user_text","thinking":[{"source","model","note","duration_ms"}],"reply_text","engine":"cloud"|"local"|"vlm"|null}`。
 每轮完成同时经 SSE `conversation` 事件推送（`conversations` 能力门控）。SQLite 持久、FIFO 封顶 1000 轮；`[conversations] enabled = false` 整体关闭记录（隐私开关，能力亦不通告）。
+
+### 对话 Agent 工具与技能（规范 §3.5）
+
+对话助手的工具注册表——内置设备能力 + 部署者注册的 MCP
+（Model Context Protocol 2025-06-18）stdio 子进程服务器。本清单即
+"暴露给模型的工具"透明面；能力键 `tools`（`{enabled, count}`）。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/tools` | 工具清单 → `{"tools":[{name, description, input_schema, source}]}`；`source` = `"builtin"` 或 `"mcp:<服务器名>"` |
+
+内置工具：`time.now`、`weather.current`（需 `[tools] weather_city`）、
+`camera.snapshot`（最新画面 + 查看地址）。实时执行经 SSE `agent_step`
+事件送出，并落进对话记录 `thinking` 的 `source:"tool"` 条目。
 
 ### 主机设备（规范 §4.8）
 

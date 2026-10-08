@@ -459,6 +459,15 @@ async fn main() -> anyhow::Result<()> {
         config.conversations.enabled,
     ));
 
+    // Agent tool/skill registry (SPEC §3.5): built-ins + MCP stdio plugin
+    // servers. Built before the voice bridge captures it; the stream
+    // manager attaches later (camera.snapshot). A warmup task connects
+    // the MCP servers so the capabilities count settles.
+    let agent_registry = Arc::new(web::agent::ToolRegistry::new(
+        Arc::clone(&shared_tools),
+        &config.agent,
+    ));
+
     // Desktop integration (SPEC appendix A #42): tray icon + desktop
     // notifications — no-ops without a desktop session (fail-open).
     let desktop = mibee_eye::desktop::Desktop::new(&config.desktop);
@@ -1174,6 +1183,8 @@ async fn main() -> anyhow::Result<()> {
         let grounding_for_voice = Arc::clone(&grounding_state);
         let streams_for_voice = Arc::clone(&segment_registry);
         let tools_for_voice = Arc::clone(&shared_tools);
+        let agent_registry_for_voice = Arc::clone(&agent_registry);
+        let agent_config_for_voice = config.agent.clone();
         let wake_word_for_voice = config.voice.wake_word.clone();
         let voice_engine_for_arming = Arc::clone(&voice_engine);
         // Conversation session (#30-B): the last 120 s of turns give
@@ -1404,6 +1415,9 @@ async fn main() -> anyhow::Result<()> {
                             });
                             let engine = chat_for_voice.clone();
                             let cloud = cloud_for_voice.clone();
+                            let agent_registry = Arc::clone(&agent_registry_for_voice);
+                            let agent_cfg = agent_config_for_voice.clone();
+                            let agent_tx = bridge_tx.clone();
                             let tx = bridge_tx.clone();
                             let tts_for_reply = tts_engine.clone();
                             let grounded = grounded.clone();
@@ -1426,6 +1440,151 @@ async fn main() -> anyhow::Result<()> {
                             // with the error thinking note appended.
                             let answer = async move {
                                 let mut draft = draft;
+                                // Agent tool loop (SPEC §3.5) — same
+                                // fail-open contract as the HTTP route:
+                                // any error falls through to the legacy
+                                // single-shot legs below.
+                                if agent_registry.agent_ready(&agent_cfg) {
+                                    let cloud_first = cloud.enabled();
+                                    let engine_label = if cloud_first { "cloud" } else { "local" };
+                                    let (think_source, model_id) = if cloud_first {
+                                        ("cloud.chat", cloud.config().chat_model.clone())
+                                    } else {
+                                        ("llm", engine.model_variant())
+                                    };
+                                    let channel: Box<dyn web::agent::runner::ModelChannel> =
+                                        if cloud_first {
+                                            Box::new(web::agent::channels::CloudChannel {
+                                                cloud: cloud.clone(),
+                                                timeout_secs: cloud.config().timeout_secs,
+                                            })
+                                        } else {
+                                            Box::new(web::agent::channels::LocalChannel {
+                                                engine: engine.clone(),
+                                            })
+                                        };
+                                    let conv_id = conv_for_answer.id().to_string();
+                                    let agent_started = std::time::Instant::now();
+                                    let tool_thinks =
+                                        std::sync::Mutex::new(
+                                            Vec::<(String, String, String, u64)>::new(),
+                                        );
+                                    let outcome = web::agent::runner::run_agent(
+                                        &agent_registry,
+                                        channel.as_ref(),
+                                        &turns,
+                                        engine_label,
+                                        agent_cfg.max_steps,
+                                        std::time::Duration::from_millis(
+                                            agent_cfg.step_timeout_ms.max(1000),
+                                        ),
+                                        |step| {
+                                            let event = match &step {
+                                                web::agent::AgentStep::PhaseThinking => {
+                                                    web::routes::events::CameraEvent::AgentStep {
+                                                        conversation_id: conv_id.clone(),
+                                                        kind: "phase".into(),
+                                                        state: "thinking".into(),
+                                                        tool: None,
+                                                        args: None,
+                                                        result: None,
+                                                        duration_ms: None,
+                                                        note: None,
+                                                    }
+                                                }
+                                                web::agent::AgentStep::PhaseAnswering {
+                                                    ..
+                                                } => web::routes::events::CameraEvent::AgentStep {
+                                                    conversation_id: conv_id.clone(),
+                                                    kind: "phase".into(),
+                                                    state: "answering".into(),
+                                                    tool: None,
+                                                    args: None,
+                                                    result: None,
+                                                    duration_ms: None,
+                                                    note: None,
+                                                },
+                                                web::agent::AgentStep::ToolStarted {
+                                                    name,
+                                                    args,
+                                                } => web::routes::events::CameraEvent::AgentStep {
+                                                    conversation_id: conv_id.clone(),
+                                                    kind: "tool".into(),
+                                                    state: "running".into(),
+                                                    tool: Some(name.clone()),
+                                                    args: Some(args.clone()),
+                                                    result: None,
+                                                    duration_ms: None,
+                                                    note: None,
+                                                },
+                                                web::agent::AgentStep::ToolFinished {
+                                                    record,
+                                                    ..
+                                                } => web::routes::events::CameraEvent::AgentStep {
+                                                    conversation_id: conv_id.clone(),
+                                                    kind: "tool".into(),
+                                                    state: if record.ok {
+                                                        "done".into()
+                                                    } else {
+                                                        "error".into()
+                                                    },
+                                                    tool: Some(record.name.clone()),
+                                                    args: Some(record.args.clone()),
+                                                    result: Some(record.result.clone()),
+                                                    duration_ms: Some(record.duration_ms),
+                                                    note: None,
+                                                },
+                                            };
+                                            let _ = agent_tx.send(event);
+                                            if let web::agent::AgentStep::ToolFinished {
+                                                record,
+                                                ..
+                                            } = step
+                                            {
+                                                tool_thinks
+                                                    .lock()
+                                                    .expect("agent thinks lock")
+                                                    .push((
+                                                        "tool".to_string(),
+                                                        record.name.clone(),
+                                                        record.result.clone(),
+                                                        record.duration_ms,
+                                                    ));
+                                            }
+                                        },
+                                    )
+                                    .await;
+                                    match outcome {
+                                        Ok(out) => {
+                                            let dur = agent_started.elapsed().as_millis() as u64;
+                                            for (source, model, note, ms) in std::mem::take(
+                                                &mut *tool_thinks
+                                                    .lock()
+                                                    .expect("agent thinks lock"),
+                                            ) {
+                                                draft = draft.think(&source, &model, note, ms);
+                                            }
+                                            let note = if out.tokens.0 > 0 || out.tokens.1 > 0 {
+                                                format!(
+                                                    "agent 应答 · prompt {}↑ / completion {}↓ tok（含 {} 次工具调用）",
+                                                    out.tokens.0,
+                                                    out.tokens.1,
+                                                    out.tool_calls.len()
+                                                )
+                                            } else {
+                                                format!(
+                                                    "agent 应答（含 {} 次工具调用）",
+                                                    out.tool_calls.len()
+                                                )
+                                            };
+                                            draft = draft.think(think_source, &model_id, note, dur);
+                                            return Ok((draft, out.reply, engine_label));
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "voice: agent loop failed — falling back to legacy legs");
+                                        }
+                                    }
+                                }
                                 if cloud.enabled() {
                                     let model_id = cloud.config().chat_model.clone();
                                     let mut span = conv_for_answer.span(
@@ -1662,6 +1821,14 @@ async fn main() -> anyhow::Result<()> {
             .with_ai(ai_engine.clone())
             .with_segment_slots(Arc::clone(&segment_registry)),
     );
+    // Agent tool/skill registry (SPEC §3.5): built-ins + MCP stdio plugin
+    // servers. A warmup task connects the servers so the capabilities
+    // count settles; unreachable servers simply contribute no tools.
+    agent_registry.attach_streams(stream_manager.clone());
+    {
+        let warmup = Arc::clone(&agent_registry);
+        tokio::spawn(async move { warmup.warmup().await });
+    }
 
     // Auto-start streams for cameras with DB status "running" (resume across restart).
     // This ensures the in-memory StreamManager state matches the persistent DB state.
@@ -2001,6 +2168,8 @@ async fn main() -> anyhow::Result<()> {
         model_manager,
         cloud_ai.clone(),
         conversations_log,
+        Arc::clone(&agent_registry),
+        config.agent.clone(),
     )
     .await?;
 

@@ -350,6 +350,10 @@ pub struct AppConfig {
     /// Conversation records (SPEC §3.4): privacy master switch.
     #[serde(default)]
     pub conversations: ConversationsConfig,
+    /// Agent tool/skill framework (SPEC §3.5 / appendix A #43): the
+    /// tool-calling loop + MCP stdio plugin servers.
+    #[serde(default)]
+    pub agent: web::agent::AgentConfig,
 }
 
 /// `[models]` — the download root for the model manager (SPEC §4.9).

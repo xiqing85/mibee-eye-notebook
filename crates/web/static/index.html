@@ -235,20 +235,33 @@
       </div>
     </div>
 
-    <!-- ===== View: Assistant (voice chat + who's who) ===== -->
+    <!-- ===== View: Assistant (voiceprint hero + chat + thinking + skills) ===== -->
     <div id="view-assistant" class="view">
       <div class="view-head">
         <h2 data-i18n="assistantTitle">Voice assistant</h2>
         <p class="view-desc" data-i18n="assistantDesc"></p>
       </div>
+      <!-- Voiceprint hero (SPEC §6 audio_level + agent_step states): the
+           assistant's live presence — real mic amplitude drives the
+           scrolling waveform; thinking/answering states ride the agent
+           step events. -->
+      <div id="agent-hero" class="card agent-hero hidden">
+        <div class="agent-hero-top">
+          <span id="agent-state" class="agent-state idle"><span class="agent-dot"></span><span id="agent-state-label" data-i18n="agentStateIdle">Standby</span></span>
+          <span id="agent-activity" class="agent-activity mono" aria-live="polite"></span>
+        </div>
+        <canvas id="agent-waveform" height="110" data-i18n-title="waveformTitle" aria-label="voiceprint waveform"></canvas>
+      </div>
       <div class="assistant-grid">
         <div class="card chat-card">
-          <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9.5h7M8.5 12h4.5"/></svg><span data-i18n="chatTitle">AI chat</span></h3>
-          <div id="chat-log" class="chat-log"></div>
-          <div id="chat-waveform-wrap" class="chat-waveform hidden">
-            <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5v3M12 17.5v3M8.5 8v8M15.5 8v8M5 10.5v3M19 10.5v3"/></svg>
-            <canvas id="chat-waveform" width="308" height="44" data-i18n-title="waveformTitle" aria-label="waveform"></canvas>
+          <div class="chat-card-head">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v6a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9.5h7M8.5 12h4.5"/></svg><span data-i18n="chatTitle">AI chat</span></h3>
+            <div class="chat-toolbar hidden" id="chat-toolbar">
+              <span id="chat-count" class="mono chat-count"></span>
+              <button type="button" id="chat-clear" class="btn-small btn-ghost" data-i18n="convClear">Clear all</button>
+            </div>
           </div>
+          <div id="chat-log" class="chat-log"></div>
           <div class="chat-input-row">
             <input id="chat-input" type="text" maxlength="500" autocomplete="off" data-i18n-placeholder="chatPlaceholder">
             <button type="button" id="chat-vision" class="tool-btn chat-vision hidden" data-i18n-title="chatVisionTitle" aria-label="vision">👁</button>
@@ -256,6 +269,25 @@
           </div>
         </div>
         <div class="assistant-side">
+          <!-- Live thinking panel (SPEC §3.4 thinking + §6 agent_step):
+               the agent's tool calls and phases as they happen, plus the
+               latest turn's full internal call list. -->
+          <div id="think-card" class="card hidden">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.4 1 2.3V17h6v-1.2c0-.9.4-1.7 1-2.3A6 6 0 0 0 12 3z"/><path d="M10 20.5h4"/></svg><span data-i18n="thinkTitle">Thinking</span></h3>
+            <p class="card-desc" data-i18n="thinkDesc"></p>
+            <div id="think-live" class="think-live" data-i18n="thinkLiveEmpty">No activity</div>
+            <div id="think-turn" class="think-turn"></div>
+          </div>
+          <!-- Tools / skills (SPEC §3.5): what the assistant can call —
+               built-ins plus MCP plugin servers. -->
+          <div id="tools-card" class="card hidden">
+            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a4 4 0 1 0-1.7 6.9L8 18.2V20h1.8l4.8-4.8a4 4 0 0 0 5.5-5.5l-2.4 2.4-2-.6-.6-2z"/></svg><span data-i18n="toolsTitle">Tools &amp; skills</span></h3>
+            <p class="card-desc" data-i18n="toolsDesc"></p>
+            <div class="live-toolbar records-toolbar">
+              <button type="button" id="tools-refresh" class="btn-small" data-i18n="toolsRefresh">Refresh</button>
+            </div>
+            <div id="tools-list" class="tools-list"></div>
+          </div>
           <!-- Speakers (SPEC appendix A #25) and faces (SPEC appendix A
                #33) teach the assistant who is who — they belong beside the
                chat, not inside records. -->
@@ -289,18 +321,6 @@
             </div>
             <div id="traces-list" class="traces-list"></div>
             <div id="trace-detail"></div>
-          </div>
-          <!-- Conversation records (SPEC §3.4): the human-readable log of
-               every dialogue turn — heard/input text, the internal
-               "thinking" entries, and the AI reply. -->
-          <div id="convlog-card" class="card hidden">
-            <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H9l-4.2 3.4c-.5.4-1.3 0-1.3-.6z"/><path d="M8.5 9h7M8.5 11.5h4.5M15 11.5h.5"/></svg><span data-i18n="convTitle">Conversation Log</span></h3>
-            <p class="card-desc" data-i18n="convDesc"></p>
-            <div class="live-toolbar records-toolbar">
-              <button type="button" id="convlog-refresh" class="btn-small" data-i18n="convRefresh">Refresh</button>
-              <button type="button" id="convlog-clear" class="btn-small" data-i18n="convClear">Clear all</button>
-            </div>
-            <div id="convlog-list" class="convlog-list"></div>
           </div>
         </div>
       </div>

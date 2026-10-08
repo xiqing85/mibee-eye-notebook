@@ -169,6 +169,21 @@ pub enum CameraEvent {
         #[serde(flatten)]
         turn: crate::conversations::ConversationTurn,
     },
+    /// A live agent step (SPEC v1 §6 `agent_step`, §3.5): tool executions
+    /// (running → done/error) and phase switches (thinking/answering) —
+    /// the frontend hero state and live thinking panel ride on this.
+    AgentStep {
+        conversation_id: String,
+        /// `"tool"` | `"phase"`.
+        kind: String,
+        /// tool: `"running"|"done"|"error"`; phase: `"thinking"|"answering"`.
+        state: String,
+        tool: Option<String>,
+        args: Option<serde_json::Value>,
+        result: Option<String>,
+        duration_ms: Option<u64>,
+        note: Option<String>,
+    },
 }
 
 /// Type alias for the broadcast sender used to fan out camera events.
@@ -394,6 +409,40 @@ fn event_to_sse(event: CameraEvent) -> Event {
         CameraEvent::ConversationRecord { turn } => Event::default()
             .event("conversation")
             .data(serde_json::to_value(turn).unwrap_or_default().to_string()),
+        CameraEvent::AgentStep {
+            conversation_id,
+            kind,
+            state,
+            tool,
+            args,
+            result,
+            duration_ms,
+            note,
+        } => {
+            let mut payload = serde_json::json!({
+                "conversation_id": conversation_id,
+                "kind": kind,
+                "state": state,
+            });
+            if let Some(t) = tool {
+                payload["tool"] = serde_json::json!(t);
+            }
+            if let Some(a) = args {
+                payload["args"] = a.clone();
+            }
+            if let Some(r) = result {
+                payload["result"] = serde_json::json!(r);
+            }
+            if let Some(d) = duration_ms {
+                payload["duration_ms"] = serde_json::json!(d);
+            }
+            if let Some(n) = note {
+                payload["note"] = serde_json::json!(n);
+            }
+            Event::default()
+                .event("agent_step")
+                .data(payload.to_string())
+        }
     }
 }
 
