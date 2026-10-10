@@ -45,13 +45,18 @@
   now compact (single-line JSON, terse instruction), the `n_ctx` default
   is 2048, and `n_threads` defaults to half the logical cores (clamped
   2-4; more threads than physical cores measured slower on 4C/8T).
-  ② voice turns carried the tool table even for chit-chat — new
+  ② `n_threads` was a dead config field — `LlamaContextParams` never
+  received it (same for the VLM context), so every deployment ran
+  llama.cpp's own thread default regardless of config; both contexts
+  now apply `n_threads` (measured: honoring 4 threads on the 4C/8T test
+  host roughly halves decode latency vs the stray default).
+  ③ voice turns carried the tool table even for chit-chat — new
   `[agent] voice_tool_gate` (default on) includes tools only when the
   utterance matches a tool-intent heuristic; plain questions take the
   fast single-shot path (~1.4 s generation vs ~35 s+).
-  ③ TTS synthesis was hardwired to 2 threads (~16 s for a 5 s
+  ④ TTS synthesis was hardwired to 2 threads (~16 s for a 5 s
   utterance) — new `[tts] num_threads`, 4 on ≥4-core hosts halves it.
-  Plus `[voice] capture_endpointing` (default on): the post-wake capture
+  ⑤ `[voice] capture_endpointing` (default on): the post-wake capture
   window is VAD-endpointed (speech slides the deadline up to
   capture_secs + 6 s, ~0.6 s of trailing silence ends it) — questions
   spoken after a pause after the wake word are no longer clipped to the

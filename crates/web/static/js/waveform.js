@@ -106,7 +106,11 @@ function pushEnvelope(now) {
     const burst = Math.max(0, Math.sin(t * 5.2)) * (0.55 + 0.45 * Math.sin(t * 1.3));
     env[last] = 0.04 + burst * 0.5;
   } else if (state === 'listening') {
-    env[last] = 0.02 + curLevel;
+    // Perceptual display curve: the device's level is already dBFS-mapped
+    // (−45…−5 → 0…1), but distant speech still lands ~0.1-0.3 — a linear
+    // trace reads as "barely moving". A 0.6 gamma + floor keeps quiet
+    // speech clearly visible without clipping loud input.
+    env[last] = 0.06 + Math.pow(curLevel, 0.6) * 0.85;
   } else {
     // Idle: subtle breathing so the hero never looks dead.
     env[last] = 0.018 + 0.014 * (0.5 + 0.5 * Math.sin(t * 0.9));
@@ -182,6 +186,17 @@ function draw(now) {
     ctx.arc(px, mid, 3 * dpr, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.globalAlpha = 1;
+
+  // Faint always-on midline: a near-silent mic must still read as
+  // "listening, quiet" rather than a dead canvas.
+  ctx.globalAlpha = 0.18;
+  ctx.strokeStyle = tint;
+  ctx.lineWidth = 1 * dpr;
+  ctx.beginPath();
+  ctx.moveTo(0, mid);
+  ctx.lineTo(w, mid);
+  ctx.stroke();
   ctx.globalAlpha = 1;
 
   // Midline glows while speaking.

@@ -228,7 +228,12 @@ impl ChatEngine {
         let prompt = model.apply_chat_template(&template, &messages, true)?;
 
         let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(self.config.n_ctx.max(128)));
+            .with_n_ctx(std::num::NonZeroU32::new(self.config.n_ctx.max(128)))
+            // 2026-10-10: the config field existed but was never applied —
+            // every deployment ran llama.cpp's own default regardless.
+            .with_n_threads(i32::from(
+                u16::try_from(self.config.n_threads.max(1)).unwrap_or(u16::MAX),
+            ));
         let mut ctx = model.new_context(backend, ctx_params)?;
 
         let mut tokens = model.str_to_token(&prompt, AddBos::Never)?;
