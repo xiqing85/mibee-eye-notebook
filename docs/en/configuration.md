@@ -230,6 +230,10 @@ step_timeout_ms = 15000   # per tool execution timeout
 name = "home"
 command = "python3"
 args = ["/home/you/.config/mibee-eye/mcp/home_tools.py"]
+# Voice turns carry the tool table only on tool-shaped utterances
+# (weather/time/snapshot/device-control intent) — tool prompts are
+# prefill-heavy on CPU hosts and chit-chat would pay ~20 s for it.
+voice_tool_gate = true
 ```
 
 ### [desktop] - Tray icon & desktop notifications (SPEC appendix A #42)
@@ -508,6 +512,11 @@ num_threads = 1
 # this length accepts follow-ups WITHOUT the wake word (0 = off).
 follow_up_window_secs = 0.0
 vad_model = "models/voice/vad/silero_vad.onnx"
+# VAD-endpointed capture after a wake word: speech keeps the window
+# open (up to capture_secs + 6 s) and ~0.6 s of trailing silence ends
+# it — questions spoken after a pause are no longer clipped by the
+# fixed window. Needs vad_model; missing → fixed window (fail-open).
+capture_endpointing = true
 ```
 
 **Field Reference:**
@@ -673,6 +682,9 @@ yue_model = ""
 yue_lexicon = ""
 en_model = ""
 en_lexicon = ""
+# sherpa-onnx-offline-tts synthesis threads (2 default; 4 halves
+# the ~16 s synthesis of a 5 s utterance on 4-core+ hosts).
+num_threads = 4
 ```
 
 **Field Reference:**

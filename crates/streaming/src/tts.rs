@@ -25,6 +25,10 @@ pub struct TtsConfig {
     pub rule_fsts: String,
     /// Playback command (`aplay -q`); empty = synthesize only.
     pub player: String,
+    /// sherpa-onnx-offline-tts `--num-threads`. The 2 default
+    /// under-uses ≥4-core hosts (a 5 s utterance synthesized in ~16 s);
+    /// 4 halves it. Decode is the bottleneck, not the player.
+    pub num_threads: u32,
     // -- Trilingual profiles (SPEC appendix A #30-D) -------------------
     // Optional per-language models; empty = the language falls back to
     // the primary (Mandarin melo) voice.
@@ -48,6 +52,7 @@ impl Default for TtsConfig {
             dict_dir: "models/voice/melo/dict".into(),
             rule_fsts: "models/voice/melo/number.fst,models/voice/melo/date.fst".into(),
             player: "aplay -q".into(),
+            num_threads: 2,
             yue_model: String::new(),
             yue_lexicon: String::new(),
             yue_dict_dir: String::new(),
@@ -206,9 +211,7 @@ impl TtsEngine {
             .arg(format!("--vits-tokens={}", profile.tokens))
             .arg(format!("--vits-dict-dir={}", profile.dict_dir))
             .arg(format!("--tts-rule-fsts={}", profile.rule_fsts))
-            // 2 threads halve synthesis latency on every target host
-            // (all have ≥4 logical cores) without starving the encoders.
-            .arg("--num-threads=2")
+            .arg(format!("--num-threads={}", self.config.num_threads.max(1)))
             .arg(format!("--output-filename={}", out.display()))
             .arg(text);
         let result = self.speak_tail(&mut cmd, out);

@@ -1443,8 +1443,14 @@ async fn main() -> anyhow::Result<()> {
                                 // Agent tool loop (SPEC §3.5) — same
                                 // fail-open contract as the HTTP route:
                                 // any error falls through to the legacy
-                                // single-shot legs below.
-                                if agent_registry.agent_ready(&agent_cfg) {
+                                // single-shot legs below. Voice turns
+                                // carry the (prefill-heavy) tool table
+                                // only on tool-shaped utterances
+                                // (`voice_tool_gate`) — chit-chat keeps
+                                // the fast single-shot path.
+                                let voice_tools = !agent_cfg.voice_tool_gate
+                                    || streaming::tools::tool_intent(&ev.transcript);
+                                if agent_registry.agent_ready(&agent_cfg) && voice_tools {
                                     let cloud_first = cloud.enabled();
                                     let engine_label = if cloud_first { "cloud" } else { "local" };
                                     let (think_source, model_id) = if cloud_first {

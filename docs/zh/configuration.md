@@ -215,6 +215,9 @@ step_timeout_ms = 15000   # 单次工具执行超时
 name = "home"
 command = "python3"
 args = ["/home/you/.config/mibee-eye/mcp/home_tools.py"]
+# 语音轮仅在话术命中工具意图（天气/时间/画面/设备控制）时才携带工具表——
+# 工具提示词 prefill 很重，闲聊不该为它多等 ~20 秒。
+voice_tool_gate = true
 ```
 
 ### [desktop] - 托盘图标与桌面通知（规范附录 A #42）
@@ -469,6 +472,10 @@ num_threads = 1
 # （0 = 关闭）。
 follow_up_window_secs = 0.0
 vad_model = "models/voice/vad/silero_vad.onnx"
+# 唤醒后 VAD 断句采音：说话期间窗口自动延长（上限 capture_secs + 6 秒），
+# 收到约 0.6 秒尾静音即结束——先说唤醒词停顿再提问不再被固定窗口截断。
+# 依赖 vad_model，缺文件回落固定窗口（fail-open）。
+capture_endpointing = true
 ```
 
 **字段参考：**
@@ -628,6 +635,9 @@ yue_model = ""
 yue_lexicon = ""
 en_model = ""
 en_lexicon = ""
+# 合成子进程线程数（默认 2；4 核以上主机设 4 可把 5 秒语音约 16 秒的
+# 合成时间砍半）。
+num_threads = 4
 ```
 
 **字段参考：**
