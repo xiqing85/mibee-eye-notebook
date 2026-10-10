@@ -269,7 +269,10 @@ impl VlmEngine {
             .map_err(|e| anyhow::anyhow!("vlm: multimodal tokenize: {e:?}"))?;
 
         let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(self.config.n_ctx.max(1024)));
+            .with_n_ctx(std::num::NonZeroU32::new(self.config.n_ctx.max(1024)))
+            .with_n_threads(i32::from(
+                u16::try_from(self.config.n_threads.max(1)).unwrap_or(u16::MAX),
+            ));
         let mut ctx = inner.model.new_context(backend, ctx_params)?;
 
         // Evaluate text chunks + image embeddings through the C helper.
