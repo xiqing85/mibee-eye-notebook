@@ -104,7 +104,7 @@ pub async fn run_agent(
             // Tools were dropped but the model still "called" something —
             // prefer any raw text over looping; without text this falls
             // through to tool execution and the loop's honest error.
-            if let Some(reply) = out.text.filter(|s| !s.trim().is_empty()) {
+            if let Some(reply) = out.text.clone().filter(|s| !s.trim().is_empty()) {
                 on_step(AgentStep::PhaseAnswering {
                     engine: engine_label.to_string(),
                 });
@@ -116,6 +116,26 @@ pub async fn run_agent(
                 });
             }
         }
+        // Qwen3 template fidelity: the assistant turn that *issued* the
+        // tool calls must be in the history before the <tool_response>
+        // feedback, otherwise the observation is orphaned (the model
+        // never "said" it wanted a tool).
+        let mut assistant_turn = out.text.clone().unwrap_or_default();
+        for call in &out.tool_calls {
+            if !assistant_turn.is_empty() {
+                assistant_turn.push('\n');
+            }
+            assistant_turn.push_str(&format!(
+                "<tool_call>{{\"name\": {}, \"arguments\": {}}}</tool_call>",
+                serde_json::to_string(&call.name).unwrap_or_default(),
+                serde_json::to_string(&call.arguments).unwrap_or_default()
+            ));
+        }
+        turns.push(ChatTurn {
+            role: "assistant".into(),
+            content: assistant_turn,
+        });
+
         // Execute every requested call, feed observations back.
         for call in &out.tool_calls {
             on_step(AgentStep::ToolStarted {
@@ -185,6 +205,9 @@ fn feedback(turns: &mut Vec<ChatTurn>, name: &str, text: &str) {
 /// convention: JSON tool definitions inside <tools>, instructions to
 /// emit <tool_call> JSON.
 pub fn qwen_tools_section(specs: &[ToolSpec]) -> String {
+    // Prefill dominates CPU inference (~28 ms/token on a laptop-class
+    // core), so the section is kept minimal: single-line JSON and a
+    // terse instruction — the Qwen3 template convention still holds.
     let defs: Vec<serde_json::Value> = specs
         .iter()
         .map(|t| {
@@ -199,8 +222,8 @@ pub fn qwen_tools_section(specs: &[ToolSpec]) -> String {
         })
         .collect();
     format!(
-        "\n\n# Tools\n\n你可以调用一个或多个函数来协助回答用户问题。\n\n你在 <tools></tools> XML 标签内获得函数签名：\n<tools>\n{}\n</tools>\n\n对于每次函数调用，请在 <tool_call></tool_call> XML 标签内返回一个含函数名与参数的 json 对象：\n<tool_call>\n{{\"name\": <name>, \"arguments\": <args-json>}}\n</tool_call>",
-        serde_json::to_string_pretty(&defs).unwrap_or_default()
+        "\n\n# Tools\n\n如需外部信息或设备能力，可调用下列函数（签名见 <tools>）：\n<tools>\n{}\n</tools>\n\n调用时仅输出：\n<tool_call>\n{{\"name\": \"<name>\", \"arguments\": {{...}}}}\n</tool_call>",
+        serde_json::to_string(&defs).unwrap_or_default()
     )
 }
 

@@ -35,8 +35,14 @@ impl Default for LlmConfig {
         Self {
             enabled: false,
             model_path: "models/llm/qwen3-0.6b-q8_0.gguf".into(),
-            n_ctx: 1024,
-            n_threads: 2,
+            // Tool prompts (SPEC §3.5) run ~500-1700 tokens; 1024
+            // overflowed and silently degraded the first agent turns.
+            n_ctx: 2048,
+            // Half the logical cores, 2..=4 — measured on a 4C/8T i5:
+            // more threads than physical cores regressed generation.
+            n_threads: std::thread::available_parallelism()
+                .map(|n| (n.get() as u32 / 2).clamp(2, 4))
+                .unwrap_or(2),
             max_tokens: 200,
             no_think: true,
             model_path_mid: String::new(),
@@ -376,7 +382,8 @@ mod tests {
         let c = LlmConfig::default();
         assert!(!c.enabled, "llm is opt-in");
         assert!(c.model_path.contains("qwen3"));
-        assert_eq!(c.n_ctx, 1024);
+        assert_eq!(c.n_ctx, 2048);
+        assert!((2..=4).contains(&c.n_threads), "{}", c.n_threads);
         assert!(c.no_think);
     }
 

@@ -147,6 +147,58 @@ pub fn weather_intent(text: &str) -> bool {
     NEEDLES.iter().any(|n| lower.contains(n))
 }
 
+/// Does this utterance plausibly need a tool (SPEC §3.5 voice gate)?
+/// Superset of [`weather_intent`] plus time / snapshot / device-control
+/// needles in the three product languages. Pure, allocation-light — the
+/// voice bridge runs it per turn to decide whether the (prefill-heavy)
+/// tool table joins the prompt.
+#[must_use]
+pub fn tool_intent(text: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        // weather (weather_intent covers these too; kept for clarity)
+        "天气",
+        "气温",
+        "几度",
+        "下雨",
+        "落雨",
+        "台风",
+        "颱風",
+        "weather",
+        "rain",
+        "forecast",
+        // time
+        "几点",
+        "时间",
+        "日期",
+        "几号",
+        "今天几",
+        "星期几",
+        "time",
+        "date",
+        // snapshot / camera
+        "画面",
+        "快照",
+        "截图",
+        "看一下",
+        "看看",
+        "看到",
+        "监控",
+        "snapshot",
+        "camera",
+        // device control (MCP plugins: lights etc.)
+        "开灯",
+        "关灯",
+        "灯",
+        "开关",
+        "打开",
+        "关闭",
+        "light",
+        "switch",
+    ];
+    let lower = text.to_lowercase();
+    NEEDLES.iter().any(|n| lower.contains(n)) || weather_intent(text)
+}
+
 /// One wttr.in `?format=j1` current-condition row (subset).
 #[derive(Debug, Deserialize)]
 struct WttrCurrent {
@@ -231,6 +283,19 @@ mod tests {
         assert!(weather_intent("temperature outside?"));
         assert!(!weather_intent("现在几点了"));
         assert!(!weather_intent("讲个笑话"));
+    }
+
+    #[test]
+    fn tool_intent_covers_tool_topics_only() {
+        assert!(tool_intent("现在广州天气怎么样"));
+        assert!(tool_intent("现在几点了"));
+        assert!(tool_intent("帮我把客厅的灯打开"));
+        assert!(tool_intent("看看门口画面"));
+        assert!(tool_intent("what's the weather like"));
+        // Chit-chat stays on the fast path (no tool table in the prompt).
+        assert!(!tool_intent("你好"));
+        assert!(!tool_intent("讲个笑话"));
+        assert!(!tool_intent("你是谁"));
     }
 
     #[test]

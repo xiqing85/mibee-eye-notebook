@@ -37,6 +37,29 @@
 
 ### Fixed
 
+- **Voice reply latency 50-70 s → seconds, and clipped questions (2026-10-10 real-usage test).**
+  Three compounding causes, all fixed:
+  ① the agent tool prompt (Qwen3 `<tools>` section, pretty-printed) ran
+  ~1300-1700 tokens against an `n_ctx` default of 1024 — overflowing the
+  context and paying ~28 ms/token prefill on every turn. The section is
+  now compact (single-line JSON, terse instruction), the `n_ctx` default
+  is 2048, and `n_threads` defaults to half the logical cores (clamped
+  2-4; more threads than physical cores measured slower on 4C/8T).
+  ② voice turns carried the tool table even for chit-chat — new
+  `[agent] voice_tool_gate` (default on) includes tools only when the
+  utterance matches a tool-intent heuristic; plain questions take the
+  fast single-shot path (~1.4 s generation vs ~35 s+).
+  ③ TTS synthesis was hardwired to 2 threads (~16 s for a 5 s
+  utterance) — new `[tts] num_threads`, 4 on ≥4-core hosts halves it.
+  Plus `[voice] capture_endpointing` (default on): the post-wake capture
+  window is VAD-endpointed (speech slides the deadline up to
+  capture_secs + 6 s, ~0.6 s of trailing silence ends it) — questions
+  spoken after a pause after the wake word are no longer clipped to the
+  first 4 s (the "asked several questions, only 2-3 characters came
+  through" failure). WebUI: the voiceprint waveform applies a perceptual
+  display curve (0.6 gamma) with an always-on midline so quiet speech
+  reads as listening instead of a dead trace.
+
 - **VLM intermittent degenerate replies — two root causes, both fixed.**
   Live vision answers occasionally returned looped gibberish (`Extra
   baseUrl…` repeated): ① a data race — llama-cpp-2 blanket-asserts

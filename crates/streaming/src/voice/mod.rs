@@ -137,9 +137,15 @@ pub struct VoiceConfig {
     /// it (once its reply finished playing), utterances inside the
     /// window skip the wake word. 0 = feature off.
     pub follow_up_window_secs: f32,
-    /// Silero VAD model path (follow-up endpointing). Missing file
-    /// disables follow-up with a WARN.
+    /// Silero VAD model path (follow-up + capture endpointing). Missing
+    /// file disables both with a WARN.
     pub vad_model: String,
+    /// VAD-endpointed capture (2026-10-10): while capturing after a wake
+    /// word, speech keeps the window open (up to capture_secs + 6 s) and
+    /// a completed VAD segment ends it immediately — a question spoken
+    /// after a pause no longer gets clipped by the fixed window. Needs
+    /// `vad_model`; missing model → fixed-window behaviour (fail-open).
+    pub capture_endpointing: bool,
 }
 
 impl Default for VoiceConfig {
@@ -164,6 +170,7 @@ impl Default for VoiceConfig {
             verify_window_secs: 2.0,
             follow_up_window_secs: 0.0,
             vad_model: "models/voice/vad/silero_vad.onnx".into(),
+            capture_endpointing: true,
         }
     }
 }
@@ -179,6 +186,10 @@ struct VoiceInternals {
     /// Follow-up endpointing VAD; `None` (feature off / model missing)
     /// keeps wake-word mode only.
     vad: Option<Arc<sherpa_onnx::VoiceActivityDetector>>,
+    /// Capture-endpointing VAD (own instance — the follow-up one is
+    /// driven by a different code path and the detector holds stream
+    /// state). `None` → fixed capture window.
+    capture_vad: Option<Arc<sherpa_onnx::VoiceActivityDetector>>,
 }
 
 /// Host-visible snapshot of an in-flight enrollment session.
@@ -368,11 +379,25 @@ impl VoiceEngine {
         } else {
             None
         };
+        // Capture endpointing owns a second detector instance — the
+        // follow-up one carries stream state driven elsewhere.
+        let capture_vad = if config.capture_endpointing {
+            match build_vad(config) {
+                Ok(v) => Some(Arc::new(v)),
+                Err(e) => {
+                    warn!(error = %e, "voice: VAD unavailable (fixed capture window)");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(VoiceInternals {
             kws: Arc::new(kws),
             recognizer: Arc::new(recognizer),
             embed,
             vad,
+            capture_vad,
         })
     }
 
@@ -718,6 +743,7 @@ impl VoiceEngine {
             recognizer: Arc::clone(&i.recognizer),
             embed: i.embed.clone(),
             vad: i.vad.clone(),
+            capture_vad: i.capture_vad.clone(),
         }) else {
             return tokio::spawn(async {});
         };
@@ -741,6 +767,14 @@ impl VoiceEngine {
                 let mut captured: Vec<f32> = Vec::new();
                 let mut keyword_pending: Option<String> = None;
                 let mut capture_deadline = tokio::time::Instant::now();
+                // Capture endpointing: the hard cap is the fixed window
+                // plus this much headroom; while speech is ongoing the
+                // (soft) deadline keeps sliding, and a completed VAD
+                // segment finishes the capture immediately.
+                let capture_vad = internals.capture_vad.clone();
+                const CAPTURE_HEADROOM_SECS: u64 = 6;
+                let capture_hard_cap = tokio::time::Instant::now()
+                    + Duration::from_secs(u64::from(capture_secs.max(1)) + CAPTURE_HEADROOM_SECS);
                 // Pre-wake ring for the verification embedding; a latch so
                 // the armed-but-nobody-enrolled fail-open logs once.
                 let mut ring = SampleRing::new(ring_cap);
@@ -822,7 +856,30 @@ impl VoiceEngine {
                             }
                             if let Some(keyword) = &keyword_pending {
                                 captured.extend_from_slice(&samples);
-                                if tokio::time::Instant::now() >= capture_deadline {
+                                // VAD-endpointed capture (2026-10-10): a
+                                // completed segment (= speech followed by
+                                // ~0.6 s silence) ends the capture now;
+                                // ongoing speech slides the soft deadline
+                                // so a question spoken after a pause is not
+                                // clipped by the fixed window.
+                                let mut segment_ended = false;
+                                if let Some(cvad) = capture_vad.as_ref() {
+                                    let now = tokio::time::Instant::now();
+                                    cvad.accept_waveform(&samples);
+                                    if cvad.detected() && capture_deadline < capture_hard_cap {
+                                        capture_deadline =
+                                            (now + Duration::from_secs(1)).min(capture_hard_cap);
+                                    }
+                                    while let Some(seg) = cvad.front() {
+                                        let enough = seg.samples().len() >= 8_000; // ≥0.5 s
+                                        cvad.pop();
+                                        if enough {
+                                            segment_ended = true;
+                                        }
+                                    }
+                                }
+                                if segment_ended || tokio::time::Instant::now() >= capture_deadline
+                                {
                                     let keyword = keyword.clone();
                                     let recognizer = Arc::clone(&internals.recognizer);
                                     let waveform = std::mem::take(&mut captured);

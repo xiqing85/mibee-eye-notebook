@@ -35,6 +35,12 @@ pub struct AgentConfig {
     pub max_steps: u32,
     /// Per tool-execution timeout (milliseconds).
     pub step_timeout_ms: u64,
+    /// Voice turns carry the tool table only when the utterance matches
+    /// a lightweight tool-intent heuristic (weather / time / snapshot /
+    /// device control). Prefill dominates CPU inference (~28 ms/token),
+    /// so un-gated voice turns paid ~700 extra prompt tokens (~20 s)
+    /// even for "你好". HTTP chat always carries the full table.
+    pub voice_tool_gate: bool,
     /// MCP stdio subprocess servers (`[[agent.mcp_servers]]`).
     pub mcp_servers: Vec<McpServerConfig>,
 }
@@ -45,6 +51,7 @@ impl Default for AgentConfig {
             enabled: true,
             max_steps: 3,
             step_timeout_ms: 15_000,
+            voice_tool_gate: true,
             mcp_servers: Vec::new(),
         }
     }
