@@ -305,7 +305,9 @@ impl AwayEngine {
         // moment).
         let summary = summarize_labels(detections, &self.config.activity_labels);
         if !summary.is_empty()
-            && latch.activity_ms.is_none_or(|t| now_ms.saturating_sub(t) > activity_ms)
+            && latch
+                .activity_ms
+                .is_none_or(|t| now_ms.saturating_sub(t) > activity_ms)
             && !throttled
         {
             latch.activity_ms = Some(now_ms);
@@ -350,7 +352,11 @@ impl AwayEngine {
     pub fn expire_listen(&self, now_ms: u64) -> Option<i64> {
         let mut inner = self.inner.lock().expect("away inner lock");
         // Only an expired window is reaped — a live one stays armed.
-        if inner.listen.as_ref().is_some_and(|l| now_ms > l.deadline_ms) {
+        if inner
+            .listen
+            .as_ref()
+            .is_some_and(|l| now_ms > l.deadline_ms)
+        {
             inner.listen.take().map(|l| l.event_id)
         } else {
             None
