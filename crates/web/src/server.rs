@@ -107,6 +107,10 @@ pub struct AppRouterState {
     /// Agent loop configuration (`[agent]`, SPEC appendix A #43) — read
     /// by the chat route and the voice bridge to gate the loop.
     pub agent_config: crate::agent::AgentConfig,
+    /// Away mode engine (SPEC v1 §3.6): armed flag + decision state —
+    /// shared by the away routes, the capabilities document and the
+    /// orchestrator task in main.
+    pub away: Arc<crate::away::AwayEngine>,
 }
 
 impl AppRouterState {
@@ -130,6 +134,19 @@ impl AppRouterState {
 }
 
 impl AppRouterState {
+    /// Default away engine for fixtures — inactive AI (not armable),
+    /// no voice legs. The production state gets the real engines.
+    pub fn away_for_tests() -> Arc<crate::away::AwayEngine> {
+        Arc::new(crate::away::AwayEngine::new(
+            crate::away::AwayConfig::default(),
+            Arc::new(streaming::ai::AiEngine::from_parts(
+                streaming::ai::AiConfig::default(),
+                None,
+            )),
+            false,
+        ))
+    }
+
     /// Default model-manager + cloud state — the value every fixture
     /// (and `build_app`) starts from; new fields land here once.
     pub fn models_cloud_for_tests() -> (
@@ -256,6 +273,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
     let conversations = state.conversations.clone();
     let agent = state.agent.clone();
     let agent_config = state.agent_config.clone();
+    let away = state.away.clone();
 
     // -- Auth routes (public, rate-limited) --
     // -- Auth routes (public, rate-limited, 10KB body limit) --
@@ -414,6 +432,19 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
             get(routes::conversations::list_conversations)
                 .delete(routes::conversations::clear_conversations),
         )
+        // Away mode (SPEC v1 §3.6): armed state + event records.
+        .route(
+            "/api/away",
+            get(routes::away::get_away).post(routes::away::post_away),
+        )
+        .route(
+            "/api/away/events",
+            get(routes::away::list_away_events).delete(routes::away::clear_away_events),
+        )
+        .route(
+            "/api/away/events/{id}/snapshot",
+            get(routes::away::get_away_snapshot),
+        )
         // Tool/skill registry (SPEC v1 §3.5) — the model-facing tool
         // list: built-ins + MCP plugin servers.
         .route("/api/tools", get(crate::agent::tools_api::list_tools))
@@ -495,6 +526,7 @@ pub fn build_app_with_state(state: AppRouterState) -> Router {
         .layer(Extension(meeting))
         .layer(Extension(agent))
         .layer(Extension(agent_config))
+        .layer(Extension(away))
         // CSP — strict Content-Security-Policy
         .layer(middleware::from_fn(csp_middleware))
         // HSTS
@@ -579,6 +611,7 @@ pub fn build_app(db: sqlx::SqlitePool, auth_db: Arc<Mutex<Connection>>) -> Route
         conversations,
         agent: AppRouterState::agent_for_tests().0,
         agent_config: AppRouterState::agent_for_tests().1,
+        away: AppRouterState::away_for_tests(),
     })
 }
 
@@ -662,6 +695,7 @@ pub async fn test_app_with_user() -> Router {
         conversations,
         agent: AppRouterState::agent_for_tests().0,
         agent_config: AppRouterState::agent_for_tests().1,
+        away: AppRouterState::away_for_tests(),
     })
 }
 
@@ -906,6 +940,7 @@ pub async fn run(
         conversations,
         agent: AppRouterState::agent_for_tests().0,
         agent_config: AppRouterState::agent_for_tests().1,
+        away: AppRouterState::away_for_tests(),
     };
     let app = build_app_with_state(state);
 
@@ -983,6 +1018,7 @@ pub async fn run_with_shutdown(
     conversations: Arc<crate::conversations::ConversationLog>,
     agent: Arc<crate::agent::ToolRegistry>,
     agent_config: crate::agent::AgentConfig,
+    away: Arc<crate::away::AwayEngine>,
 ) -> anyhow::Result<()> {
     // Register Prometheus metrics
     crate::routes::mark_boot_time();
@@ -1030,6 +1066,7 @@ pub async fn run_with_shutdown(
         conversations,
         agent,
         agent_config,
+        away,
     };
     let app = build_app_with_state(state);
 

@@ -25,6 +25,7 @@ import { initModelMetrics, startModelMetricsPolling } from './modelmetrics.js';
 import { initTraces, startTracesPolling, refreshTraces, tracesCap } from './traces.js';
 import { renderDevices, initDevices } from './devices.js';
 import { renderRecords, renderSpeakers, renderMeetings, initRecords, updateRecordsVisibility, recordsSseHook } from './records.js';
+import { initAway, updateAwayVisibility, refreshAwayStatus, renderAwayEvents, handleAwayEvent, handleAwayState } from './away.js';
 import { renderModels, initModels, updateModelsVisibility, handleModelTask } from './models.js';
 
 // Routable views. settings/status/devices are sub-views of the System
@@ -84,7 +85,7 @@ export function showView(name) {
   if (name === 'models') renderModels();
   if (name === 'status') { checkApi(); refreshStatus(); }
   if (name === 'devices') renderDevices();
-  if (name === 'records') { renderRecords(); renderMeetings(); }
+  if (name === 'records') { refreshAwayStatus().then(renderAwayEvents); renderRecords(); renderMeetings(); }
   if (name === 'assistant') {
     renderSpeakers();
     refreshChatHistory().then((turns) => {
@@ -121,6 +122,9 @@ async function enterApp() {
   initDevices();
   initRecords();
   updateRecordsVisibility();
+  initAway();
+  updateAwayVisibility();
+  refreshAwayStatus();
   initModels();
   updateModelsVisibility();
   initAi();
@@ -150,6 +154,8 @@ async function enterApp() {
       handleTurnFinished(turn);
     },
     agent_step: handleAgentStep,
+    away_event: handleAwayEvent,
+    away_state: handleAwayState,
     zone_event: () => { /* zone events ride the alarm/toast path */ },
     param_changed: handleParamChanged,
     recording: (p) => {

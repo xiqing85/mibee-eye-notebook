@@ -595,6 +595,7 @@ mod tests {
             conversations,
             agent: crate::server::AppRouterState::agent_for_tests().0,
             agent_config: crate::server::AppRouterState::agent_for_tests().1,
+            away: crate::server::AppRouterState::away_for_tests(),
         }
     }
 

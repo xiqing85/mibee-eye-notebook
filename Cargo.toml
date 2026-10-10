@@ -120,6 +120,7 @@ security = { path = "crates/security" }
 rustls.workspace = true
 
 streaming = { path = "crates/streaming" }
+sqlx.workspace = true
 capture = { path = "crates/capture" }
 dirs = "6"
 libc.workspace = true

@@ -2934,6 +2934,7 @@ dependencies = [
  "security",
  "serde",
  "serde_json",
+ "sqlx",
  "streaming",
  "thiserror 2.0.20",
  "tokio",

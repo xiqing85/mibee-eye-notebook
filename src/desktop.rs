@@ -68,6 +68,22 @@ pub fn alarm_notification(source: &str, targets: usize, class: Option<&str>) -> 
     }
 }
 
+/// Title/body for an away-mode visitor notification (SPEC appendix A
+/// #44) — enrolled faces are called by name, strangers described.
+#[must_use]
+pub fn away_visitor_notification(face: Option<&str>) -> (String, String) {
+    match face {
+        Some(name) => (
+            "MiBee Eye · 离家模式".to_string(),
+            format!("识别到已登记成员：{name}"),
+        ),
+        None => (
+            "MiBee Eye · 离家模式".to_string(),
+            "发现访客，已问候并询问身份".to_string(),
+        ),
+    }
+}
+
 /// Title/body for a voice-reply notification.
 #[must_use]
 pub fn conversation_notification(reply: &str) -> (String, String) {
@@ -167,6 +183,16 @@ impl Desktop {
             return;
         }
         let (summary, body) = alarm_notification(source, targets, class);
+        self.notify(summary, body);
+    }
+
+    /// Away-mode visitor notification (SPEC appendix A #44): rides the
+    /// always-on alarm notification channel, no separate opt-in.
+    pub fn notify_away_visitor(&self, face: Option<&str>) {
+        if !self.notifications_on {
+            return;
+        }
+        let (summary, body) = away_visitor_notification(face);
         self.notify(summary, body);
     }
 

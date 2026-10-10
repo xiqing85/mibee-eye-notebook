@@ -169,6 +169,17 @@ pub enum CameraEvent {
         #[serde(flatten)]
         turn: crate::conversations::ConversationTurn,
     },
+    /// An away-mode event record changed (SPEC v1 §6 `away_event`):
+    /// created, or state-migrated (VLM description landed, visitor
+    /// answered, listen window expired silent). Same record shape as
+    /// the API list — the browser upserts by `id`.
+    AwayEvent {
+        #[serde(flatten)]
+        event: crate::away::AwayEventRecord,
+    },
+    /// Away mode armed/disarmed by any client (SPEC v1 §6 `away_state`)
+    /// — other tabs sync their badge from this.
+    AwayState { active: bool, since_ms: Option<u64> },
     /// A live agent step (SPEC v1 §6 `agent_step`, §3.5): tool executions
     /// (running → done/error) and phase switches (thinking/answering) —
     /// the frontend hero state and live thinking panel ride on this.
@@ -409,6 +420,16 @@ fn event_to_sse(event: CameraEvent) -> Event {
         CameraEvent::ConversationRecord { turn } => Event::default()
             .event("conversation")
             .data(serde_json::to_value(turn).unwrap_or_default().to_string()),
+        CameraEvent::AwayEvent { event } => Event::default()
+            .event("away_event")
+            .data(serde_json::to_value(event).unwrap_or_default().to_string()),
+        CameraEvent::AwayState { active, since_ms } => Event::default().event("away_state").data(
+            serde_json::json!({
+                "active": active,
+                "since_ms": since_ms,
+            })
+            .to_string(),
+        ),
         CameraEvent::AgentStep {
             conversation_id,
             kind,

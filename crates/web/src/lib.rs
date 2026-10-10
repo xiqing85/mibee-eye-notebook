@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod alarm;
 pub mod assets;
+pub mod away;
 pub mod cloud;
 pub mod config;
 /// Conversation records — the human-readable dialogue turn log (SPEC v1 §3.4).

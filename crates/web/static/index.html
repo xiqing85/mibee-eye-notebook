@@ -515,6 +515,18 @@
         <h2 data-i18n="recordsTitle">Hearing records</h2>
         <p class="view-desc" data-i18n="recordsDesc"></p>
       </div>
+      <!-- Away mode (SPEC §3.6): arm/disarm + anomaly/visitor records. -->
+      <div id="away-card" class="card hidden">
+        <h3><svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 4 6.8v4.9c0 4.4 3.2 7.7 8 9 4.8-1.3 8-4.6 8-9V6.8z"/><path d="M12 9.2v3.4M12 15.4v.2"/></svg><span data-i18n="awayTitle">Away mode</span></h3>
+        <p class="card-desc" data-i18n="awayDesc"></p>
+        <div class="live-toolbar records-toolbar">
+          <span id="away-status" class="away-status"></span>
+          <span id="away-voice-hint" class="record-empty"></span>
+          <button type="button" id="away-toggle" class="btn-small" data-i18n="awayArm">Arm</button>
+          <button type="button" id="away-clear" class="btn-small" data-i18n="awayClear">Clear</button>
+        </div>
+        <div id="away-list"></div>
+      </div>
       <div id="meetings-card" class="card hidden">
         <div class="view-head">
           <h3 data-i18n="meetingsTitle">Meeting minutes</h3>
