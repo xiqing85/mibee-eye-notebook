@@ -220,7 +220,30 @@ args = ["/home/you/.config/mibee-eye/mcp/home_tools.py"]
 voice_tool_gate = true
 ```
 
-### [desktop] - 托盘图标与桌面通知（规范附录 A #42）
+### [away] - 离家模式值守（规范 §3.6 / 附录 A #44）
+
+主人不在家时的值守。搭在既有 AI 检测流上（不另建采样管线）：
+人员到达（离开宽限 + 问候冷却门控）触发记录——存现场快照、比对
+已登记人脸（已登记者按名问候、不询问；陌生人问候 + 询问身份并开
+免唤醒监听窗，转写记入记录）、VLM 异步描述画面、桌面通知。配置的
+活动标签（缺省宠物类）在无人在场时按冷却逐条记录。布防状态跨服务
+重启保持（settings 袋 `away.active`）。语音腿需要 `[tts]` 与
+`[voice]` 可用——不可用时人员事件照记（`state:"no_voice"`）。
+
+```toml
+[away]
+interval_ms = 1000           # 每相机离家分析最小间隔（叠加在 [ai] interval_ms 上）
+person_gap_secs = 10         # 离开宽限：窗内再检出视为同一次在场
+greeting_cooldown_secs = 120 # 两次访客交互最小间隔
+activity_cooldown_secs = 60  # 两条活动记录最小间隔
+activity_labels = ["cat", "dog", "bird"]  # 非人员异常标签
+listen_secs = 10             # 问候后的一次性免唤醒监听窗
+snapshot_dir = "away-snapshots"           # 证据快照目录（cwd 相对）
+greeting_known = "欢迎回家，{name}。"     # {name} = 已登记人脸名
+greeting_unknown = "你好，这里是主人的智能看家助手。主人现在不在家，请问你是谁？"
+```
+
+### [desktop] - 托盘图标与桌面通知（规范 附录 A #42）
 
 带桌面会话主机的本机存在感。全部 fail-open：无会话总线（`DBUS_SESSION_BUS_ADDRESS` 或 `$XDG_RUNTIME_DIR/bus`）整体跳过、仅记一行日志——headless 服务器零影响。托盘显示相机图标，左键（或菜单项）经 `xdg-open` 打开 Web 界面（优先 `web.http_port`，否则 TLS 端口）。每次告警上升沿（视觉/声音/区域）发桌面通知；首次发送失败（无通知守护）即在本轮运行内停用。
 

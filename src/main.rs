@@ -830,6 +830,41 @@ async fn main() -> anyhow::Result<()> {
     if !tts_engine.is_active() {
         tracing::info!(reason = %tts_engine.inactive_reason(), "tts: playback disabled");
     }
+
+    // Away mode (SPEC v1 §3.6): armed watch over the AI detection
+    // stream. Voice legs need TTS + the wake-word engine (listening).
+    let away_engine = Arc::new(web::away::AwayEngine::new(
+        config.away.clone(),
+        Arc::clone(&ai_engine),
+        tts_engine.is_active() && voice_engine.is_active(),
+    ));
+    if !away_engine.is_available() {
+        tracing::info!(reason = %away_engine.unavailable_reason(), "away: not armable");
+    }
+    // Armed state survives restarts (settings bag) — a security mode
+    // must not silently disarm on a service bounce.
+    if let Ok(Some(v)) = web::db::get_setting(&pool, "away.active").await
+        && v == "true"
+        && away_engine.is_available()
+    {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        away_engine.arm(now_ms);
+        tracing::info!("away: armed state restored from persistence");
+    }
+    mibee_eye::away_monitor::spawn(mibee_eye::away_monitor::AwayMonitor {
+        away: Arc::clone(&away_engine),
+        ai: Arc::clone(&ai_engine),
+        voice: Arc::clone(&voice_engine),
+        tts: Arc::clone(&tts_engine),
+        face: Arc::clone(&face_engine),
+        vlm: Arc::clone(&vlm_engine),
+        desktop: Arc::clone(&desktop),
+        pool: pool.clone(),
+        event_tx: Arc::clone(&event_tx),
+    });
     if !voice_engine.is_active() {
         tracing::info!(reason = %voice_engine.inactive_reason(), "voice: interaction disabled");
     }
@@ -2176,6 +2211,7 @@ async fn main() -> anyhow::Result<()> {
         conversations_log,
         Arc::clone(&agent_registry),
         config.agent.clone(),
+        Arc::clone(&away_engine),
     )
     .await?;
 

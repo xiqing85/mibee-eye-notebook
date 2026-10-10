@@ -284,6 +284,305 @@ pub async fn clear_conversation_turns(pool: &SqlitePool) -> Result<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// Away mode event records (SPEC v1 §3.6, appendix A #44)
+// ---------------------------------------------------------------------------
+
+use crate::away::AwayEventRecord;
+
+/// FIFO cap applied on every away-event insert (SPEC §3.6 storage).
+pub const AWAY_EVENTS_CAP: i64 = 1000;
+
+/// Insert one away event, FIFO-prune to `cap` rows, and return the row
+/// as stored plus the snapshot file names the prune orphaned (the
+/// caller unlinks them — files are not the database's business).
+pub async fn insert_away_event_with_cap(
+    pool: &SqlitePool,
+    record: &AwayEventRecord,
+    cap: i64,
+) -> Result<(AwayEventRecord, Vec<String>)> {
+    let mut tx = pool.begin().await.context("away event: begin")?;
+    sqlx::query(
+        "INSERT INTO away_events (camera_id, kind, started_ms, labels, face_name, description, visitor_reply, snapshot, state) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+    .bind(&record.camera_id)
+    .bind(&record.kind)
+    .bind(record.started_ms)
+    .bind(&record.labels)
+    .bind(&record.face_name)
+    .bind(&record.description)
+    .bind(&record.visitor_reply)
+    .bind(&record.snapshot)
+    .bind(&record.state)
+    .execute(&mut *tx)
+    .await
+    .context("away event: insert")?;
+    let (id,): (i64,) = sqlx::query_as("SELECT last_insert_rowid()")
+        .fetch_one(&mut *tx)
+        .await
+        .context("away event: rowid")?;
+    // Names of the rows the prune is about to drop, so the caller can
+    // unlink their snapshot files.
+    let pruned: Vec<(String,)> = sqlx::query_as(
+        "SELECT snapshot FROM away_events WHERE id NOT IN \
+         (SELECT id FROM away_events ORDER BY id DESC LIMIT ?1) AND snapshot IS NOT NULL",
+    )
+    .bind(cap)
+    .fetch_all(&mut *tx)
+    .await
+    .context("away event: pruned names")?;
+    sqlx::query(&format!(
+        "DELETE FROM away_events WHERE id NOT IN \
+         (SELECT id FROM away_events ORDER BY id DESC LIMIT {cap})"
+    ))
+    .execute(&mut *tx)
+    .await
+    .context("away event: prune")?;
+    tx.commit().await.context("away event: commit")?;
+    Ok((
+        AwayEventRecord {
+            id,
+            camera_id: record.camera_id.clone(),
+            kind: record.kind.clone(),
+            started_ms: record.started_ms,
+            labels: record.labels.clone(),
+            face_name: record.face_name.clone(),
+            description: record.description.clone(),
+            visitor_reply: record.visitor_reply.clone(),
+            snapshot: record.snapshot.clone(),
+            state: record.state.clone(),
+        },
+        pruned.into_iter().map(|(s,)| s).collect(),
+    ))
+}
+
+/// [`insert_away_event_with_cap`] at the production cap.
+pub async fn insert_away_event(
+    pool: &SqlitePool,
+    record: &AwayEventRecord,
+) -> Result<(AwayEventRecord, Vec<String>)> {
+    insert_away_event_with_cap(pool, record, AWAY_EVENTS_CAP).await
+}
+
+type AwayEventRow = (
+    i64,
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+fn away_row_to_record(r: AwayEventRow) -> AwayEventRecord {
+    AwayEventRecord {
+        id: r.0,
+        camera_id: r.1,
+        kind: r.2,
+        started_ms: r.3,
+        labels: r.4,
+        face_name: r.5,
+        description: r.6,
+        visitor_reply: r.7,
+        snapshot: r.8,
+        state: r.9,
+    }
+}
+
+const AWAY_EVENT_COLUMNS: &str = "id, camera_id, kind, started_ms, labels, face_name, description, visitor_reply, snapshot, state";
+
+/// List away events, newest first (SPEC §3.6: `limit` default 50,
+/// cap 200).
+pub async fn list_away_events(pool: &SqlitePool, limit: i64) -> Result<Vec<AwayEventRecord>> {
+    let limit = limit.clamp(1, 200);
+    let rows: Vec<AwayEventRow> = sqlx::query_as(&format!(
+        "SELECT {AWAY_EVENT_COLUMNS} FROM away_events ORDER BY id DESC LIMIT ?1"
+    ))
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .context("away event: list")?;
+    Ok(rows.into_iter().map(away_row_to_record).collect())
+}
+
+/// Fetch one away event (snapshot endpoint join key).
+pub async fn get_away_event(pool: &SqlitePool, id: i64) -> Result<Option<AwayEventRecord>> {
+    let row: Option<AwayEventRow> = sqlx::query_as(&format!(
+        "SELECT {AWAY_EVENT_COLUMNS} FROM away_events WHERE id = ?1"
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("away event: get")?;
+    Ok(row.map(away_row_to_record))
+}
+
+/// Patch one column and return the row as stored (the SSE update
+/// carries the full record); `None` when the row vanished. `column` is
+/// a call-site constant, never client input.
+async fn patch_away_field(
+    pool: &SqlitePool,
+    id: i64,
+    column: &str,
+    value: &str,
+) -> Result<Option<AwayEventRecord>> {
+    let rows = sqlx::query_as::<_, AwayEventRow>(&format!(
+        "UPDATE away_events SET {column} = ?1 WHERE id = ?2 RETURNING {AWAY_EVENT_COLUMNS}"
+    ))
+    .bind(value)
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .context("away event: patch")?;
+    Ok(rows.into_iter().next().map(away_row_to_record))
+}
+
+/// VLM description arrived asynchronously (SPEC §3.6) — patch + return.
+pub async fn update_away_description(
+    pool: &SqlitePool,
+    id: i64,
+    description: &str,
+) -> Result<Option<AwayEventRecord>> {
+    patch_away_field(pool, id, "description", description).await
+}
+
+/// Visitor answered inside the listen window — record the reply and
+/// flip the state to `answered` (SPEC §3.6 state machine).
+pub async fn update_away_reply(
+    pool: &SqlitePool,
+    id: i64,
+    reply: &str,
+) -> Result<Option<AwayEventRecord>> {
+    let rows = sqlx::query_as::<_, AwayEventRow>(&format!(
+        "UPDATE away_events SET visitor_reply = ?1, state = 'answered' WHERE id = ?2 \
+         RETURNING {AWAY_EVENT_COLUMNS}"
+    ))
+    .bind(reply)
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .context("away event: reply")?;
+    Ok(rows.into_iter().next().map(away_row_to_record))
+}
+
+/// Terminal state transition (greeting → listening, listening → silent…).
+pub async fn update_away_state(
+    pool: &SqlitePool,
+    id: i64,
+    state: &str,
+) -> Result<Option<AwayEventRecord>> {
+    patch_away_field(pool, id, "state", state).await
+}
+
+/// Clear every away event; returns the removed count and the snapshot
+/// names to unlink (SPEC §3.6 DELETE).
+pub async fn clear_away_events(pool: &SqlitePool) -> Result<(usize, Vec<String>)> {
+    let mut tx = pool.begin().await.context("away event: clear begin")?;
+    let names: Vec<(String,)> =
+        sqlx::query_as("SELECT snapshot FROM away_events WHERE snapshot IS NOT NULL")
+            .fetch_all(&mut *tx)
+            .await
+            .context("away event: clear names")?;
+    let result = sqlx::query("DELETE FROM away_events")
+        .execute(&mut *tx)
+        .await
+        .context("away event: clear")?;
+    tx.commit().await.context("away event: clear commit")?;
+    Ok((
+        result.rows_affected() as usize,
+        names.into_iter().map(|(s,)| s).collect(),
+    ))
+}
+
+/// `(total events, person events)` for the status document.
+pub async fn away_stats(pool: &SqlitePool) -> Result<(i64, i64)> {
+    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM away_events")
+        .fetch_one(pool)
+        .await
+        .context("away stats: total")?;
+    let (visitors,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM away_events WHERE kind = 'person'")
+            .fetch_one(pool)
+            .await
+            .context("away stats: visitors")?;
+    Ok((total, visitors))
+}
+
+#[cfg(test)]
+mod away_tests {
+    use super::*;
+    use crate::away::AwayEventRecord;
+
+    fn rec(kind: &str, state: &str) -> AwayEventRecord {
+        AwayEventRecord {
+            id: 0,
+            camera_id: "0".into(),
+            kind: kind.into(),
+            started_ms: 1_000,
+            labels: "person×1".into(),
+            face_name: None,
+            description: None,
+            visitor_reply: None,
+            snapshot: Some(format!("{kind}.jpg")),
+            state: state.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_list_patch_prune_roundtrip() {
+        let (pool, _auth) = crate::db::create_test_dbs().await;
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("migrations for test pool");
+
+        for i in 0..5 {
+            let (_, pruned) = insert_away_event_with_cap(&pool, &rec("person", "greeting"), 3)
+                .await
+                .unwrap();
+            // Inside the cap nothing is orphaned yet.
+            assert!(pruned.is_empty() || i >= 3, "prune only past the cap");
+        }
+        let listed = list_away_events(&pool, 10).await.unwrap();
+        assert_eq!(listed.len(), 3, "FIFO cap keeps the newest 3");
+        assert_eq!(listed[0].id, 5);
+
+        // Async description + reply + terminal state, each returning the
+        // full row for the SSE update.
+        let updated = update_away_description(&pool, listed[0].id, "一名男子站在桌旁")
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(updated.description.as_deref(), Some("一名男子站在桌旁"));
+        assert_eq!(updated.state, "greeting");
+
+        let answered = update_away_reply(&pool, listed[0].id, "我是快递员")
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(answered.visitor_reply.as_deref(), Some("我是快递员"));
+        assert_eq!(answered.state, "answered");
+
+        let silent = update_away_state(&pool, listed[1].id, "silent")
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(silent.state, "silent");
+
+        assert_eq!(get_away_event(&pool, 999).await.unwrap(), None);
+
+        // Stats then clear-all returns names for unlinking.
+        assert_eq!(away_stats(&pool).await.unwrap(), (3, 3));
+        let (removed, names) = clear_away_events(&pool).await.unwrap();
+        assert_eq!(removed, 3);
+        assert_eq!(names.len(), 3);
+        assert!(list_away_events(&pool, 10).await.unwrap().is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Voiceprint speaker profiles (SPEC appendix A notebook dialect #25)
 // ---------------------------------------------------------------------------
 

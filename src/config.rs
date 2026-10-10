@@ -354,6 +354,10 @@ pub struct AppConfig {
     /// tool-calling loop + MCP stdio plugin servers.
     #[serde(default)]
     pub agent: web::agent::AgentConfig,
+    /// Away mode (SPEC §3.6 / appendix A #44): the armed watch loop —
+    /// cadence, cooldowns, greetings, listen window, snapshot dir.
+    #[serde(default)]
+    pub away: web::away::AwayConfig,
 }
 
 /// `[models]` — the download root for the model manager (SPEC §4.9).

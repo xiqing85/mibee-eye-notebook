@@ -276,7 +276,21 @@ enabled = false
 # notify_conversations = false
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Agent tools & skills (`[agent]`, SPEC §3.5 / appendix A #43): the
+# Agent tools & skills (`[away]
+# Away mode (SPEC §3.6): armed watch over the live AI detections.
+# Cadence stacks on [ai] interval_ms; person arrivals (gap + cooldown
+# gated) are greeted + asked; pets/other configured labels are recorded.
+interval_ms = 1000
+person_gap_secs = 10
+greeting_cooldown_secs = 120
+activity_cooldown_secs = 60
+activity_labels = ["cat", "dog", "bird"]
+listen_secs = 10
+snapshot_dir = "away-snapshots"
+greeting_known = "欢迎回家，{name}。"
+greeting_unknown = "你好，这里是主人的智能看家助手。主人现在不在家，请问你是谁？"
+
+[agent]`, SPEC §3.5 / appendix A #43): the
 # dialogue assistant's tool-calling loop. Built-in tools (time.now /
 # weather.current / camera.snapshot) are always registered; custom
 # plugins plug in as MCP (Model Context Protocol, 2025-06-18) stdio

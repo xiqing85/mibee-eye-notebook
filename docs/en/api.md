@@ -181,6 +181,33 @@ Built-ins: `time.now`, `weather.current` (requires `[tools] weather_city`),
 the SSE `agent_step` event and land in the conversation record's
 `thinking` entries as `source:"tool"`.
 
+### Away mode (SPEC §3.6)
+
+The armed watch for when nobody is home: the device keeps analyzing the
+live AI detection stream and records anomalies — person visitors get
+greeted over the speaker and asked who they are (enrolled faces by
+name), their answer is recorded alongside the snapshot and a VLM
+description of the scene. Capability key `away`
+(`{available, voice}`); arming requires the AI detection to be active.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/away` | Armed state → `{active, since_ms, voice, stats}` |
+| POST | `/api/away` | Arm/disarm `{"active":bool}` (CSRF); 400 with reason when not armable |
+| GET | `/api/away/events?limit=` | Event records, newest first (default 50, cap 200) |
+| DELETE | `/api/away/events` | Clear all records **and snapshot files** (CSRF) |
+| GET | `/api/away/events/{id}/snapshot` | Evidence JPEG for one event (404 when absent) |
+
+Event object:
+`{"id","camera_id","kind":"person"|"activity","started_ms","labels","face_name"?,"description"?,"visitor_reply"?,"snapshot"?,"state"}`.
+Person states: `greeting → listening → answered|silent`, or terminal
+`known` / `no_voice`; activity rows are `recorded`. Every create and
+state migration rides the SSE `away_event` (upsert by `id`); arm/disarm
+broadcasts `away_state`. Armed state survives service restarts. Records
+are SQLite FIFO-capped at 1000; pruning and clear-all also delete the
+snapshot files. Config lives in `[away]` (cadence, gap/cooldowns,
+listen window, greetings); see `docs/en/configuration.md`.
+
 ### Devices (SPEC §4.8)
 
 | Method | Path | Description |

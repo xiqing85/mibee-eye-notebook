@@ -161,6 +161,30 @@ Cookie 会话 + CSRF 双提交：
 `camera.snapshot`（最新画面 + 查看地址）。实时执行经 SSE `agent_step`
 事件送出，并落进对话记录 `thinking` 的 `source:"tool"` 条目。
 
+### 离家模式（规范 §3.6）
+
+主人不在家时的值守：设备持续分析既有 AI 检测流并把异常逐条落档——
+发现人员时经语音问候并询问来人是谁（已登记人脸按名问候），回答与
+现场快照、VLM 画面描述一并记入同一事件。能力键 `away`
+（`{available, voice}`）；布防要求 AI 检测可用。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/away` | 布防状态 → `{active, since_ms, voice, stats}` |
+| POST | `/api/away` | 布防/撤防 `{"active":bool}`（CSRF）；不可布防时 400 附原因 |
+| GET | `/api/away/events?limit=` | 事件记录倒序（缺省 50 上限 200） |
+| DELETE | `/api/away/events` | 清空全部记录**连同快照文件**（CSRF） |
+| GET | `/api/away/events/{id}/snapshot` | 单条事件的现场快照 JPEG（无则 404） |
+
+事件对象：
+`{"id","camera_id","kind":"person"|"activity","started_ms","labels","face_name"?,"description"?,"visitor_reply"?,"snapshot"?,"state"}`。
+人员事件状态：`greeting → listening → answered|silent`，旁路终态
+`known` / `no_voice`；活动类为 `recorded`。创建与每次状态迁移经 SSE
+`away_event` 推送（按 `id` 就地更新）；布防/撤防广播 `away_state`。
+布防状态服务重启后保持。记录 SQLite 持久、FIFO 封顶 1000 条；修剪与
+清空同步删除快照文件。配置见 `[away]`（节拍/间隔/冷却/问候语/听窗，
+`docs/zh/configuration.md`）。
+
 ### 主机设备（规范 §4.8）
 
 | 方法 | 路径 | 说明 |

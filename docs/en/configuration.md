@@ -236,6 +236,34 @@ args = ["/home/you/.config/mibee-eye/mcp/home_tools.py"]
 voice_tool_gate = true
 ```
 
+### [away] - Away mode watch (SPEC §3.6 / appendix A #44)
+
+The armed watch for when nobody is home. It rides the existing AI
+detection stream (no second sampling pipeline): person arrivals (gap +
+cooldown gated) are recorded with a snapshot, face-matched against the
+enrolled gallery (known faces are greeted by name and not interrogated;
+strangers get the greeting + identity question and a no-wake-word
+listening window whose transcript lands in the record), described by
+the VLM asynchronously, and pushed to the desktop. Configured activity
+labels (default: pets) are recorded with a cooldown while no person is
+present. Armed state survives service restarts (`away.active`
+setting). Voice legs need `[tts]` and `[voice]` active — without them
+person events are still recorded (`state:"no_voice"`).
+
+```toml
+[away]
+interval_ms = 1000           # min spacing of away analyses per camera
+                             # (stacks on [ai] interval_ms)
+person_gap_secs = 10         # absence grace: re-detection inside = same visit
+greeting_cooldown_secs = 120 # min spacing between visitor interactions
+activity_cooldown_secs = 60  # min spacing between activity records
+activity_labels = ["cat", "dog", "bird"]  # non-person anomaly labels
+listen_secs = 10             # one-shot listening window after the question
+snapshot_dir = "away-snapshots"           # evidence JPEGs (cwd-relative)
+greeting_known = "欢迎回家，{name}。"     # {name} = enrolled face name
+greeting_unknown = "你好，这里是主人的智能看家助手。主人现在不在家，请问你是谁？"
+```
+
 ### [desktop] - Tray icon & desktop notifications (SPEC appendix A #42)
 
 Desktop-session presence for hosts with a GUI. All fail-open: without a

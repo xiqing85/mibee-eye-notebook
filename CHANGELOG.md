@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Away mode (SPEC §3.6 / appendix A #44).** Armed watch over the live
+  AI detection stream: person arrivals are recorded with evidence
+  snapshots, greeted over the speaker (`greeting_known` by enrolled-face
+  name / `greeting_unknown` + identity question), answered through a
+  one-shot no-wake-word listening window (`[away] listen_secs`, new
+  `VoiceEngine::arm_listen`), described asynchronously by the VLM, and
+  desktop-notified. Configured activity labels (default pets) are
+  recorded with cooldowns. `GET/POST /api/away`, `GET/DELETE
+  /api/away/events`, `GET /api/away/events/{id}/snapshot`; SSE
+  `away_event` (upsert by id) + `away_state`; capability
+  `away:{available,voice}`. Records SQLite FIFO-capped at 1000 with
+  snapshot files pruned alongside; armed state survives restarts.
+  `[away]` config section (cadence, gap/cooldowns, listen window,
+  greetings, snapshot dir).
+
 - **Agent tools & skills framework (SPEC §3.5 / appendix A #43).** The
   dialogue assistant can now call tools: built-ins (`time.now`,
   `weather.current` reusing the `[tools]` weather config, and

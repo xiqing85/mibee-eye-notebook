@@ -211,6 +211,25 @@ reports the speaker count and segments.
 Registered speaker voiceprints also attribute each voice record to the
 best-matching **speaker** (blank when nobody matches).
 
+### Away mode (armed watch)
+
+Capability `away` (needs AI detection active; voice greeting additionally
+needs `[voice]` + `[tts]`). The **Away mode** card at the top of the
+Records view arms the watch for when nobody is home:
+
+- While armed, the device keeps analyzing the live detection stream
+  (same cadence as the detection overlay) and records anomalies — person
+  visitors and configured activity labels (default: pets).
+- A person arrival saves a snapshot, greets them over the speaker and —
+  for a stranger — asks who they are, then listens for the answer
+  without a wake word. Enrolled faces (see the face card in the
+  Assistant view) are greeted by name and not interrogated.
+- Every event shows the snapshot, the VLM scene description (when the
+  VLM is active) and the visitor's answer; live updates arrive via SSE.
+- The armed state survives service restarts; **Clear** removes every
+  record together with its snapshot file. Cadence, cooldowns, greetings
+  and the listening window are tunable in `[away]`.
+
 ### Enrolled speakers (voiceprint)
 
 Capability `voice_speakers` (needs the embedding model file, default

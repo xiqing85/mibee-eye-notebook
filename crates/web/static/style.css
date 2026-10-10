@@ -2211,3 +2211,38 @@ input[type="range"]::-moz-range-thumb {
 .tool-row-source.builtin { background: color-mix(in srgb, var(--accent, #00c8a0) 14%, transparent); color: var(--accent-text); }
 .tool-row-source.mcp { background: rgba(139,92,246,.16); color: #a78bfa; }
 .tool-row-desc { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; line-height: 1.4; }
+
+/* ===== Away mode (SPEC §3.6) ===== */
+.away-status {
+  font-size: 12px; font-weight: 600; color: var(--text-dim, #8b93a1);
+  padding: 3px 10px; border-radius: 8px; border: 1px solid var(--border, #2a2f3a);
+  background: transparent;
+}
+.away-status.armed {
+  color: #e05656; border-color: rgba(224, 86, 86, .45); background: rgba(224, 86, 86, .1);
+}
+.away-status.armed::before {
+  content: '●'; margin-right: 6px; animation: away-pulse 2s ease-in-out infinite;
+}
+@keyframes away-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.away-row { align-items: center; gap: 8px; }
+.away-state {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a); color: var(--text-dim, #8b93a1);
+  white-space: nowrap;
+}
+.away-state-greeting, .away-state-listening {
+  color: #8a6d1f; border-color: rgba(214, 168, 54, .4); background: rgba(214, 168, 54, .14);
+}
+.away-state-answered { color: #2e9e6b; border-color: rgba(46, 158, 107, .4); background: rgba(46, 158, 107, .12); }
+.away-state-silent { color: #c46a2b; border-color: rgba(196, 106, 43, .4); background: rgba(196, 106, 43, .12); }
+.away-state-known { color: #3d7bd0; border-color: rgba(61, 123, 208, .4); background: rgba(61, 123, 208, .12); }
+.away-reply {
+  flex: 1; min-width: 0; overflow-wrap: anywhere; font-style: italic;
+  color: var(--text, #d7dce4);
+}
+.away-desc { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--text-dim, #8b93a1); }
+.away-thumb {
+  height: 44px; max-width: 78px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a); flex: none;
+}

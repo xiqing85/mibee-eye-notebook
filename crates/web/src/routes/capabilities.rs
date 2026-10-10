@@ -14,9 +14,6 @@ use std::sync::Arc;
 use security::middleware::AuthenticatedUser;
 use streaming::ai::AiEngine;
 use streaming::capability::{EncoderProfile, SystemCapabilities, probe, recommended_profiles};
-use tokio::sync::Mutex;
-
-use crate::protocol_runtime::ProtocolRuntime;
 
 // ---------------------------------------------------------------------------
 // Response model
@@ -63,10 +60,10 @@ pub async fn get_capabilities(
     Extension(meeting): Extension<Arc<streaming::meeting::MeetingEngine>>,
     Extension(vlm): Extension<Arc<streaming::vlm::VlmEngine>>,
     Extension(stream_manager): Extension<Arc<crate::stream_manager::StreamManager>>,
-    Extension(_protocol_runtime): Extension<Arc<Mutex<ProtocolRuntime>>>,
     Extension(convlog): Extension<Arc<crate::conversations::ConversationLog>>,
     Extension(agent): Extension<Arc<crate::agent::ToolRegistry>>,
     Extension(agent_config): Extension<crate::agent::AgentConfig>,
+    Extension(away): Extension<Arc<crate::away::AwayEngine>>,
     Extension(_user): Extension<AuthenticatedUser>,
 ) -> impl IntoResponse {
     static CACHE: std::sync::OnceLock<CapabilitiesResponse> = std::sync::OnceLock::new();
@@ -113,6 +110,12 @@ pub async fn get_capabilities(
     };
     if agent_config.enabled && tool_count > 0 {
         events.push("agent_step");
+    }
+    // Away mode (SPEC §3.6): records + armed-state sync events ride the
+    // bus whenever the watch can arm at all.
+    if away.is_available() {
+        events.push("away_event");
+        events.push("away_state");
     }
     // Meeting lifecycle (SPEC appendix A #27).
     if meeting.is_active() {
@@ -167,6 +170,10 @@ pub async fn get_capabilities(
         // Tool/skill framework (SPEC §3.5): built-ins + MCP plugin
         // servers; `count` mirrors the current registry listing.
         "tools": tools_document(agent_config.enabled, tool_count),
+        // Away mode watch surface (SPEC §3.6, appendix A #44):
+        // `available` = armable (AI detection active), `voice` = the
+        // greet-and-ask legs can run.
+        "away": away_document(away.is_available(), away.voice_capable()),
         // Resource tier the LLM booted into (#30-E).
         "llm_tier": llm_tier.0.as_str(),
         // Boot-time feature admission snapshot (appendix A #40):
@@ -243,6 +250,12 @@ fn tools_document(enabled: bool, count: usize) -> serde_json::Value {
     serde_json::json!({ "enabled": enabled, "count": count })
 }
 
+/// The `away` capability object (SPEC §3.6) — same nesting-trick as
+/// [`observability_document`].
+fn away_document(available: bool, voice: bool) -> serde_json::Value {
+    serde_json::json!({ "available": available, "voice": voice })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -309,9 +322,6 @@ mod tests {
                 &streaming::vlm::VlmConfig::default(),
             ))),
             Extension(Arc::new(crate::stream_manager::StreamManager::new())),
-            Extension(Arc::new(tokio::sync::Mutex::new(
-                crate::protocol_runtime::ProtocolRuntime::new(),
-            ))),
             Extension(Arc::new(crate::conversations::ConversationLog::new(
                 create_test_pool().await,
                 Arc::new(crate::routes::events::new_event_bus()),
@@ -319,6 +329,7 @@ mod tests {
             ))),
             Extension(crate::server::AppRouterState::agent_for_tests().0),
             Extension(crate::server::AppRouterState::agent_for_tests().1),
+            Extension(crate::server::AppRouterState::away_for_tests()),
             Extension(security::middleware::AuthenticatedUser("admin".to_string())),
         )
         .await
@@ -346,6 +357,16 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::json!("agent_step"))
+        );
+        // Away mode (SPEC §3.6): fixture AI is inactive → not armable,
+        // voice legs off, no away SSE events advertised.
+        assert_eq!(json["away"]["available"], serde_json::json!(false));
+        assert_eq!(json["away"]["voice"], serde_json::json!(false));
+        assert!(
+            !json["events"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("away_event"))
         );
         // No active streams → substream capability false (SPEC appendix
         // A #20: it follows an active substream pipeline, not the config).

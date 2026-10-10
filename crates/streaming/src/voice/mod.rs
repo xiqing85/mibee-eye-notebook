@@ -366,18 +366,19 @@ impl VoiceEngine {
             })
             .map(Arc::new)
             .ok();
-        // Follow-up VAD (#30-B): optional — a requested-but-missing model
-        // only disables continuous dialogue, with one WARN.
-        let vad = if config.follow_up_window_secs > 0.0 {
-            match build_vad(config) {
-                Ok(v) => Some(Arc::new(v)),
-                Err(e) => {
-                    warn!(error = %e, "voice: VAD unavailable (follow-up disabled)");
-                    None
-                }
+        // Follow-up VAD (#30-B): optional — a missing model only
+        // disables continuous dialogue and on-demand listening
+        // (`arm_listen`), with one WARN. Built regardless of
+        // `follow_up_window_secs`: away mode (SPEC appendix A #44) arms
+        // one-shot listening while continuous dialogue stays off —
+        // without this the VAD would only exist when the follow-up
+        // feature was already enabled at boot.
+        let vad = match build_vad(config) {
+            Ok(v) => Some(Arc::new(v)),
+            Err(e) => {
+                warn!(error = %e, "voice: VAD unavailable (follow-up + on-demand listening disabled)");
+                None
             }
-        } else {
-            None
         };
         // Capture endpointing owns a second detector instance — the
         // follow-up one carries stream state driven elsewhere.
@@ -461,6 +462,43 @@ impl VoiceEngine {
     #[must_use]
     pub fn follow_up_window_share(&self) -> Arc<std::sync::atomic::AtomicU64> {
         Arc::clone(&self.follow_up_window_ms)
+    }
+
+    /// Open a one-shot no-wake-word listening window with an explicit
+    /// length (SPEC appendix A #44 away mode): completed VAD segments
+    /// inside it become `follow_up: true` transcripts like the
+    /// continuous-dialogue window. Unlike [`Self::arm_follow_up`] this
+    /// never touches the shared `follow_up_window_secs` config value —
+    /// the caller owns the length. Returns `false` when the engine
+    /// cannot listen (zero window, or no VAD — inactive engine included).
+    pub fn arm_listen(&self, window_ms: u64) -> bool {
+        #[cfg(feature = "voice")]
+        {
+            if window_ms == 0 {
+                return false;
+            }
+            if self
+                .internals
+                .as_ref()
+                .and_then(|i| i.vad.as_ref())
+                .is_none()
+            {
+                return false;
+            }
+            let until = unix_now_ms() + window_ms;
+            self.follow_until_ms
+                .store(until, std::sync::atomic::Ordering::SeqCst);
+            info!(
+                window_secs = window_ms as f64 / 1000.0,
+                "voice: one-shot listen window armed"
+            );
+            true
+        }
+        #[cfg(not(feature = "voice"))]
+        {
+            let _ = (self, window_ms);
+            false
+        }
     }
 
     /// Deafen the wake-word worker while the device's own reply plays.
@@ -1380,6 +1418,21 @@ mod tests {
             ..VoiceConfig::default()
         });
         assert!(!e.is_active(), "missing models must not fake activity");
+    }
+
+    #[test]
+    fn arm_listen_refuses_inactive_engine_and_zero_window() {
+        // Inactive engine (no models): one-shot listening must refuse —
+        // never pretend a window opened (SPEC appendix A #44).
+        let e = VoiceEngine::from_config(&VoiceConfig {
+            enabled: true,
+            ..VoiceConfig::default()
+        });
+        assert!(!e.is_active());
+        assert!(!e.arm_listen(10_000));
+        // Zero window is not a window on any engine.
+        let off = VoiceEngine::from_config(&VoiceConfig::default());
+        assert!(!off.arm_listen(0));
     }
 
     #[test]
