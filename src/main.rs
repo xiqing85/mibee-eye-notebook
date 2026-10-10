@@ -2181,21 +2181,34 @@ async fn main() -> anyhow::Result<()> {
 
     // Abort the signal handler task
     signal_handle.abort();
+    tracing::info!("shutdown: stopping active streams");
 
     // Stop all active streams
     stream_manager.shutdown_all().await;
+    tracing::info!("shutdown: streams stopped");
 
     // Graceful shutdown of all protocols via ProtocolRuntime
     {
         let mut rt = protocol_runtime_for_shutdown.lock().await;
         rt.shutdown_all().await;
     }
+    tracing::info!("shutdown: protocols stopped");
 
     // Abort remaining background tasks (RTSP server, session cleanup)
     for handle in protocol_handles {
         handle.abort();
     }
     tracing::info!("All protocol tasks shut down");
+    // Skip destructors AND atexit handlers — same rationale as the
+    // self-test CLI: tearing down the dynamically loaded ONNX Runtime +
+    // OpenMP threads segfaults after the graceful path is done (observed
+    // as SIGTERM-time core-dumps 2026-10-10). Everything that matters
+    // (streams, protocols, GB registration refresh) has been shut down
+    // above; the process exit code stays 0.
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    unsafe { libc::_exit(0) };
+    #[allow(unreachable_code)]
     Ok(())
 }
 
