@@ -770,9 +770,19 @@ impl VoiceEngine {
                 // Capture endpointing: the hard cap is the fixed window
                 // plus this much headroom; while speech is ongoing the
                 // (soft) deadline keeps sliding, and a completed VAD
-                // segment finishes the capture immediately.
+                // segment finishes the capture immediately. A segment
+                // only ends the capture once enough speech accumulated
+                // (≥1.2 s): synthesized speech and careful speakers put
+                // ≥0.6 s pauses *between words* — without the floor those
+                // micro-segments clipped questions to their first word
+                // (found in 2026-10-10 self-test: "现在…" captured as
+                // just its first two syllables).
                 let capture_vad = internals.capture_vad.clone();
+                let mut captured_speech_samples: usize = 0;
                 const CAPTURE_HEADROOM_SECS: u64 = 6;
+                /// Minimum accumulated speech before a completed segment
+                /// may end the capture (16 kHz samples).
+                const MIN_SPEECH_SAMPLES: usize = 16_000 * 6 / 5;
                 let capture_hard_cap = tokio::time::Instant::now()
                     + Duration::from_secs(u64::from(capture_secs.max(1)) + CAPTURE_HEADROOM_SECS);
                 // Pre-wake ring for the verification embedding; a latch so
@@ -871,9 +881,16 @@ impl VoiceEngine {
                                             (now + Duration::from_secs(1)).min(capture_hard_cap);
                                     }
                                     while let Some(seg) = cvad.front() {
-                                        let enough = seg.samples().len() >= 8_000; // ≥0.5 s
+                                        let len = seg.samples().len();
                                         cvad.pop();
-                                        if enough {
+                                        captured_speech_samples =
+                                            captured_speech_samples.saturating_add(len);
+                                        // A real question segment (≥0.5 s) ends
+                                        // the capture only once the utterance
+                                        // accumulated enough speech overall.
+                                        if len >= 8_000
+                                            && captured_speech_samples >= MIN_SPEECH_SAMPLES
+                                        {
                                             segment_ended = true;
                                         }
                                     }
